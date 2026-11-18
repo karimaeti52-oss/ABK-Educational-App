@@ -1,0 +1,23 @@
+<resources>
+    <string name="app_name">ABK</string>
+    <string name="platform_full_name">منصة ABK التعليمية</string>
+    <string name="platform_tagline">طريقك للتفوق الدراسي في مكان واحد</string>
+    <string name="sign_in_with_google">تسجيل الدخول بحساب Google</string>
+    <string name="signing_in">جاري تسجيل الدخول…</string>
+    <string name="offline_banner">لا يوجد اتصال بالإنترنت — يتم عرض البيانات المحفوظة مؤقتاً</string>
+    <string name="nav_home">الرئيسية</string>
+    <string name="nav_subjects">المواد</string>
+    <string name="nav_library">مكتبتي</string>
+    <string name="nav_notifications">الإشعارات</string>
+    <string name="nav_account">حسابي</string>
+    <string name="search_placeholder">ابحث عن درس، مادة، كتاب، أو نوطة…</string>
+    <string name="continue_watching">متابعة آخر درس شاهدته</string>
+    <string name="latest_lessons">أحدث الدروس المضافة</string>
+    <string name="latest_materials">أحدث الملفات والكتب</string>
+    <string name="subjects_section">المواد الدراسية</string>
+    <string name="announcements_section">الإعلانات والتنبيهات</string>
+    <string name="favorites_section">المفضلة</string>
+    <string name="admin_panel_title">لوحة تحكم المدير</string>
+    <string name="account_suspended_title">تم تعطيل الحساب مؤقتاً</string>
+    <string name="account_suspended_desc">تم إيقاف هذا الحساب من قبل إدارة منصة ABK. يرجى التواصل مع الإدارة للمراجعة.</string>
+</resources>

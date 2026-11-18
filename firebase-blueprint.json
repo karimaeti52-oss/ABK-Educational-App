@@ -1,0 +1,196 @@
+{
+  "entities": {
+    "AdminEntry": {
+      "title": "AdminEntry",
+      "description": "Authorized administrator identity entry",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID of the admin" },
+        "email": { "type": "string", "description": "Verified email of the admin" },
+        "grantedBy": { "type": "string", "description": "UID or email that granted access" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
+      },
+      "required": ["uid", "email", "grantedBy", "createdAt"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Student or Admin user profile and account status",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "email": { "type": "string" },
+        "photoUrl": { "type": "string" },
+        "role": { "type": "string", "enum": ["STUDENT", "ADMIN"] },
+        "accountStatus": { "type": "string", "enum": ["ACTIVE", "SUSPENDED"] },
+        "lastActiveAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "displayName", "email", "role", "accountStatus", "createdAt", "updatedAt"]
+    },
+    "Subject": {
+      "title": "Subject",
+      "description": "Academic subject managed by admin",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "iconKey": { "type": "string" },
+        "sortOrder": { "type": "integer" },
+        "published": { "type": "boolean" },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "description", "iconKey", "sortOrder", "published", "createdBy", "createdAt", "updatedAt"]
+    },
+    "Lesson": {
+      "title": "Lesson",
+      "description": "Educational video lesson belonging to a subject and unit",
+      "type": "object",
+      "properties": {
+        "subjectId": { "type": "string" },
+        "subjectName": { "type": "string" },
+        "unitTitle": { "type": "string" },
+        "unitOrder": { "type": "integer" },
+        "lessonOrder": { "type": "integer" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "teacherName": { "type": "string" },
+        "durationLabel": { "type": "string" },
+        "thumbnailUrl": { "type": "string" },
+        "videoUrl": { "type": "string" },
+        "videoSourceType": { "type": "string", "enum": ["YOUTUBE", "MP4", "EXTERNAL"] },
+        "published": { "type": "boolean" },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["subjectId", "subjectName", "unitTitle", "unitOrder", "lessonOrder", "title", "description", "videoUrl", "videoSourceType", "published", "createdBy", "createdAt", "updatedAt"]
+    },
+    "StudyMaterial": {
+      "title": "StudyMaterial",
+      "description": "PDF book, study note, summary, worksheet, or exam",
+      "type": "object",
+      "properties": {
+        "subjectId": { "type": "string" },
+        "subjectName": { "type": "string" },
+        "lessonId": { "type": "string" },
+        "lessonTitle": { "type": "string" },
+        "materialType": { "type": "string", "enum": ["TEXTBOOK", "STUDY_NOTE", "SUMMARY", "IMPORTANT_QUESTIONS", "WORKSHEET", "PRACTICE_EXAM"] },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "coverUrl": { "type": "string" },
+        "fileUrl": { "type": "string" },
+        "published": { "type": "boolean" },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["subjectId", "subjectName", "materialType", "title", "description", "fileUrl", "published", "createdBy", "createdAt", "updatedAt"]
+    },
+    "Announcement": {
+      "title": "Announcement",
+      "description": "Platform announcement or in-app notification alert",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "body": { "type": "string" },
+        "category": { "type": "string", "enum": ["NEW_LESSON", "NEW_MATERIAL", "GENERAL", "URGENT"] },
+        "subjectId": { "type": "string" },
+        "pinned": { "type": "boolean" },
+        "published": { "type": "boolean" },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "body", "category", "pinned", "published", "createdBy", "createdAt", "updatedAt"]
+    },
+    "FavoriteItem": {
+      "title": "FavoriteItem",
+      "description": "Student saved favorite lesson or PDF material",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "itemId": { "type": "string" },
+        "itemType": { "type": "string", "enum": ["LESSON", "MATERIAL"] },
+        "title": { "type": "string" },
+        "subtitle": { "type": "string" },
+        "subjectName": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "itemId", "itemType", "title", "subtitle", "subjectName", "createdAt"]
+    },
+    "LessonProgress": {
+      "title": "LessonProgress",
+      "description": "Student video playback progress and completion tracking",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "lessonId": { "type": "string" },
+        "lessonTitle": { "type": "string" },
+        "subjectId": { "type": "string" },
+        "subjectName": { "type": "string" },
+        "thumbnailUrl": { "type": "string" },
+        "lastPositionMs": { "type": "integer" },
+        "durationMs": { "type": "integer" },
+        "completed": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "lessonId", "lessonTitle", "subjectId", "subjectName", "lastPositionMs", "durationMs", "completed", "createdAt", "updatedAt"]
+    },
+    "ReadAnnouncement": {
+      "title": "ReadAnnouncement",
+      "description": "Tracks read status of announcements per student",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "announcementId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "announcementId", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/admins/{adminUid}": {
+      "schema": { "$ref": "#/entities/AdminEntry" },
+      "description": "Explicit administrator access registry"
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "User profiles and account status"
+    },
+    "/subjects/{subjectId}": {
+      "schema": { "$ref": "#/entities/Subject" },
+      "description": "Educational subjects catalog"
+    },
+    "/lessons/{lessonId}": {
+      "schema": { "$ref": "#/entities/Lesson" },
+      "description": "Educational video lessons"
+    },
+    "/materials/{materialId}": {
+      "schema": { "$ref": "#/entities/StudyMaterial" },
+      "description": "PDF library materials"
+    },
+    "/announcements/{announcementId}": {
+      "schema": { "$ref": "#/entities/Announcement" },
+      "description": "Announcements and in-app alerts"
+    },
+    "/users/{userId}/favorites/{favoriteId}": {
+      "schema": { "$ref": "#/entities/FavoriteItem" },
+      "description": "Student favorites subcollection"
+    },
+    "/users/{userId}/progress/{lessonId}": {
+      "schema": { "$ref": "#/entities/LessonProgress" },
+      "description": "Student video watch progress subcollection"
+    },
+    "/users/{userId}/readAnnouncements/{announcementId}": {
+      "schema": { "$ref": "#/entities/ReadAnnouncement" },
+      "description": "Student read announcements tracking"
+    }
+  }
+}
