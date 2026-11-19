@@ -12,8 +12,30 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Record workflow build start time
+        id: build_meta
+        run: |
+          START_EPOCH=$(date -u +%s)
+          START_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          echo "start_epoch=$START_EPOCH" >> "$GITHUB_OUTPUT"
+          echo "start_iso=$START_ISO" >> "$GITHUB_OUTPUT"
+          echo "Build started at (UTC): $START_ISO ($START_EPOCH)"
+
+      - name: Checkout latest repository commit
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Verify latest project files include Firebase startup fix
+        run: |
+          echo "Checked out branch/ref: ${{ github.ref_name }}"
+          git log -1 --format="Commit: %H%nAuthor Date: %cI%nSubject: %s"
+          if ! grep -q "ensureFirebaseInitialized" app/src/main/java/com/example/ui/AbkAppNavigation.kt || \
+             ! grep -q "ensureFirebaseInitialized" app/src/main/java/com/example/data/firebase/AuthHelper.kt; then
+            echo "::error::Checked-out source files are missing the latest Firebase startup fix (ensureFirebaseInitialized). Push the latest code from AI Studio to GitHub before running this workflow."
+            exit 1
+          fi
+          echo "Verified latest ABK source files with Firebase startup fix are present."
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -62,7 +84,7 @@ jobs:
           fi
 
           if [ ! -f app/google-services.json ]; then
-            echo "::warning::app/google-services.json is not present in this checkout. Building APK without google-services.json; add GOOGLE_SERVICES_JSON secret to enable Firebase/Google Sign-In in CI builds."
+            echo "::warning::app/google-services.json is not present in this checkout. Building APK without google-services.json; add GOOGLE_SERVICES_JSON secret or push app/google-services.json to enable Firebase/Google Sign-In."
             exit 0
           fi
 
@@ -88,29 +110,173 @@ jobs:
               print("Verified google-services.json for com.aistudio.abkedu.kpmzqx with OAuth Web Client.")
           PY
 
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
+      - name: Grant execute permission and remove stale APK outputs
+        run: |
+          chmod +x gradlew
+          rm -f ABK.apk app/build/outputs/apk/debug/app-debug.apk
 
-      - name: Build ABK Debug APK
+      - name: Build fresh ABK Debug APK
         run: ./gradlew :app:assembleDebug --no-daemon
 
-      - name: Verify generated ABK.apk
+      - name: Verify fresh app-debug.apk and prepare ABK.apk
+        id: apk_info
+        env:
+          START_EPOCH: ${{ steps.build_meta.outputs.start_epoch }}
         run: |
-          VALUES_XML="app/build/generated/res/processDebugGoogleServices/values/values.xml"
-          if [ ! -f "$VALUES_XML" ] || ! grep -q 'name="default_web_client_id"' "$VALUES_XML"; then
-            echo "::warning::R.string.default_web_client_id was not generated because google-services.json was absent."
-          fi
           APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
-          if [ ! -f "$APK_PATH" ]; then
+          if [ ! -s "$APK_PATH" ]; then
             echo "::error::Expected APK was not generated at $APK_PATH"
             exit 1
           fi
-          cp "$APK_PATH" ABK.apk
-          ls -lh ABK.apk
 
-      - name: Verify existing v1.0.0 release and upload ABK.apk
+          APK_MTIME=$(stat -c %Y "$APK_PATH")
+          APK_DATE_UTC=$(date -u -d "@$APK_MTIME" +"%Y-%m-%dT%H:%M:%SZ")
+          if [ "$APK_MTIME" -lt "$START_EPOCH" ]; then
+            echo "::error::$APK_PATH timestamp ($APK_DATE_UTC) is older than workflow start time!"
+            exit 1
+          fi
+
+          cp -f "$APK_PATH" ABK.apk
+
+          SRC_SHA256=$(sha256sum "$APK_PATH" | awk '{print $1}')
+          DST_SHA256=$(sha256sum ABK.apk | awk '{print $1}')
+          if [ "$SRC_SHA256" != "$DST_SHA256" ]; then
+            echo "::error::Copied ABK.apk checksum mismatch against $APK_PATH"
+            exit 1
+          fi
+
+          APK_SIZE_BYTES=$(stat -c %s ABK.apk)
+          APK_SIZE_HUMAN=$(ls -lh ABK.apk | awk '{print $5}')
+
+          VALUES_XML="app/build/generated/res/processDebugGoogleServices/values/values.xml"
+          if [ ! -f "$VALUES_XML" ] || ! grep -q 'name="default_web_client_id"' "$VALUES_XML"; then
+            echo "::warning::R.string.default_web_client_id was not generated because google-services.json was absent."
+          else
+            echo "Firebase resources (including default_web_client_id) were generated into the APK."
+          fi
+
+          echo "sha256=$DST_SHA256" >> "$GITHUB_OUTPUT"
+          echo "size_bytes=$APK_SIZE_BYTES" >> "$GITHUB_OUTPUT"
+          echo "size_human=$APK_SIZE_HUMAN" >> "$GITHUB_OUTPUT"
+          echo "build_time_utc=$APK_DATE_UTC" >> "$GITHUB_OUTPUT"
+
+          echo "=== Local Build Artifact Summary ==="
+          echo "Source APK : $APK_PATH"
+          echo "Release APK: ABK.apk"
+          echo "Size       : $APK_SIZE_BYTES bytes ($APK_SIZE_HUMAN)"
+          echo "Build Time : $APK_DATE_UTC"
+          echo "SHA-256    : $DST_SHA256"
+
+      - name: Replace ABK.apk in v1.0.0 release and verify uploaded asset
         env:
           GH_TOKEN: ${{ github.token }}
+          LOCAL_SIZE_BYTES: ${{ steps.apk_info.outputs.size_bytes }}
+          LOCAL_SIZE_HUMAN: ${{ steps.apk_info.outputs.size_human }}
+          LOCAL_SHA256: ${{ steps.apk_info.outputs.sha256 }}
+          BUILD_TIME_UTC: ${{ steps.apk_info.outputs.build_time_utc }}
+          START_ISO: ${{ steps.build_meta.outputs.start_iso }}
         run: |
-          gh release view v1.0.0 --repo "${{ github.repository }}" >/dev/null
-          gh release upload v1.0.0 ABK.apk --clobber --repo "${{ github.repository }}"
+          REPO="${{ github.repository }}"
+          TAG="v1.0.0"
+
+          RELEASE_BEFORE=$(gh api "repos/${REPO}/releases/tags/${TAG}")
+          OLD_ASSET_ID=$(python3 - <<'PY' "$RELEASE_BEFORE"
+          import json, sys
+          rel = json.loads(sys.argv[1])
+          for a in rel.get("assets", []):
+              if a.get("name") == "ABK.apk":
+                  print(a.get("id", ""))
+                  print(f"Found existing ABK.apk on v1.0.0 -> id={a.get('id')}, size={a.get('size')}, updated_at={a.get('updated_at')}", file=sys.stderr)
+                  break
+          PY
+          )
+
+          if [ -n "$OLD_ASSET_ID" ]; then
+            echo "Deleting previous ABK.apk asset (id=$OLD_ASSET_ID) from $TAG before uploading the new build..."
+            gh release delete-asset "$TAG" "ABK.apk" --yes --repo "$REPO"
+          else
+            echo "No prior ABK.apk asset found on $TAG."
+          fi
+
+          echo "Uploading newly built ABK.apk ($LOCAL_SIZE_BYTES bytes) to $TAG..."
+          gh release upload "$TAG" ABK.apk --clobber --repo "$REPO"
+
+          # Verify uploaded asset via GitHub API (retry briefly for API consistency)
+          VERIFIED=0
+          for attempt in 1 2 3; do
+            RELEASE_AFTER=$(gh api "repos/${REPO}/releases/tags/${TAG}")
+            if python3 - <<'PY' "$RELEASE_AFTER" "$LOCAL_SIZE_BYTES" "$LOCAL_SHA256" "$START_ISO" "$OLD_ASSET_ID"
+          import datetime, json, sys
+
+          rel = json.loads(sys.argv[1])
+          local_size = int(sys.argv[2])
+          local_sha = sys.argv[3].lower()
+          start_dt = datetime.datetime.fromisoformat(sys.argv[4].replace("Z", "+00:00"))
+          old_id = sys.argv[5].strip()
+
+          assets = [a for a in rel.get("assets", []) if a.get("name") == "ABK.apk"]
+          if len(assets) != 1:
+              print(f"Expected exactly 1 ABK.apk asset on release, found {len(assets)}", file=sys.stderr)
+              sys.exit(1)
+
+          asset = assets[0]
+          new_id = str(asset.get("id", ""))
+          remote_size = int(asset.get("size", -1))
+          updated_raw = asset.get("updated_at", "")
+          updated_dt = datetime.datetime.fromisoformat(updated_raw.replace("Z", "+00:00"))
+          digest = (asset.get("digest") or "").lower()
+          download_url = asset.get("browser_download_url", "")
+
+          if old_id and new_id == old_id:
+              print(f"Asset ID did not change ({new_id}); old asset may not have been replaced.", file=sys.stderr)
+              sys.exit(1)
+
+          if remote_size != local_size:
+              print(f"Uploaded asset size mismatch: remote={remote_size} vs local={local_size}", file=sys.stderr)
+              sys.exit(1)
+
+          if updated_dt < start_dt - datetime.timedelta(seconds=5):
+              print(f"Uploaded asset timestamp {updated_raw} is older than workflow start {sys.argv[4]}", file=sys.stderr)
+              sys.exit(1)
+
+          if digest and digest != f"sha256:{local_sha}":
+              print(f"Uploaded asset digest mismatch: remote={digest} vs local=sha256:{local_sha}", file=sys.stderr)
+              sys.exit(1)
+
+          print("=== Verified GitHub Release Asset ===")
+          print(f"Release Tag  : {rel.get('tag_name')} (draft={rel.get('draft')}, prerelease={rel.get('prerelease')})")
+          print(f"Asset Name   : {asset.get('name')}")
+          print(f"Asset ID     : {new_id} (previous={old_id or 'none'})")
+          print(f"Remote Size  : {remote_size} bytes")
+          print(f"Updated At   : {updated_raw}")
+          print(f"Remote Digest: {digest or 'not provided by API'}")
+          print(f"Download URL : {download_url}")
+          PY
+            then
+              VERIFIED=1
+              break
+            fi
+            sleep 3
+          done
+
+          if [ "$VERIFIED" -ne 1 ]; then
+            echo "::error::Failed to verify that ABK.apk in release $TAG was updated to the newly built APK."
+            exit 1
+          fi
+
+          LATEST_TAG=$(gh api "repos/${REPO}/releases/latest" --jq '.tag_name' 2>/dev/null || echo "")
+          if [ -n "$LATEST_TAG" ] && [ "$LATEST_TAG" != "$TAG" ]; then
+            echo "::warning::Repository /releases/latest currently points to '$LATEST_TAG' instead of '$TAG'. Direct download URL for v1.0.0 is https://github.com/${REPO}/releases/download/${TAG}/ABK.apk"
+          else
+            echo "Verified /releases/latest resolves to $TAG."
+          fi
+
+          {
+            echo "### ABK APK Build & Release Verification"
+            echo "- **Tag**: \`$TAG\`"
+            echo "- **Build Time (UTC)**: \`$BUILD_TIME_UTC\`"
+            echo "- **APK Size**: \`$LOCAL_SIZE_BYTES bytes\` (\`$LOCAL_SIZE_HUMAN\`)"
+            echo "- **SHA-256**: \`$LOCAL_SHA256\`"
+            echo "- **Direct APK URL**: https://github.com/${REPO}/releases/download/${TAG}/ABK.apk"
+            echo "- **Latest Release URL**: https://github.com/${REPO}/releases/latest"
+          } >> "$GITHUB_STEP_SUMMARY"
