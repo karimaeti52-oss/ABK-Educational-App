@@ -148,6 +148,48 @@ jobs:
           APK_SIZE_BYTES=$(stat -c %s ABK.apk)
           APK_SIZE_HUMAN=$(ls -lh ABK.apk | awk '{print $5}')
 
+          APKSIGNER_BIN=$(command -v apksigner || find "${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}/build-tools" -name apksigner 2>/dev/null | sort -V | tail -n 1 || true)
+          APK_CERT_SHA1_HEX=""
+          APK_CERT_SHA256_HEX=""
+          if [ -n "$APKSIGNER_BIN" ] && [ -x "$APKSIGNER_BIN" ]; then
+            APK_CERT_INFO=$("$APKSIGNER_BIN" verify --print-certs ABK.apk 2>/dev/null || true)
+            APK_CERT_SHA1_HEX=$(printf '%s\n' "$APK_CERT_INFO" | awk -F'SHA-1 digest:' '/SHA-1 digest:/ {gsub(/[[:space:]]/, "", $2); print tolower($2); exit}')
+            APK_CERT_SHA256_HEX=$(printf '%s\n' "$APK_CERT_INFO" | awk -F'SHA-256 digest:' '/SHA-256 digest:/ {gsub(/[[:space:]]/, "", $2); print tolower($2); exit}')
+          fi
+          if [ -z "$APK_CERT_SHA1_HEX" ] && [ -f debug.keystore ]; then
+            KS_INFO=$(keytool -list -v -keystore debug.keystore -storepass android -alias androiddebugkey 2>/dev/null || true)
+            APK_CERT_SHA1_HEX=$(printf '%s\n' "$KS_INFO" | awk -F'SHA1:' '/SHA1:/ {gsub(/[:[:space:]]/, "", $2); print tolower($2); exit}')
+            APK_CERT_SHA256_HEX=$(printf '%s\n' "$KS_INFO" | awk -F'SHA256:' '/SHA256:/ {gsub(/[:[:space:]]/, "", $2); print tolower($2); exit}')
+          fi
+          APK_CERT_SHA1=$(printf '%s' "$APK_CERT_SHA1_HEX" | sed -E 's/../\U&:/g; s/:$//')
+          APK_CERT_SHA256=$(printf '%s' "$APK_CERT_SHA256_HEX" | sed -E 's/../\U&:/g; s/:$//')
+
+          SHA1_MATCH_STATUS="UNKNOWN (google-services.json not present)"
+          if [ -f app/google-services.json ] && [ -n "$APK_CERT_SHA1_HEX" ]; then
+            SHA1_MATCH_STATUS=$(python3 - <<'PY' "$APK_CERT_SHA1_HEX"
+          import json, sys
+          apk_sha1 = sys.argv[1].strip().lower()
+          with open("app/google-services.json", "r", encoding="utf-8") as f:
+              data = json.load(f)
+          hashes = []
+          for c in data.get("client", []):
+              for o in c.get("oauth_client", []):
+                  h = o.get("android_info", {}).get("certificate_hash")
+                  if h:
+                      hashes.append(h.lower())
+          if not hashes:
+              print("NO ANDROID CERTIFICATE_HASH IN google-services.json")
+          elif apk_sha1 in hashes:
+              print("MATCHED")
+          else:
+              print(f"MISMATCH (apk={apk_sha1}, expected={','.join(hashes)})")
+          PY
+            )
+            if [[ "$SHA1_MATCH_STATUS" == MISMATCH* ]] || [[ "$SHA1_MATCH_STATUS" == NO* ]]; then
+              echo "::warning::APK signing certificate SHA-1 ($APK_CERT_SHA1) does NOT match app/google-services.json ($SHA1_MATCH_STATUS). Google Sign-In will fail after account selection unless you push debug.keystore.base64 / set DEBUG_KEYSTORE_BASE64 secret OR add SHA-1 ($APK_CERT_SHA1) and SHA-256 ($APK_CERT_SHA256) in Firebase Console."
+            fi
+          fi
+
           VALUES_XML="app/build/generated/res/processDebugGoogleServices/values/values.xml"
           if [ ! -f "$VALUES_XML" ] || ! grep -q 'name="default_web_client_id"' "$VALUES_XML"; then
             echo "::warning::R.string.default_web_client_id was not generated because google-services.json was absent."
@@ -159,13 +201,19 @@ jobs:
           echo "size_bytes=$APK_SIZE_BYTES" >> "$GITHUB_OUTPUT"
           echo "size_human=$APK_SIZE_HUMAN" >> "$GITHUB_OUTPUT"
           echo "build_time_utc=$APK_DATE_UTC" >> "$GITHUB_OUTPUT"
+          echo "cert_sha1=$APK_CERT_SHA1" >> "$GITHUB_OUTPUT"
+          echo "cert_sha256=$APK_CERT_SHA256" >> "$GITHUB_OUTPUT"
+          echo "sha1_match_status=$SHA1_MATCH_STATUS" >> "$GITHUB_OUTPUT"
 
           echo "=== Local Build Artifact Summary ==="
           echo "Source APK : $APK_PATH"
           echo "Release APK: ABK.apk"
           echo "Size       : $APK_SIZE_BYTES bytes ($APK_SIZE_HUMAN)"
           echo "Build Time : $APK_DATE_UTC"
-          echo "SHA-256    : $DST_SHA256"
+          echo "File SHA256: $DST_SHA256"
+          echo "Cert SHA-1 : ${APK_CERT_SHA1:-unavailable}"
+          echo "Cert SHA256: ${APK_CERT_SHA256:-unavailable}"
+          echo "SHA-1 Check: $SHA1_MATCH_STATUS"
 
       - name: Replace ABK.apk in v1.0.0 release and verify uploaded asset
         env:
@@ -175,6 +223,9 @@ jobs:
           LOCAL_SHA256: ${{ steps.apk_info.outputs.sha256 }}
           BUILD_TIME_UTC: ${{ steps.apk_info.outputs.build_time_utc }}
           START_ISO: ${{ steps.build_meta.outputs.start_iso }}
+          CERT_SHA1: ${{ steps.apk_info.outputs.cert_sha1 }}
+          CERT_SHA256: ${{ steps.apk_info.outputs.cert_sha256 }}
+          SHA1_MATCH_STATUS: ${{ steps.apk_info.outputs.sha1_match_status }}
         run: |
           REPO="${{ github.repository }}"
           TAG="v1.0.0"
@@ -271,12 +322,23 @@ jobs:
             echo "Verified /releases/latest resolves to $TAG."
           fi
 
+          FIREBASE_STATUS="MISSING — تسجيل الدخول وFirestore لن يعملا في هذا الـ APK حتى إضافة GOOGLE_SERVICES_JSON"
+          if [ -f app/google-services.json ] && \
+             [ -f app/build/generated/res/processDebugGoogleServices/values/values.xml ] && \
+             grep -q 'name="default_web_client_id"' app/build/generated/res/processDebugGoogleServices/values/values.xml; then
+            FIREBASE_STATUS="INCLUDED & VERIFIED (app/google-services.json + default_web_client_id)"
+          fi
+
           {
             echo "### ABK APK Build & Release Verification"
             echo "- **Tag**: \`$TAG\`"
+            echo "- **Firebase Status**: \`$FIREBASE_STATUS\`"
+            echo "- **Signing Cert SHA-1 Check**: \`$SHA1_MATCH_STATUS\`"
+            echo "- **Signing Cert SHA-1**: \`${CERT_SHA1:-unavailable}\`"
+            echo "- **Signing Cert SHA-256**: \`${CERT_SHA256:-unavailable}\`"
             echo "- **Build Time (UTC)**: \`$BUILD_TIME_UTC\`"
             echo "- **APK Size**: \`$LOCAL_SIZE_BYTES bytes\` (\`$LOCAL_SIZE_HUMAN\`)"
-            echo "- **SHA-256**: \`$LOCAL_SHA256\`"
+            echo "- **APK File SHA-256**: \`$LOCAL_SHA256\`"
             echo "- **Direct APK URL**: https://github.com/${REPO}/releases/download/${TAG}/ABK.apk"
             echo "- **Latest Release URL**: https://github.com/${REPO}/releases/latest"
           } >> "$GITHUB_STEP_SUMMARY"

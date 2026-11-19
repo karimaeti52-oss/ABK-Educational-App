@@ -57,7 +57,6 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.example.R
-import com.example.data.firebase.authStateFlow
 import com.example.data.firebase.ensureFirebaseInitialized
 import com.example.data.firebase.signOutUser
 import com.example.data.model.AccountStatus
@@ -142,11 +141,28 @@ fun AbkAppNavigation(auth: FirebaseAuth? = null) {
         return
     }
 
-    val currentUser by resolvedAuth.authStateFlow().collectAsStateWithLifecycle(initialValue = resolvedAuth.currentUser)
+    var currentUser by remember(resolvedAuth) { mutableStateOf(resolvedAuth.currentUser) }
+
+    DisposableEffect(resolvedAuth) {
+        val listener = FirebaseAuth.AuthStateListener { firebaseAuth ->
+            currentUser = firebaseAuth.currentUser
+        }
+        resolvedAuth.addAuthStateListener(listener)
+        currentUser = resolvedAuth.currentUser
+        onDispose {
+            resolvedAuth.removeAuthStateListener(listener)
+        }
+    }
+
     val user = currentUser
 
     if (user == null) {
-        AuthScreen(onAuthSuccess = {}, firebaseReady = true)
+        AuthScreen(
+            onAuthSuccess = { signedInUser ->
+                currentUser = signedInUser ?: resolvedAuth.currentUser
+            },
+            firebaseReady = true
+        )
     } else {
         key(user.uid) {
             AuthenticatedAbkApp(firebaseUser = user)

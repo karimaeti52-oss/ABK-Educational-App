@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
@@ -64,9 +65,11 @@ import com.example.ui.theme.AbkNavyDeep
 import com.example.ui.theme.AbkSkyContainer
 import com.example.ui.theme.AbkSkyPrimary
 
+import com.google.firebase.auth.FirebaseUser
+
 @Composable
 fun AuthScreen(
-    onAuthSuccess: () -> Unit,
+    onAuthSuccess: (FirebaseUser?) -> Unit,
     firebaseReady: Boolean = true
 ) {
     val context = LocalContext.current
@@ -92,9 +95,9 @@ fun AuthScreen(
         attemptAutoSignIn(
             context = context,
             credentialManager = credentialManager,
-            onAuthSuccess = {
+            onAuthSuccess = { signedInUser ->
                 isAttemptingSilent = false
-                onAuthSuccess()
+                onAuthSuccess(signedInUser)
             },
             onUnauthenticated = {
                 isAttemptingSilent = false
@@ -185,15 +188,19 @@ fun AuthScreen(
                 Surface(
                     shape = RoundedCornerShape(12.dp),
                     color = MaterialTheme.colorScheme.errorContainer,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("auth_error_banner")
                 ) {
-                    Text(
-                        text = message,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                        modifier = Modifier.padding(12.dp),
-                        textAlign = TextAlign.Center
-                    )
+                    SelectionContainer {
+                        Text(
+                            text = message,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.padding(12.dp),
+                            textAlign = TextAlign.Center
+                        )
+                    }
                 }
             }
 
@@ -209,16 +216,25 @@ fun AuthScreen(
                     onGoogleSignInClicked(
                         context = context,
                         credentialManager = manager,
-                        onAuthSuccess = {
+                        onAuthSuccess = { signedInUser ->
                             isLoading = false
-                            onAuthSuccess()
+                            onAuthSuccess(signedInUser)
                         },
                         onAuthError = { msg ->
                             isLoading = false
                             errorMessage = msg
                         },
                         scope = scope,
-                        onAuthCancelled = { isLoading = false }
+                        onAuthCancelled = { details ->
+                            isLoading = false
+                            val baseMsg =
+                                "تم إغلاق نافذة تسجيل الدخول قبل إتمام المصادقة. إذا اخترت حساباً وعاد التطبيق لهذه الشاشة، فتأكد من مطابقة بصمة SHA-1 وSHA-256 للـ APK في Firebase وتفعيل مزود Google."
+                            errorMessage = if (details.isNullOrBlank()) {
+                                baseMsg
+                            } else {
+                                "$baseMsg\nالتفاصيل: $details"
+                            }
+                        }
                     )
                 },
                 enabled = !isLoading && !isAttemptingSilent,

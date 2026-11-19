@@ -30,13 +30,16 @@ class AbkUiScreensRobolectricTest {
         composeTestRule.setContent {
             ABKTheme {
                 AuthScreen(
-                    onAuthSuccess = {},
+                    onAuthSuccess = { _ -> },
                     firebaseReady = false
                 )
             }
         }
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithText("ABK").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("auth_error_banner")
+            .performScrollTo()
+            .assertIsDisplayed()
         composeTestRule.onNodeWithTag("google_sign_in_button")
             .performScrollTo()
             .assertIsDisplayed()
