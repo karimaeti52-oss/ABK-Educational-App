@@ -4,6 +4,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performScrollTo
 import com.example.data.model.Subject
 import com.example.data.model.UiState
 import com.example.data.model.UserProfile
@@ -36,7 +37,9 @@ class AbkUiScreensRobolectricTest {
         }
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithText("ABK").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("google_sign_in_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("google_sign_in_button")
+            .performScrollTo()
+            .assertIsDisplayed()
     }
 
     @Test

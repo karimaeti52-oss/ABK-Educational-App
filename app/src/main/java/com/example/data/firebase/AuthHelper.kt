@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 fun ensureFirebaseInitialized(context: Context): Boolean {
     val appContext = context.applicationContext ?: context
@@ -78,7 +79,10 @@ fun attemptAutoSignIn(
     }
     scope.launch {
         try {
-            val cred = credentialManager.getCredential(context, request).credential
+            val response = withTimeoutOrNull(4500L) {
+                credentialManager.getCredential(context, request)
+            }
+            val cred = response?.credential
             if (cred is CustomCredential && cred.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
                 val token = GoogleIdTokenCredential.createFrom(cred.data).idToken
                 Firebase.auth.signInWithCredential(GoogleAuthProvider.getCredential(token, null)).await()
