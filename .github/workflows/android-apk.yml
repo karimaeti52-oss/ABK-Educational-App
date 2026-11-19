@@ -46,35 +46,37 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Prepare debug keystore
+      - name: Restore fixed debug keystore from GitHub Secret
         env:
           DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
         run: |
-          if [ -n "$DEBUG_KEYSTORE_BASE64" ]; then
-            printf '%s' "$DEBUG_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > debug.keystore
-            echo "Restored debug.keystore from GitHub Secret."
-          elif [ -f debug.keystore.base64 ]; then
-            tr -d '[:space:]' < debug.keystore.base64 | base64 -d > debug.keystore
-            echo "Restored debug.keystore from debug.keystore.base64."
-          elif [ ! -f debug.keystore ]; then
-            keytool -genkeypair -v \
-              -keystore debug.keystore \
-              -storepass android \
-              -alias androiddebugkey \
-              -keypass android \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US"
-            echo "Generated debug.keystore automatically via keytool."
+          set +x
+          rm -f debug.keystore
+          if [ -z "$DEBUG_KEYSTORE_BASE64" ]; then
+            echo "::error::Missing required GitHub Secret DEBUG_KEYSTORE_BASE64. Aborting build instead of generating a random debug.keystore (which would change SHA-1 and break Google Sign-In). Add DEBUG_KEYSTORE_BASE64 under GitHub Repository -> Settings -> Secrets and variables -> Actions."
+            exit 1
           fi
-          keytool -list -v -keystore debug.keystore -storepass android -alias androiddebugkey | grep -E "SHA1:|SHA256:" || true
+
+          if ! printf '%s' "$DEBUG_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > debug.keystore || [ ! -s debug.keystore ]; then
+            rm -f debug.keystore
+            echo "::error::Failed to decode DEBUG_KEYSTORE_BASE64 into a valid debug.keystore file. Re-encode your fixed keystore cleanly with base64 (no extra text) and update the secret."
+            exit 1
+          fi
+
+          if ! keytool -list -keystore debug.keystore -storepass android -alias androiddebugkey >/dev/null 2>&1; then
+            rm -f debug.keystore
+            echo "::error::Decoded debug.keystore is invalid or does not contain alias 'androiddebugkey' with storepass 'android'."
+            exit 1
+          fi
+
+          echo "Restored fixed debug.keystore from DEBUG_KEYSTORE_BASE64 secret (alias androiddebugkey verified)."
 
       - name: Prepare and validate google-services.json
         env:
           GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
           GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
         run: |
+          set +x
           if [ -n "$GOOGLE_SERVICES_JSON" ]; then
             printf '%s' "$GOOGLE_SERVICES_JSON" > app/google-services.json
             echo "Restored app/google-services.json from GOOGLE_SERVICES_JSON secret."
@@ -149,26 +151,34 @@ jobs:
           APK_SIZE_HUMAN=$(ls -lh ABK.apk | awk '{print $5}')
 
           APKSIGNER_BIN=$(command -v apksigner || find "${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}/build-tools" -name apksigner 2>/dev/null | sort -V | tail -n 1 || true)
-          APK_CERT_SHA1_HEX=""
-          APK_CERT_SHA256_HEX=""
-          if [ -n "$APKSIGNER_BIN" ] && [ -x "$APKSIGNER_BIN" ]; then
-            APK_CERT_INFO=$("$APKSIGNER_BIN" verify --print-certs ABK.apk 2>/dev/null || true)
-            APK_CERT_SHA1_HEX=$(printf '%s\n' "$APK_CERT_INFO" | awk -F'SHA-1 digest:' '/SHA-1 digest:/ {gsub(/[[:space:]]/, "", $2); print tolower($2); exit}')
-            APK_CERT_SHA256_HEX=$(printf '%s\n' "$APK_CERT_INFO" | awk -F'SHA-256 digest:' '/SHA-256 digest:/ {gsub(/[[:space:]]/, "", $2); print tolower($2); exit}')
+          if [ -z "$APKSIGNER_BIN" ] || [ ! -x "$APKSIGNER_BIN" ]; then
+            echo "::error::apksigner binary not found on runner; cannot verify final APK signature."
+            exit 1
           fi
-          if [ -z "$APK_CERT_SHA1_HEX" ] && [ -f debug.keystore ]; then
-            KS_INFO=$(keytool -list -v -keystore debug.keystore -storepass android -alias androiddebugkey 2>/dev/null || true)
-            APK_CERT_SHA1_HEX=$(printf '%s\n' "$KS_INFO" | awk -F'SHA1:' '/SHA1:/ {gsub(/[:[:space:]]/, "", $2); print tolower($2); exit}')
-            APK_CERT_SHA256_HEX=$(printf '%s\n' "$KS_INFO" | awk -F'SHA256:' '/SHA256:/ {gsub(/[:[:space:]]/, "", $2); print tolower($2); exit}')
+
+          if ! APK_CERT_INFO=$("$APKSIGNER_BIN" verify --print-certs ABK.apk 2>&1); then
+            echo "::error::apksigner verification failed for ABK.apk."
+            printf '%s\n' "$APK_CERT_INFO"
+            exit 1
           fi
+
+          APK_CERT_SHA1_HEX=$(printf '%s\n' "$APK_CERT_INFO" | awk -F'SHA-1 digest:' '/SHA-1 digest:/ {gsub(/[[:space:]]/, "", $2); print tolower($2); exit}')
+          APK_CERT_SHA256_HEX=$(printf '%s\n' "$APK_CERT_INFO" | awk -F'SHA-256 digest:' '/SHA-256 digest:/ {gsub(/[[:space:]]/, "", $2); print tolower($2); exit}')
+          if [ -z "$APK_CERT_SHA1_HEX" ] || [ -z "$APK_CERT_SHA256_HEX" ]; then
+            echo "::error::Could not parse SHA-1 or SHA-256 certificate digest from apksigner output."
+            exit 1
+          fi
+
           APK_CERT_SHA1=$(printf '%s' "$APK_CERT_SHA1_HEX" | sed -E 's/../\U&:/g; s/:$//')
           APK_CERT_SHA256=$(printf '%s' "$APK_CERT_SHA256_HEX" | sed -E 's/../\U&:/g; s/:$//')
 
-          SHA1_MATCH_STATUS="UNKNOWN (google-services.json not present)"
-          if [ -f app/google-services.json ] && [ -n "$APK_CERT_SHA1_HEX" ]; then
-            SHA1_MATCH_STATUS=$(python3 - <<'PY' "$APK_CERT_SHA1_HEX"
-          import json, sys
-          apk_sha1 = sys.argv[1].strip().lower()
+          if [ ! -f app/google-services.json ]; then
+            echo "::error::app/google-services.json is missing; cannot verify APK SHA-1 against registered Firebase OAuth certificate_hash."
+            exit 1
+          fi
+
+          EXPECTED_FIREBASE_SHA1_LIST=$(python3 - <<'PY'
+          import json
           with open("app/google-services.json", "r", encoding="utf-8") as f:
               data = json.load(f)
           hashes = []
@@ -176,25 +186,28 @@ jobs:
               for o in c.get("oauth_client", []):
                   h = o.get("android_info", {}).get("certificate_hash")
                   if h:
-                      hashes.append(h.lower())
-          if not hashes:
+                      hashes.append(h.strip().lower())
+          print(",".join(dict.fromkeys(hashes)))
+          PY
+          )
+
+          SHA1_MATCH_STATUS=$(python3 - <<'PY' "$APK_CERT_SHA1_HEX" "$EXPECTED_FIREBASE_SHA1_LIST"
+          import sys
+          apk_sha1 = sys.argv[1].strip().lower()
+          expected = [h for h in sys.argv[2].split(",") if h]
+          if not expected:
               print("NO ANDROID CERTIFICATE_HASH IN google-services.json")
-          elif apk_sha1 in hashes:
+          elif apk_sha1 in expected:
               print("MATCHED")
           else:
-              print(f"MISMATCH (apk={apk_sha1}, expected={','.join(hashes)})")
+              print(f"MISMATCH (apk={apk_sha1}, firebase_google_services={','.join(expected)})")
           PY
-            )
-            if [[ "$SHA1_MATCH_STATUS" == MISMATCH* ]] || [[ "$SHA1_MATCH_STATUS" == NO* ]]; then
-              echo "::warning::APK signing certificate SHA-1 ($APK_CERT_SHA1) does NOT match app/google-services.json ($SHA1_MATCH_STATUS). Google Sign-In will fail after account selection unless you push debug.keystore.base64 / set DEBUG_KEYSTORE_BASE64 secret OR add SHA-1 ($APK_CERT_SHA1) and SHA-256 ($APK_CERT_SHA256) in Firebase Console."
-            fi
-          fi
+          )
 
           VALUES_XML="app/build/generated/res/processDebugGoogleServices/values/values.xml"
           if [ ! -f "$VALUES_XML" ] || ! grep -q 'name="default_web_client_id"' "$VALUES_XML"; then
-            echo "::warning::R.string.default_web_client_id was not generated because google-services.json was absent."
-          else
-            echo "Firebase resources (including default_web_client_id) were generated into the APK."
+            echo "::error::R.string.default_web_client_id was not generated from app/google-services.json."
+            exit 1
           fi
 
           echo "sha256=$DST_SHA256" >> "$GITHUB_OUTPUT"
@@ -202,18 +215,27 @@ jobs:
           echo "size_human=$APK_SIZE_HUMAN" >> "$GITHUB_OUTPUT"
           echo "build_time_utc=$APK_DATE_UTC" >> "$GITHUB_OUTPUT"
           echo "cert_sha1=$APK_CERT_SHA1" >> "$GITHUB_OUTPUT"
+          echo "cert_sha1_hex=$APK_CERT_SHA1_HEX" >> "$GITHUB_OUTPUT"
           echo "cert_sha256=$APK_CERT_SHA256" >> "$GITHUB_OUTPUT"
+          echo "cert_sha256_hex=$APK_CERT_SHA256_HEX" >> "$GITHUB_OUTPUT"
+          echo "expected_sha1_list=${EXPECTED_FIREBASE_SHA1_LIST:-none}" >> "$GITHUB_OUTPUT"
           echo "sha1_match_status=$SHA1_MATCH_STATUS" >> "$GITHUB_OUTPUT"
 
-          echo "=== Local Build Artifact Summary ==="
-          echo "Source APK : $APK_PATH"
-          echo "Release APK: ABK.apk"
-          echo "Size       : $APK_SIZE_BYTES bytes ($APK_SIZE_HUMAN)"
-          echo "Build Time : $APK_DATE_UTC"
-          echo "File SHA256: $DST_SHA256"
-          echo "Cert SHA-1 : ${APK_CERT_SHA1:-unavailable}"
-          echo "Cert SHA256: ${APK_CERT_SHA256:-unavailable}"
-          echo "SHA-1 Check: $SHA1_MATCH_STATUS"
+          echo "=== Local Build Artifact & Signature Summary ==="
+          echo "Source APK       : $APK_PATH"
+          echo "Release APK      : ABK.apk"
+          echo "Size             : $APK_SIZE_BYTES bytes ($APK_SIZE_HUMAN)"
+          echo "Build Time       : $APK_DATE_UTC"
+          echo "APK File SHA-256 : $DST_SHA256"
+          echo "APK Cert SHA-1   : $APK_CERT_SHA1 ($APK_CERT_SHA1_HEX)"
+          echo "APK Cert SHA-256 : $APK_CERT_SHA256 ($APK_CERT_SHA256_HEX)"
+          echo "Firebase SHA-1   : ${EXPECTED_FIREBASE_SHA1_LIST:-none}"
+          echo "SHA-1 Comparison : $SHA1_MATCH_STATUS"
+
+          if [ "$SHA1_MATCH_STATUS" != "MATCHED" ]; then
+            echo "::error::Final ABK.apk SHA-1 ($APK_CERT_SHA1_HEX) does not match Firebase certificate_hash (${EXPECTED_FIREBASE_SHA1_LIST:-none}) in app/google-services.json. Refusing to upload mismatched APK. Either store the matching keystore in DEBUG_KEYSTORE_BASE64 or register this fixed keystore SHA-1/SHA-256 in Firebase Console and refresh GOOGLE_SERVICES_JSON."
+            exit 1
+          fi
 
       - name: Replace ABK.apk in v1.0.0 release and verify uploaded asset
         env:
@@ -224,7 +246,10 @@ jobs:
           BUILD_TIME_UTC: ${{ steps.apk_info.outputs.build_time_utc }}
           START_ISO: ${{ steps.build_meta.outputs.start_iso }}
           CERT_SHA1: ${{ steps.apk_info.outputs.cert_sha1 }}
+          CERT_SHA1_HEX: ${{ steps.apk_info.outputs.cert_sha1_hex }}
           CERT_SHA256: ${{ steps.apk_info.outputs.cert_sha256 }}
+          CERT_SHA256_HEX: ${{ steps.apk_info.outputs.cert_sha256_hex }}
+          EXPECTED_SHA1_LIST: ${{ steps.apk_info.outputs.expected_sha1_list }}
           SHA1_MATCH_STATUS: ${{ steps.apk_info.outputs.sha1_match_status }}
         run: |
           REPO="${{ github.repository }}"
@@ -322,23 +347,23 @@ jobs:
             echo "Verified /releases/latest resolves to $TAG."
           fi
 
-          FIREBASE_STATUS="MISSING — تسجيل الدخول وFirestore لن يعملا في هذا الـ APK حتى إضافة GOOGLE_SERVICES_JSON"
-          if [ -f app/google-services.json ] && \
-             [ -f app/build/generated/res/processDebugGoogleServices/values/values.xml ] && \
-             grep -q 'name="default_web_client_id"' app/build/generated/res/processDebugGoogleServices/values/values.xml; then
-            FIREBASE_STATUS="INCLUDED & VERIFIED (app/google-services.json + default_web_client_id)"
-          fi
+          FIREBASE_STATUS="INCLUDED & VERIFIED (app/google-services.json + default_web_client_id)"
 
           {
             echo "### ABK APK Build & Release Verification"
             echo "- **Tag**: \`$TAG\`"
             echo "- **Firebase Status**: \`$FIREBASE_STATUS\`"
+            echo "- **Firebase Expected SHA-1**: \`${EXPECTED_SHA1_LIST:-none}\`"
             echo "- **Signing Cert SHA-1 Check**: \`$SHA1_MATCH_STATUS\`"
-            echo "- **Signing Cert SHA-1**: \`${CERT_SHA1:-unavailable}\`"
-            echo "- **Signing Cert SHA-256**: \`${CERT_SHA256:-unavailable}\`"
+            echo "- **APK Signing Cert SHA-1**: \`$CERT_SHA1\` (\`$CERT_SHA1_HEX\`)"
+            echo "- **APK Signing Cert SHA-256**: \`$CERT_SHA256\` (\`$CERT_SHA256_HEX\`)"
             echo "- **Build Time (UTC)**: \`$BUILD_TIME_UTC\`"
             echo "- **APK Size**: \`$LOCAL_SIZE_BYTES bytes\` (\`$LOCAL_SIZE_HUMAN\`)"
             echo "- **APK File SHA-256**: \`$LOCAL_SHA256\`"
             echo "- **Direct APK URL**: https://github.com/${REPO}/releases/download/${TAG}/ABK.apk"
             echo "- **Latest Release URL**: https://github.com/${REPO}/releases/latest"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Clean up temporary keystore from runner
+        if: always()
+        run: rm -f debug.keystore

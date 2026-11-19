@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AdminPanelSettings
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -34,6 +35,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -47,12 +49,15 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
 import com.example.R
 import com.example.data.model.Announcement
+import com.example.data.model.CatalogNode
 import com.example.data.model.FavoriteItem
 import com.example.data.model.FavoriteType
 import com.example.data.model.Lesson
 import com.example.data.model.LessonProgress
+import com.example.data.model.PlatformConfig
 import com.example.data.model.StudyMaterial
 import com.example.data.model.Subject
 import com.example.data.model.UiState
@@ -61,13 +66,13 @@ import com.example.ui.components.AbkEmptyState
 import com.example.ui.components.AbkLogoMark
 import com.example.ui.components.AbkSearchBar
 import com.example.ui.components.AnnouncementBannerCard
+import com.example.ui.components.CatalogNodeCard
 import com.example.ui.components.LessonCard
 import com.example.ui.components.MaterialCard
 import com.example.ui.components.SectionHeader
 import com.example.ui.components.SubjectCard
-import com.example.ui.theme.AbkNavyDeep
-import com.example.ui.theme.AbkNavyPrimary
-import com.example.ui.theme.AbkSkyPrimary
+import com.example.ui.components.TeacherShowcaseCard
+import com.example.ui.theme.AbkWarning
 import com.example.util.PdfCacheManager
 import com.example.util.UrlUtils
 import com.example.viewmodel.SearchResults
@@ -97,15 +102,23 @@ fun HomeScreen(
     onOpenAnnouncement: (Announcement) -> Unit,
     onOpenNotifications: () -> Unit,
     onOpenLibrary: () -> Unit,
-    onOpenAdminPanel: () -> Unit
+    onOpenAdminPanel: () -> Unit,
+    platformConfig: PlatformConfig = PlatformConfig(),
+    catalogNodesState: UiState<List<CatalogNode>> = UiState.Success(emptyList()),
+    onOpenCatalogNode: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
+    val catalogNodes = (catalogNodesState as? UiState.Success)?.data.orEmpty()
     val subjects = (subjectsState as? UiState.Success)?.data.orEmpty()
     val lessons = (lessonsState as? UiState.Success)?.data.orEmpty()
     val materials = (materialsState as? UiState.Success)?.data.orEmpty()
     val announcements = (announcementsState as? UiState.Success)?.data.orEmpty()
     val favorites = (favoritesState as? UiState.Success)?.data.orEmpty()
     val progressList = (progressState as? UiState.Success)?.data.orEmpty()
+
+    val rootNodes = remember(catalogNodes) {
+        catalogNodes.filter { it.parentId.isNullOrBlank() }
+    }
 
     val favoriteLessonIds = favorites.filter { it.parsedType() == FavoriteType.LESSON }.map { it.itemId }.toSet()
     val favoriteMaterialIds = favorites.filter { it.parsedType() == FavoriteType.MATERIAL }.map { it.itemId }.toSet()
@@ -115,6 +128,9 @@ fun HomeScreen(
         ?: progressList.firstOrNull()
     val lastWatchedLesson = lastWatchedProgress?.let { prog -> lessons.firstOrNull { it.id == prog.lessonId } }
 
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val secondaryColor = MaterialTheme.colorScheme.secondary
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -122,19 +138,19 @@ fun HomeScreen(
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp)
     ) {
-        // Header with ABK logo and optional Admin entry (strictly hidden for students)
+        // Header with dynamic logo & platform name + optional Admin entry
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                AbkLogoMark()
+                AbkLogoMark(platformConfig = platformConfig)
                 if (isAdmin) {
                     Surface(
                         onClick = onOpenAdminPanel,
                         shape = RoundedCornerShape(12.dp),
-                        color = AbkNavyDeep,
+                        color = primaryColor,
                         modifier = Modifier.testTag("home_admin_button")
                     ) {
                         Row(
@@ -159,31 +175,69 @@ fun HomeScreen(
             }
         }
 
-        // Welcome Hero Card
+        // Optional Maintenance Notice Banner controlled from Admin Portal
+        if (platformConfig.maintenanceMode) {
+            item {
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = AbkWarning.copy(alpha = 0.14f),
+                    border = BorderStroke(1.dp, AbkWarning.copy(alpha = 0.45f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Filled.Info, contentDescription = null, tint = AbkWarning)
+                        Text(
+                            text = "تنبيه: تجري حالياً أعمال صيانة وتحديث لمحتوى المنصة.",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+            }
+        }
+
+        // Dynamic Hero Welcome Card
         item {
             val studentName = userProfile?.displayName?.takeIf { it.isNotBlank() } ?: "طالبنا العزيز"
             Card(
                 shape = RoundedCornerShape(22.dp),
-                colors = CardDefaults.cardColors(containerColor = AbkNavyDeep),
+                colors = CardDefaults.cardColors(containerColor = primaryColor),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Box(modifier = Modifier.fillMaxWidth()) {
-                    Image(
-                        painter = painterResource(id = R.drawable.img_abk_hero),
-                        contentDescription = null,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(148.dp),
-                        contentScale = ContentScale.Crop,
-                        alpha = 0.24f
-                    )
+                    if (!platformConfig.heroBannerUrl.isNullOrBlank()) {
+                        AsyncImage(
+                            model = platformConfig.heroBannerUrl,
+                            contentDescription = null,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(152.dp),
+                            contentScale = ContentScale.Crop,
+                            alpha = 0.28f,
+                            error = painterResource(id = R.drawable.img_abk_hero)
+                        )
+                    } else {
+                        Image(
+                            painter = painterResource(id = R.drawable.img_abk_hero),
+                            contentDescription = null,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(152.dp),
+                            contentScale = ContentScale.Crop,
+                            alpha = 0.24f
+                        )
+                    }
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(148.dp)
+                            .height(152.dp)
                             .background(
                                 Brush.horizontalGradient(
-                                    listOf(AbkNavyDeep.copy(alpha = 0.94f), AbkNavyPrimary.copy(alpha = 0.78f))
+                                    listOf(primaryColor.copy(alpha = 0.94f), secondaryColor.copy(alpha = 0.72f))
                                 )
                             )
                     )
@@ -199,11 +253,13 @@ fun HomeScreen(
                             color = Color.White
                         )
                         Text(
-                            text = "ابدأ رحلتك الدراسية اليوم مع دروس ABK والكتب والنوطات المعتمدة.",
+                            text = platformConfig.welcomeTitle.ifBlank { platformConfig.welcomeSubtitle },
                             style = MaterialTheme.typography.bodyMedium,
-                            color = Color.White.copy(alpha = 0.9f)
+                            color = Color.White.copy(alpha = 0.92f),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
                         )
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             StatChip("${subjects.size} مادة")
                             StatChip("${lessons.size} درس")
                             StatChip("${materials.size} ملف PDF")
@@ -227,10 +283,37 @@ fun HomeScreen(
                 item {
                     AbkEmptyState(
                         title = "لا توجد نتائج مطابقة",
-                        subtitle = "جرب البحث باسم المادة أو عنوان الدرس أو اسم الكتاب أو النوطة."
+                        subtitle = "جرب البحث باسم المرحلة أو المادة أو عنوان الدرس أو اسم الأستاذ."
                     )
                 }
             } else {
+                if (searchResults.catalogNodes.isNotEmpty()) {
+                    item { SectionHeader(title = "المراحل والفروع المطابقة (${searchResults.catalogNodes.size})") }
+                    items(searchResults.catalogNodes.chunked(2)) { pair ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            pair.forEach { node ->
+                                val desc = collectNodeAndDescendants(node.id, catalogNodes)
+                                CatalogNodeCard(
+                                    node = node,
+                                    childCount = catalogNodes.count { it.parentId == node.id },
+                                    subjectCount = subjects.count { s -> s.nodeIds.any { it in desc } },
+                                    onClick = { onOpenCatalogNode(node.id) },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                            if (pair.size == 1) Spacer(modifier = Modifier.weight(1f))
+                        }
+                    }
+                }
+                if (searchResults.teachers.isNotEmpty()) {
+                    item { SectionHeader(title = "الأساتذة المطابقون (${searchResults.teachers.size})") }
+                    items(searchResults.teachers, key = { it.id }) { teacher ->
+                        TeacherShowcaseCard(teacher = teacher)
+                    }
+                }
                 if (searchResults.subjects.isNotEmpty()) {
                     item { SectionHeader(title = "المواد المطابقة (${searchResults.subjects.size})") }
                     item {
@@ -275,8 +358,39 @@ fun HomeScreen(
                 }
             }
         } else {
+            // Dynamic "ماذا تدرس؟" Hierarchy Entry Grid (Stages / Grades / Branches / Courses)
+            if (rootNodes.isNotEmpty()) {
+                item {
+                    SectionHeader(
+                        title = platformConfig.homeHeadline.ifBlank { "ماذا تدرس؟" },
+                        actionLabel = "كل المواد",
+                        onActionClick = onViewAllSubjects
+                    )
+                }
+                items(rootNodes.chunked(2)) { pair ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        pair.forEach { node ->
+                            val descIds = collectNodeAndDescendants(node.id, catalogNodes)
+                            CatalogNodeCard(
+                                node = node,
+                                childCount = catalogNodes.count { it.parentId == node.id },
+                                subjectCount = subjects.count { s -> s.nodeIds.any { it in descIds } },
+                                onClick = { onOpenCatalogNode(node.id) },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        if (pair.size == 1) {
+                            Spacer(modifier = Modifier.weight(1f))
+                        }
+                    }
+                }
+            }
+
             // Continue Watching Card
-            if (lastWatchedLesson != null && lastWatchedProgress != null) {
+            if (platformConfig.showContinueWatching && lastWatchedLesson != null && lastWatchedProgress != null) {
                 item {
                     SectionHeader(title = stringResource(R.string.continue_watching))
                 }
@@ -285,7 +399,7 @@ fun HomeScreen(
                         onClick = { onWatchLesson(lastWatchedLesson) },
                         shape = RoundedCornerShape(18.dp),
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                        border = BorderStroke(1.dp, AbkSkyPrimary.copy(alpha = 0.4f)),
+                        border = BorderStroke(1.dp, secondaryColor.copy(alpha = 0.4f)),
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("continue_watching_card")
@@ -303,7 +417,7 @@ fun HomeScreen(
                                     Text(
                                         text = lastWatchedLesson.subjectName,
                                         style = MaterialTheme.typography.labelMedium,
-                                        color = MaterialTheme.colorScheme.secondary
+                                        color = secondaryColor
                                     )
                                     Text(
                                         text = lastWatchedLesson.title,
@@ -320,7 +434,7 @@ fun HomeScreen(
                                 Button(
                                     onClick = { onWatchLesson(lastWatchedLesson) },
                                     shape = RoundedCornerShape(12.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = AbkSkyPrimary)
+                                    colors = ButtonDefaults.buttonColors(containerColor = secondaryColor)
                                 ) {
                                     Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
                                     Spacer(Modifier.width(4.dp))
@@ -334,7 +448,7 @@ fun HomeScreen(
                                         .fillMaxWidth()
                                         .height(6.dp)
                                         .clip(RoundedCornerShape(3.dp)),
-                                    color = AbkSkyPrimary,
+                                    color = secondaryColor,
                                     trackColor = Color.White
                                 )
                             }
@@ -344,7 +458,7 @@ fun HomeScreen(
             }
 
             // Announcements & Alerts
-            if (announcements.isNotEmpty()) {
+            if (platformConfig.showAnnouncements && announcements.isNotEmpty()) {
                 item {
                     SectionHeader(
                         title = stringResource(R.string.announcements_section),
@@ -364,7 +478,9 @@ fun HomeScreen(
             // Subjects Horizontal Section
             item {
                 SectionHeader(
-                    title = stringResource(R.string.subjects_section),
+                    title = if (rootNodes.isEmpty())
+                        platformConfig.homeHeadline.ifBlank { stringResource(R.string.subjects_section) }
+                    else stringResource(R.string.subjects_section),
                     actionLabel = "كل المواد",
                     onActionClick = onViewAllSubjects
                 )
@@ -383,8 +499,8 @@ fun HomeScreen(
                         item {
                             AbkEmptyState(
                                 title = "لم تتم إضافة مواد دراسية بعد",
-                                subtitle = if (isAdmin) "افتح لوحة المدير لإضافة المواد الثمانية الأساسية بضغطة واحدة."
-                                else "سيقوم فريق ABK بنشر المواد الدراسية قريباً."
+                                subtitle = if (isAdmin) "يمكنك إضافة المراحل والمواد والشروحات من لوحة الإدارة."
+                                else "سيقوم فريق ${platformConfig.platformName} بنشر المواد الدراسية قريباً."
                             )
                         }
                     } else {
@@ -471,7 +587,7 @@ fun HomeScreen(
                                     Text(
                                         text = fav.subjectName,
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.secondary
+                                        color = secondaryColor
                                     )
                                     Text(
                                         text = fav.title,

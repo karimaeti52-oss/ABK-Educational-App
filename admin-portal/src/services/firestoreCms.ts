@@ -1,0 +1,300 @@
+import {
+  addDoc,
+  collection,
+  deleteDoc,
+  deleteField,
+  doc,
+  getDocs,
+  onSnapshot,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+  writeBatch,
+  type Unsubscribe,
+} from 'firebase/firestore';
+import { firebaseAuth, firestoreDb } from '../firebase';
+import type {
+  AdminEntry,
+  Announcement,
+  AuditLog,
+  BackupSnapshot,
+  CatalogNode,
+  ContentBlock,
+  CustomSectionType,
+  Lesson,
+  LessonExplanation,
+  PlatformConfig,
+  PublishStatus,
+  StaffSession,
+  StudyMaterial,
+  Subject,
+  Teacher,
+  UnitItem,
+  UserProfile,
+} from '../types';
+
+function cleanPayload<T extends Record<string, unknown>>(obj: T): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(obj)) {
+    if (val !== undefined && key !== 'id') {
+      result[key] = val;
+    }
+  }
+  return result;
+}
+
+export function subscribeCollection<T extends { id: string }>(
+  collectionName: string,
+  onData: (items: T[]) => void,
+  onError?: (err: Error) => void
+): Unsubscribe {
+  return onSnapshot(
+    collection(firestoreDb, collectionName),
+    (snapshot) => {
+      const items = snapshot.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<T, 'id'>) }) as T);
+      onData(items);
+    },
+    (err) => {
+      onError?.(err);
+    }
+  );
+}
+
+export function subscribePlatformConfig(
+  onData: (config: PlatformConfig) => void
+): Unsubscribe {
+  return onSnapshot(doc(firestoreDb, 'platformConfig', 'main'), (snap) => {
+    if (snap.exists()) {
+      onData({ ...DEFAULT_PLATFORM_CONFIG, ...(snap.data() as Partial<PlatformConfig>) });
+    } else {
+      onData(DEFAULT_PLATFORM_CONFIG);
+    }
+  });
+}
+
+export const DEFAULT_PLATFORM_CONFIG: PlatformConfig = {
+  platformName: 'ABK',
+  platformTagline: 'المنصة التعليمية',
+  homeHeadline: 'ماذا تدرس؟',
+  welcomeTitle: 'ابدأ رحلتك التعليمية اليوم',
+  welcomeSubtitle: 'دروس مرئية، شروحات لعدة أساتذة، ملخصات واختبارات تفاعلية',
+  primaryColorHex: '#0F294A',
+  secondaryColorHex: '#0EA5E9',
+  accentColorHex: '#38BDF8',
+  bottomNavItems: [
+    { route: 'home', label: 'الرئيسية', iconKey: 'home', visible: true, sortOrder: 1 },
+    { route: 'subjects', label: 'المواد', iconKey: 'book', visible: true, sortOrder: 2 },
+    { route: 'library', label: 'مكتبتي', iconKey: 'bookmarks', visible: true, sortOrder: 3 },
+    { route: 'notifications', label: 'الإشعارات', iconKey: 'notifications', visible: true, sortOrder: 4 },
+    { route: 'account', label: 'حسابي', iconKey: 'person', visible: true, sortOrder: 5 },
+  ],
+  allowOfflinePdf: true,
+  showAnnouncements: true,
+  showContinueWatching: true,
+  maintenanceMode: false,
+  updatedBy: 'system',
+};
+
+export async function recordAudit(
+  staff: StaffSession | null,
+  action: string,
+  entityType: string,
+  entityId: string,
+  summary: string
+) {
+  const uid = staff?.uid || firebaseAuth.currentUser?.uid;
+  if (!uid) return;
+  try {
+    await addDoc(collection(firestoreDb, 'auditLogs'), {
+      actorUid: uid,
+      actorEmail: staff?.email || firebaseAuth.currentUser?.email || '',
+      actorRole: staff?.role || 'ADMIN',
+      action,
+      entityType,
+      entityId,
+      summary: summary.slice(0, 500),
+      createdAt: serverTimestamp(),
+    });
+  } catch (e) {
+    console.warn('Audit log write skipped:', e);
+  }
+}
+
+export function normalizeStatusFlags(status: PublishStatus, softDeleted = false) {
+  if (softDeleted) {
+    return { status: 'ARCHIVED' as PublishStatus, published: false };
+  }
+  return {
+    status,
+    published: status === 'PUBLISHED',
+  };
+}
+
+export async function upsertEntity(
+  collectionName: string,
+  existingId: string | undefined,
+  data: Record<string, unknown>,
+  staff: StaffSession | null,
+  auditLabel: string
+): Promise<string> {
+  const uid = staff?.uid || firebaseAuth.currentUser?.uid || '';
+  const ref = existingId
+    ? doc(firestoreDb, collectionName, existingId)
+    : doc(collection(firestoreDb, collectionName));
+
+  if (!existingId) {
+    await setDoc(
+      ref,
+      cleanPayload({
+        ...data,
+        createdBy: uid,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      })
+    );
+    await recordAudit(staff, 'CREATE', collectionName, ref.id, `إضافة: ${auditLabel}`);
+  } else {
+    await updateDoc(
+      ref,
+      cleanPayload({
+        ...data,
+        updatedAt: serverTimestamp(),
+      })
+    );
+    await recordAudit(staff, 'UPDATE', collectionName, ref.id, `تعديل: ${auditLabel}`);
+  }
+  return ref.id;
+}
+
+export async function softDeleteEntity(
+  collectionName: string,
+  id: string,
+  staff: StaffSession | null,
+  label: string
+) {
+  await updateDoc(doc(firestoreDb, collectionName, id), {
+    published: false,
+    status: 'ARCHIVED',
+    deletedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+  await recordAudit(staff, 'SOFT_DELETE', collectionName, id, `نقل إلى الأرشيف/المحذوفات: ${label}`);
+}
+
+export async function restoreEntity(
+  collectionName: string,
+  id: string,
+  staff: StaffSession | null,
+  label: string,
+  publishImmediately = false
+) {
+  await updateDoc(doc(firestoreDb, collectionName, id), {
+    deletedAt: deleteField(),
+    status: publishImmediately ? 'PUBLISHED' : 'DRAFT',
+    published: publishImmediately,
+    updatedAt: serverTimestamp(),
+  });
+  await recordAudit(staff, 'RESTORE', collectionName, id, `استعادة من المحذوفات: ${label}`);
+}
+
+export async function hardDeleteEntity(
+  collectionName: string,
+  id: string,
+  staff: StaffSession | null,
+  label: string
+) {
+  await deleteDoc(doc(firestoreDb, collectionName, id));
+  await recordAudit(staff, 'HARD_DELETE', collectionName, id, `حذف نهائي: ${label}`);
+}
+
+export async function updateEntityStatus(
+  collectionName: string,
+  id: string,
+  status: PublishStatus,
+  staff: StaffSession | null,
+  label: string
+) {
+  await updateDoc(doc(firestoreDb, collectionName, id), {
+    status,
+    published: status === 'PUBLISHED',
+    deletedAt: deleteField(),
+    updatedAt: serverTimestamp(),
+  });
+  await recordAudit(staff, 'STATUS_CHANGE', collectionName, id, `تغيير حالة (${label}) إلى ${status}`);
+}
+
+export async function commitSortOrderBatch(
+  collectionName: string,
+  orderedIds: string[],
+  orderField: 'sortOrder' | 'lessonOrder' = 'sortOrder'
+) {
+  const batch = writeBatch(firestoreDb);
+  orderedIds.forEach((id, index) => {
+    batch.update(doc(firestoreDb, collectionName, id), {
+      [orderField]: index + 1,
+      updatedAt: serverTimestamp(),
+    });
+  });
+  await batch.commit();
+}
+
+export async function savePlatformConfig(
+  config: PlatformConfig,
+  staff: StaffSession | null
+) {
+  const uid = staff?.uid || firebaseAuth.currentUser?.uid || 'admin';
+  await setDoc(
+    doc(firestoreDb, 'platformConfig', 'main'),
+    cleanPayload({
+      ...config,
+      updatedBy: uid,
+      updatedAt: serverTimestamp(),
+    })
+  );
+  await recordAudit(staff, 'UPDATE_BRANDING', 'platformConfig', 'main', `تحديث هوية وتصميم المنصة (${config.platformName})`);
+}
+
+export async function exportClientSnapshotJson(): Promise<Record<string, unknown>> {
+  const collections = [
+    'platformConfig',
+    'catalogNodes',
+    'subjects',
+    'units',
+    'teachers',
+    'lessons',
+    'lessonExplanations',
+    'contentBlocks',
+    'customSectionTypes',
+    'materials',
+    'announcements',
+  ];
+  const out: Record<string, Array<{ id: string; data: Record<string, unknown> }>> = {};
+  for (const name of collections) {
+    const snap = await getDocs(collection(firestoreDb, name));
+    out[name] = snap.docs.map((d) => ({ id: d.id, data: d.data() }));
+  }
+  return {
+    version: 'abk-backup-v1',
+    exportedAt: new Date().toISOString(),
+    databaseId: 'ai-studio-android-abk-452af8d1-cf14-40e7-aead-48a40e7f239d',
+    collections: out,
+  };
+}
+
+export type CmsStore = {
+  nodes: CatalogNode[];
+  subjects: Subject[];
+  units: UnitItem[];
+  teachers: Teacher[];
+  lessons: Lesson[];
+  explanations: LessonExplanation[];
+  blocks: ContentBlock[];
+  customTypes: CustomSectionType[];
+  materials: StudyMaterial[];
+  announcements: Announcement[];
+  users: UserProfile[];
+  admins: AdminEntry[];
+  auditLogs: AuditLog[];
+  backups: BackupSnapshot[];
+  platformConfig: PlatformConfig;
+};

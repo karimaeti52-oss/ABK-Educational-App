@@ -12,6 +12,51 @@ sealed interface UiState<out T> {
     data class Error(val message: String) : UiState<Nothing>
 }
 
+enum class PublishStatus(val labelAr: String) {
+    DRAFT("مسودة"),
+    PUBLISHED("منشور"),
+    ARCHIVED("مؤرشف");
+
+    companion object {
+        fun fromString(raw: String?): PublishStatus =
+            entries.firstOrNull { it.name == raw } ?: PUBLISHED
+    }
+}
+
+enum class CatalogNodeType(val labelAr: String) {
+    STAGE("مرحلة"),
+    GRADE("صف"),
+    BRANCH("فرع"),
+    COURSE("مسار / دورة"),
+    CUSTOM("قسم مخصص");
+
+    companion object {
+        fun fromString(raw: String?): CatalogNodeType =
+            entries.firstOrNull { it.name == raw } ?: CUSTOM
+    }
+}
+
+enum class ContentBlockType(val labelAr: String) {
+    YOUTUBE_VIDEO("فيديو يوتيوب"),
+    EXTERNAL_VIDEO("فيديو مباشر / خارجي"),
+    PDF_FILE("ملف PDF / نوطة"),
+    IMAGE("صورة تعليمية"),
+    NOTE_SUMMARY("ملخص / ملاحظات"),
+    QA("سؤال وجواب"),
+    QUIZ_MCQ("اختبار اختيار من متعدد"),
+    QUIZ_TRUE_FALSE("اختبار صح وخطأ"),
+    INTERACTIVE_EXAM("اختبار تفاعلي شامل"),
+    RICH_TEXT("نص منسق"),
+    EXTERNAL_LINK("رابط خارجي"),
+    DOWNLOAD_FILE("ملف للتنزيل"),
+    CUSTOM("قسم مخصص");
+
+    companion object {
+        fun fromString(raw: String?): ContentBlockType =
+            entries.firstOrNull { it.name == raw } ?: CUSTOM
+    }
+}
+
 enum class UserRole {
     STUDENT,
     ADMIN;
@@ -85,6 +130,10 @@ data class AdminEntry(
     @DocumentId val id: String = "",
     val uid: String = "",
     val email: String = "",
+    val displayName: String? = null,
+    val role: String = "ADMIN",
+    val teacherId: String? = null,
+    val active: Boolean = true,
     val grantedBy: String = "",
     @ServerTimestamp val createdAt: Timestamp? = null
 )
@@ -109,14 +158,82 @@ data class UserProfile(
 
 @Keep
 @IgnoreExtraProperties
+data class CatalogNode(
+    @DocumentId val id: String = "",
+    val parentId: String? = null,
+    val nodeType: String = CatalogNodeType.STAGE.name,
+    val typeLabel: String = "",
+    val title: String = "",
+    val subtitle: String? = null,
+    val imageUrl: String? = null,
+    val iconKey: String? = null,
+    val accentColorHex: String? = null,
+    val sortOrder: Long = 0L,
+    val published: Boolean = true,
+    val status: String = PublishStatus.PUBLISHED.name,
+    val deletedAt: Timestamp? = null,
+    val createdBy: String = "",
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+) {
+    fun parsedNodeType(): CatalogNodeType = CatalogNodeType.fromString(nodeType)
+}
+
+@Keep
+@IgnoreExtraProperties
 data class Subject(
     @DocumentId val id: String = "",
     val title: String = "",
     val description: String = "",
     val imageUrl: String? = null,
     val iconKey: String = "general",
+    val nodeIds: List<String> = emptyList(),
+    val nodePathLabel: String? = null,
+    val teacherIds: List<String> = emptyList(),
     val sortOrder: Long = 0L,
     val published: Boolean = true,
+    val status: String = PublishStatus.PUBLISHED.name,
+    val deletedAt: Timestamp? = null,
+    val createdBy: String = "",
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+)
+
+@Keep
+@IgnoreExtraProperties
+data class UnitItem(
+    @DocumentId val id: String = "",
+    val subjectId: String = "",
+    val subjectName: String = "",
+    val title: String = "",
+    val description: String? = null,
+    val sortOrder: Long = 1L,
+    val published: Boolean = true,
+    val status: String = PublishStatus.PUBLISHED.name,
+    val deletedAt: Timestamp? = null,
+    val createdBy: String = "",
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+)
+
+@Keep
+@IgnoreExtraProperties
+data class Teacher(
+    @DocumentId val id: String = "",
+    val name: String = "",
+    val headline: String? = null,
+    val bio: String? = null,
+    val photoUrl: String? = null,
+    val linkedUid: String? = null,
+    val subjectIds: List<String> = emptyList(),
+    val nodeIds: List<String> = emptyList(),
+    val youtubeUrl: String? = null,
+    val telegramUrl: String? = null,
+    val websiteUrl: String? = null,
+    val sortOrder: Long = 0L,
+    val published: Boolean = true,
+    val status: String = PublishStatus.PUBLISHED.name,
+    val deletedAt: Timestamp? = null,
     val createdBy: String = "",
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
@@ -128,6 +245,7 @@ data class Lesson(
     @DocumentId val id: String = "",
     val subjectId: String = "",
     val subjectName: String = "",
+    val unitId: String? = null,
     val unitTitle: String = "",
     val unitOrder: Long = 1L,
     val lessonOrder: Long = 1L,
@@ -139,6 +257,8 @@ data class Lesson(
     val videoUrl: String = "",
     val videoSourceType: String = VideoSourceType.YOUTUBE.name,
     val published: Boolean = true,
+    val status: String = PublishStatus.PUBLISHED.name,
+    val deletedAt: Timestamp? = null,
     val createdBy: String = "",
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
@@ -148,18 +268,137 @@ data class Lesson(
 
 @Keep
 @IgnoreExtraProperties
+data class LessonExplanation(
+    @DocumentId val id: String = "",
+    val lessonId: String = "",
+    val lessonTitle: String? = null,
+    val subjectId: String = "",
+    val subjectName: String? = null,
+    val teacherId: String = "",
+    val teacherName: String = "",
+    val teacherPhotoUrl: String? = null,
+    val teacherUid: String? = null,
+    val title: String = "",
+    val summary: String? = null,
+    val sortOrder: Long = 0L,
+    val published: Boolean = true,
+    val status: String = PublishStatus.PUBLISHED.name,
+    val deletedAt: Timestamp? = null,
+    val createdBy: String = "",
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+)
+
+@Keep
+@IgnoreExtraProperties
+data class QaItem(
+    val question: String = "",
+    val answer: String = ""
+)
+
+@Keep
+@IgnoreExtraProperties
+data class QuizQuestion(
+    val id: String = "",
+    val prompt: String = "",
+    val options: List<String> = emptyList(),
+    val correctIndex: Long = 0L,
+    val explanation: String? = null,
+    val questionType: String = "MCQ"
+)
+
+@Keep
+@IgnoreExtraProperties
+data class ContentBlock(
+    @DocumentId val id: String = "",
+    val explanationId: String = "",
+    val lessonId: String = "",
+    val subjectId: String = "",
+    val teacherId: String = "",
+    val teacherUid: String? = null,
+    val blockType: String = ContentBlockType.RICH_TEXT.name,
+    val customTypeKey: String? = null,
+    val title: String = "",
+    val subtitle: String? = null,
+    val bodyText: String? = null,
+    val mediaUrl: String? = null,
+    val thumbnailUrl: String? = null,
+    val durationLabel: String? = null,
+    val fileSizeLabel: String? = null,
+    val qaItems: List<QaItem> = emptyList(),
+    val quizQuestions: List<QuizQuestion> = emptyList(),
+    val sortOrder: Long = 0L,
+    val published: Boolean = true,
+    val status: String = PublishStatus.PUBLISHED.name,
+    val deletedAt: Timestamp? = null,
+    val createdBy: String = "",
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+) {
+    fun parsedBlockType(): ContentBlockType = ContentBlockType.fromString(blockType)
+}
+
+@Keep
+@IgnoreExtraProperties
+data class CustomSectionType(
+    @DocumentId val id: String = "",
+    val key: String = "",
+    val labelAr: String = "",
+    val description: String? = null,
+    val iconKey: String? = null,
+    val accentColorHex: String? = null,
+    val published: Boolean = true,
+    val createdBy: String = ""
+)
+
+@Keep
+@IgnoreExtraProperties
+data class BottomNavConfigItem(
+    val route: String = "",
+    val label: String = "",
+    val iconKey: String = "",
+    val visible: Boolean = true,
+    val sortOrder: Long = 0L
+)
+
+@Keep
+@IgnoreExtraProperties
+data class PlatformConfig(
+    val platformName: String = "ABK",
+    val platformTagline: String = "المنصة التعليمية",
+    val homeHeadline: String = "ماذا تدرس؟",
+    val welcomeTitle: String = "ابدأ رحلتك الدراسية اليوم",
+    val welcomeSubtitle: String = "دروس مرئية، شروحات لعدة أساتذة، ملخصات واختبارات تفاعلية.",
+    val logoUrl: String? = null,
+    val heroBannerUrl: String? = null,
+    val primaryColorHex: String = "#0F294A",
+    val secondaryColorHex: String = "#0EA5E9",
+    val accentColorHex: String? = "#38BDF8",
+    val bottomNavItems: List<BottomNavConfigItem> = emptyList(),
+    val allowOfflinePdf: Boolean = true,
+    val showAnnouncements: Boolean = true,
+    val showContinueWatching: Boolean = true,
+    val maintenanceMode: Boolean = false,
+    val updatedBy: String = ""
+)
+
+@Keep
+@IgnoreExtraProperties
 data class StudyMaterial(
     @DocumentId val id: String = "",
     val subjectId: String = "",
     val subjectName: String = "",
     val lessonId: String? = null,
     val lessonTitle: String? = null,
+    val teacherId: String? = null,
     val materialType: String = MaterialType.STUDY_NOTE.name,
     val title: String = "",
     val description: String = "",
     val coverUrl: String? = null,
     val fileUrl: String = "",
     val published: Boolean = true,
+    val status: String = PublishStatus.PUBLISHED.name,
+    val deletedAt: Timestamp? = null,
     val createdBy: String = "",
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
@@ -177,6 +416,8 @@ data class Announcement(
     val subjectId: String? = null,
     val pinned: Boolean = false,
     val published: Boolean = true,
+    val status: String = PublishStatus.PUBLISHED.name,
+    val deletedAt: Timestamp? = null,
     val createdBy: String = "",
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null

@@ -1,0 +1,72 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isBootstrappedAdmin() {
+      return isSignedIn() &&
+             request.auth.token.email_verified == true &&
+             request.auth.token.email == 'karimaeti07@gmail.com';
+    }
+
+    function isStaffUploader() {
+      return isBootstrappedAdmin() || (
+        isSignedIn() &&
+        request.auth.token.abkRole in ['SUPER_ADMIN', 'ADMIN', 'CONTENT_MANAGER', 'TEACHER']
+      );
+    }
+
+    function isImageFile() {
+      return request.resource != null &&
+             request.resource.size < 10 * 1024 * 1024 &&
+             request.resource.contentType.matches('image/(png|jpeg|jpg|webp)');
+    }
+
+    function isAllowedStudyAsset() {
+      return request.resource != null &&
+             request.resource.size < 50 * 1024 * 1024 &&
+             request.resource.contentType.matches('application/pdf|image/(png|jpeg|jpg|webp)|video/mp4|application/zip|text/plain|application/msword|application/vnd\\..*');
+    }
+
+    // Branding assets (logos, hero banners)
+    match /branding/{fileName} {
+      allow read: if isSignedIn();
+      allow write: if isStaffUploader() && (request.resource == null || isImageFile());
+    }
+
+    // Catalog nodes & subjects images
+    match /catalog/{allPaths=**} {
+      allow read: if isSignedIn();
+      allow write: if isStaffUploader() && (request.resource == null || isImageFile());
+    }
+
+    match /subjects/{subjectId}/{allPaths=**} {
+      allow read: if isSignedIn();
+      allow write: if isStaffUploader() && (request.resource == null || isAllowedStudyAsset());
+    }
+
+    // Teachers photos
+    match /teachers/{teacherId}/{allPaths=**} {
+      allow read: if isSignedIn();
+      allow write: if isStaffUploader() && (request.resource == null || isImageFile());
+    }
+
+    // Lessons, explanations, PDFs, notes, images
+    match /lessons/{lessonId}/{allPaths=**} {
+      allow read: if isSignedIn();
+      allow write: if isStaffUploader() && (request.resource == null || isAllowedStudyAsset());
+    }
+
+    match /materials/{materialId}/{allPaths=**} {
+      allow read: if isSignedIn();
+      allow write: if isStaffUploader() && (request.resource == null || isAllowedStudyAsset());
+    }
+  }
+}

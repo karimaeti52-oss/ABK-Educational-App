@@ -17,3 +17,8 @@ local.properties
 .env
 debug.keystore
 *-debug.log
+admin-portal/node_modules
+admin-portal/dist
+admin-portal/.env
+admin-portal/.env.local
+admin-portal/server/.env

@@ -5,13 +5,20 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.firebase.extractReadableFirestoreMessage
 import com.example.data.model.Announcement
+import com.example.data.model.CatalogNode
+import com.example.data.model.ContentBlock
+import com.example.data.model.CustomSectionType
 import com.example.data.model.FavoriteItem
 import com.example.data.model.FavoriteType
 import com.example.data.model.Lesson
+import com.example.data.model.LessonExplanation
 import com.example.data.model.LessonProgress
+import com.example.data.model.PlatformConfig
 import com.example.data.model.StudyMaterial
 import com.example.data.model.Subject
+import com.example.data.model.Teacher
 import com.example.data.model.UiState
+import com.example.data.model.UnitItem
 import com.example.data.model.UserProfile
 import com.example.data.repository.AbkContentRepository
 import com.example.data.repository.StudentRepository
@@ -34,9 +41,16 @@ import kotlinx.coroutines.launch
 data class SearchResults(
     val subjects: List<Subject> = emptyList(),
     val lessons: List<Lesson> = emptyList(),
-    val materials: List<StudyMaterial> = emptyList()
+    val materials: List<StudyMaterial> = emptyList(),
+    val teachers: List<Teacher> = emptyList(),
+    val catalogNodes: List<CatalogNode> = emptyList()
 ) {
-    val isEmpty: Boolean get() = subjects.isEmpty() && lessons.isEmpty() && materials.isEmpty()
+    val isEmpty: Boolean
+        get() = subjects.isEmpty() &&
+            lessons.isEmpty() &&
+            materials.isEmpty() &&
+            teachers.isEmpty() &&
+            catalogNodes.isEmpty()
 }
 
 class MainViewModel(
@@ -83,11 +97,36 @@ class MainViewModel(
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), false)
 
+    val platformConfig: StateFlow<PlatformConfig> = contentRepository.observePlatformConfig()
+        .catch { error ->
+            if (error is CancellationException) throw error
+            emit(PlatformConfig())
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), PlatformConfig())
+
+    val catalogNodesState: StateFlow<UiState<List<CatalogNode>>> =
+        contentRepository.observePublishedCatalogNodes().asUiState("تعذر تحميل الأقسام الدراسية")
+
     val subjectsState: StateFlow<UiState<List<Subject>>> =
         contentRepository.observePublishedSubjects().asUiState("تعذر تحميل المواد الدراسية")
 
+    val unitsState: StateFlow<UiState<List<UnitItem>>> =
+        contentRepository.observePublishedUnits().asUiState("تعذر تحميل الوحدات")
+
+    val teachersState: StateFlow<UiState<List<Teacher>>> =
+        contentRepository.observePublishedTeachers().asUiState("تعذر تحميل الأساتذة")
+
     val lessonsState: StateFlow<UiState<List<Lesson>>> =
         contentRepository.observePublishedLessons().asUiState("تعذر تحميل الدروس")
+
+    val explanationsState: StateFlow<UiState<List<LessonExplanation>>> =
+        contentRepository.observePublishedLessonExplanations().asUiState("تعذر تحميل شروحات الأساتذة")
+
+    val contentBlocksState: StateFlow<UiState<List<ContentBlock>>> =
+        contentRepository.observePublishedContentBlocks().asUiState("تعذر تحميل محتوى الدرس")
+
+    val customSectionTypesState: StateFlow<UiState<List<CustomSectionType>>> =
+        contentRepository.observePublishedCustomSectionTypes().asUiState("تعذر تحميل الأقسام المخصصة")
 
     val materialsState: StateFlow<UiState<List<StudyMaterial>>> =
         contentRepository.observePublishedMaterials().asUiState("تعذر تحميل المكتبة")
@@ -117,20 +156,36 @@ class MainViewModel(
         items.count { it.id !in readIds }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), 0)
 
-    val searchResults: StateFlow<SearchResults> = combine(
+    private val coreSearchInputs = combine(
         _searchQuery,
         subjectsState,
         lessonsState,
         materialsState
-    ) { query, subjState, lessonState, matState ->
-        val q = query.trim()
+    ) { q, subj, lesson, mat ->
+        listOf(q, subj, lesson, mat)
+    }
+
+    val searchResults: StateFlow<SearchResults> = combine(
+        coreSearchInputs,
+        teachersState,
+        catalogNodesState
+    ) { core, teacherState, nodesState ->
+        val q = (core[0] as String).trim()
         if (q.isEmpty()) {
             SearchResults()
         } else {
+            @Suppress("UNCHECKED_CAST")
+            val subjState = core[1] as UiState<List<Subject>>
+            @Suppress("UNCHECKED_CAST")
+            val lessonState = core[2] as UiState<List<Lesson>>
+            @Suppress("UNCHECKED_CAST")
+            val matState = core[3] as UiState<List<StudyMaterial>>
+
             val subjects = (subjState as? UiState.Success)?.data.orEmpty()
                 .filter {
                     it.title.contains(q, ignoreCase = true) ||
-                        it.description.contains(q, ignoreCase = true)
+                        it.description.contains(q, ignoreCase = true) ||
+                        (it.nodePathLabel?.contains(q, ignoreCase = true) == true)
                 }
             val lessons = (lessonState as? UiState.Success)?.data.orEmpty()
                 .filter {
@@ -147,7 +202,18 @@ class MainViewModel(
                         it.subjectName.contains(q, ignoreCase = true) ||
                         it.parsedType().labelAr.contains(q, ignoreCase = true)
                 }
-            SearchResults(subjects, lessons, materials)
+            val teachers = (teacherState as? UiState.Success)?.data.orEmpty()
+                .filter {
+                    it.name.contains(q, ignoreCase = true) ||
+                        (it.headline?.contains(q, ignoreCase = true) == true)
+                }
+            val nodes = (nodesState as? UiState.Success)?.data.orEmpty()
+                .filter {
+                    it.title.contains(q, ignoreCase = true) ||
+                        it.typeLabel.contains(q, ignoreCase = true) ||
+                        (it.subtitle?.contains(q, ignoreCase = true) == true)
+                }
+            SearchResults(subjects, lessons, materials, teachers, nodes)
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), SearchResults())
 

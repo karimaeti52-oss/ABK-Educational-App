@@ -2,13 +2,19 @@
   "entities": {
     "AdminEntry": {
       "title": "AdminEntry",
-      "description": "Authorized administrator identity entry",
+      "description": "Authorized platform staff/administrator entry synced with Auth Custom Claims",
       "type": "object",
       "properties": {
-        "uid": { "type": "string", "description": "Firebase Auth UID of the admin" },
-        "email": { "type": "string", "description": "Verified email of the admin" },
-        "grantedBy": { "type": "string", "description": "UID or email that granted access" },
-        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
+        "uid": { "type": "string", "description": "Firebase Auth UID of the staff/admin user" },
+        "email": { "type": "string", "description": "Verified email address" },
+        "displayName": { "type": "string" },
+        "role": { "type": "string", "enum": ["SUPER_ADMIN", "ADMIN", "CONTENT_MANAGER", "TEACHER", "VIEWER"] },
+        "permissions": { "type": "array", "items": { "type": "string" } },
+        "teacherId": { "type": "string", "description": "Optional linked teacher profile document ID" },
+        "active": { "type": "boolean" },
+        "grantedBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["uid", "email", "grantedBy", "createdAt"]
     },
@@ -21,7 +27,7 @@
         "displayName": { "type": "string" },
         "email": { "type": "string" },
         "photoUrl": { "type": "string" },
-        "role": { "type": "string", "enum": ["STUDENT", "ADMIN"] },
+        "role": { "type": "string", "enum": ["STUDENT", "ADMIN", "SUPER_ADMIN", "CONTENT_MANAGER", "TEACHER", "VIEWER"] },
         "accountStatus": { "type": "string", "enum": ["ACTIVE", "SUSPENDED"] },
         "lastActiveAt": { "type": "string", "format": "date-time" },
         "createdAt": { "type": "string", "format": "date-time" },
@@ -29,30 +35,103 @@
       },
       "required": ["userId", "displayName", "email", "role", "accountStatus", "createdAt", "updatedAt"]
     },
+    "CatalogNode": {
+      "title": "CatalogNode",
+      "description": "Dynamic hierarchical node (Stage, Grade, Branch, Course, or Custom Level)",
+      "type": "object",
+      "properties": {
+        "parentId": { "type": "string" },
+        "nodeType": { "type": "string", "enum": ["STAGE", "GRADE", "BRANCH", "COURSE", "CUSTOM"] },
+        "typeLabel": { "type": "string" },
+        "title": { "type": "string" },
+        "subtitle": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "iconKey": { "type": "string" },
+        "accentColorHex": { "type": "string" },
+        "sortOrder": { "type": "integer" },
+        "published": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["DRAFT", "PUBLISHED", "ARCHIVED"] },
+        "deletedAt": { "type": "string", "format": "date-time" },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["nodeType", "typeLabel", "title", "sortOrder", "published", "createdBy", "createdAt", "updatedAt"]
+    },
     "Subject": {
       "title": "Subject",
-      "description": "Academic subject managed by admin",
+      "description": "Academic subject dynamically linked to catalog nodes and teachers",
       "type": "object",
       "properties": {
         "title": { "type": "string" },
         "description": { "type": "string" },
         "imageUrl": { "type": "string" },
         "iconKey": { "type": "string" },
+        "nodeIds": { "type": "array", "items": { "type": "string" } },
+        "nodePathLabel": { "type": "string" },
+        "teacherIds": { "type": "array", "items": { "type": "string" } },
         "sortOrder": { "type": "integer" },
         "published": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["DRAFT", "PUBLISHED", "ARCHIVED"] },
+        "deletedAt": { "type": "string", "format": "date-time" },
         "createdBy": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["title", "description", "iconKey", "sortOrder", "published", "createdBy", "createdAt", "updatedAt"]
     },
-    "Lesson": {
-      "title": "Lesson",
-      "description": "Educational video lesson belonging to a subject and unit",
+    "UnitItem": {
+      "title": "UnitItem",
+      "description": "Ordered unit/chapter inside a subject",
       "type": "object",
       "properties": {
         "subjectId": { "type": "string" },
         "subjectName": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "sortOrder": { "type": "integer" },
+        "published": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["DRAFT", "PUBLISHED", "ARCHIVED"] },
+        "deletedAt": { "type": "string", "format": "date-time" },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["subjectId", "subjectName", "title", "sortOrder", "published", "createdBy", "createdAt", "updatedAt"]
+    },
+    "Teacher": {
+      "title": "Teacher",
+      "description": "Teacher profile supporting multi-teacher lesson explanations",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "headline": { "type": "string" },
+        "bio": { "type": "string" },
+        "photoUrl": { "type": "string" },
+        "linkedUid": { "type": "string" },
+        "subjectIds": { "type": "array", "items": { "type": "string" } },
+        "nodeIds": { "type": "array", "items": { "type": "string" } },
+        "youtubeUrl": { "type": "string" },
+        "telegramUrl": { "type": "string" },
+        "websiteUrl": { "type": "string" },
+        "sortOrder": { "type": "integer" },
+        "published": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["DRAFT", "PUBLISHED", "ARCHIVED"] },
+        "deletedAt": { "type": "string", "format": "date-time" },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "sortOrder", "published", "createdBy", "createdAt", "updatedAt"]
+    },
+    "Lesson": {
+      "title": "Lesson",
+      "description": "Educational lesson belonging to a subject/unit, hosting one or more teacher explanations",
+      "type": "object",
+      "properties": {
+        "subjectId": { "type": "string" },
+        "subjectName": { "type": "string" },
+        "unitId": { "type": "string" },
         "unitTitle": { "type": "string" },
         "unitOrder": { "type": "integer" },
         "lessonOrder": { "type": "integer" },
@@ -64,11 +143,157 @@
         "videoUrl": { "type": "string" },
         "videoSourceType": { "type": "string", "enum": ["YOUTUBE", "MP4", "EXTERNAL"] },
         "published": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["DRAFT", "PUBLISHED", "ARCHIVED"] },
+        "deletedAt": { "type": "string", "format": "date-time" },
         "createdBy": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["subjectId", "subjectName", "unitTitle", "unitOrder", "lessonOrder", "title", "description", "videoUrl", "videoSourceType", "published", "createdBy", "createdAt", "updatedAt"]
+    },
+    "LessonExplanation": {
+      "title": "LessonExplanation",
+      "description": "Teacher-specific explanation container inside a lesson",
+      "type": "object",
+      "properties": {
+        "lessonId": { "type": "string" },
+        "lessonTitle": { "type": "string" },
+        "subjectId": { "type": "string" },
+        "subjectName": { "type": "string" },
+        "teacherId": { "type": "string" },
+        "teacherName": { "type": "string" },
+        "teacherPhotoUrl": { "type": "string" },
+        "teacherUid": { "type": "string" },
+        "title": { "type": "string" },
+        "summary": { "type": "string" },
+        "sortOrder": { "type": "integer" },
+        "published": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["DRAFT", "PUBLISHED", "ARCHIVED"] },
+        "deletedAt": { "type": "string", "format": "date-time" },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["lessonId", "subjectId", "teacherId", "teacherName", "title", "sortOrder", "published", "createdBy", "createdAt", "updatedAt"]
+    },
+    "ContentBlock": {
+      "title": "ContentBlock",
+      "description": "Modular ordered content block inside a teacher's lesson explanation",
+      "type": "object",
+      "properties": {
+        "explanationId": { "type": "string" },
+        "lessonId": { "type": "string" },
+        "subjectId": { "type": "string" },
+        "teacherId": { "type": "string" },
+        "teacherUid": { "type": "string" },
+        "blockType": {
+          "type": "string",
+          "enum": [
+            "YOUTUBE_VIDEO",
+            "EXTERNAL_VIDEO",
+            "PDF_FILE",
+            "IMAGE",
+            "NOTE_SUMMARY",
+            "QA",
+            "QUIZ_MCQ",
+            "QUIZ_TRUE_FALSE",
+            "INTERACTIVE_EXAM",
+            "RICH_TEXT",
+            "EXTERNAL_LINK",
+            "DOWNLOAD_FILE",
+            "CUSTOM"
+          ]
+        },
+        "customTypeKey": { "type": "string" },
+        "title": { "type": "string" },
+        "subtitle": { "type": "string" },
+        "bodyText": { "type": "string" },
+        "mediaUrl": { "type": "string" },
+        "thumbnailUrl": { "type": "string" },
+        "durationLabel": { "type": "string" },
+        "fileSizeLabel": { "type": "string" },
+        "qaItems": { "type": "array", "items": { "type": "object" } },
+        "quizQuestions": { "type": "array", "items": { "type": "object" } },
+        "sortOrder": { "type": "integer" },
+        "published": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["DRAFT", "PUBLISHED", "ARCHIVED"] },
+        "deletedAt": { "type": "string", "format": "date-time" },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["explanationId", "lessonId", "subjectId", "teacherId", "blockType", "title", "sortOrder", "published", "createdBy", "createdAt", "updatedAt"]
+    },
+    "CustomSectionType": {
+      "title": "CustomSectionType",
+      "description": "Admin-defined reusable content block section template",
+      "type": "object",
+      "properties": {
+        "key": { "type": "string" },
+        "labelAr": { "type": "string" },
+        "description": { "type": "string" },
+        "iconKey": { "type": "string" },
+        "accentColorHex": { "type": "string" },
+        "published": { "type": "boolean" },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["key", "labelAr", "published", "createdBy", "createdAt", "updatedAt"]
+    },
+    "PlatformConfig": {
+      "title": "PlatformConfig",
+      "description": "Dynamic platform branding, colors, home header copy, images, and navigation config",
+      "type": "object",
+      "properties": {
+        "platformName": { "type": "string" },
+        "platformTagline": { "type": "string" },
+        "homeHeadline": { "type": "string" },
+        "welcomeTitle": { "type": "string" },
+        "welcomeSubtitle": { "type": "string" },
+        "logoUrl": { "type": "string" },
+        "heroBannerUrl": { "type": "string" },
+        "primaryColorHex": { "type": "string" },
+        "secondaryColorHex": { "type": "string" },
+        "accentColorHex": { "type": "string" },
+        "bottomNavItems": { "type": "array", "items": { "type": "object" } },
+        "allowOfflinePdf": { "type": "boolean" },
+        "showAnnouncements": { "type": "boolean" },
+        "showContinueWatching": { "type": "boolean" },
+        "maintenanceMode": { "type": "boolean" },
+        "updatedBy": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["platformName", "homeHeadline", "primaryColorHex", "secondaryColorHex", "updatedBy", "updatedAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Immutable audit trail of all administrative actions",
+      "type": "object",
+      "properties": {
+        "actorUid": { "type": "string" },
+        "actorEmail": { "type": "string" },
+        "actorRole": { "type": "string" },
+        "action": { "type": "string" },
+        "entityType": { "type": "string" },
+        "entityId": { "type": "string" },
+        "summary": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["actorUid", "action", "entityType", "createdAt"]
+    },
+    "BackupSnapshot": {
+      "title": "BackupSnapshot",
+      "description": "Metadata record of full platform backups exported/restored by Super Admin",
+      "type": "object",
+      "properties": {
+        "label": { "type": "string" },
+        "createdByUid": { "type": "string" },
+        "createdByEmail": { "type": "string" },
+        "documentCounts": { "type": "object" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["label", "createdByUid", "createdAt"]
     },
     "StudyMaterial": {
       "title": "StudyMaterial",
@@ -79,12 +304,16 @@
         "subjectName": { "type": "string" },
         "lessonId": { "type": "string" },
         "lessonTitle": { "type": "string" },
+        "teacherId": { "type": "string" },
+        "teacherUid": { "type": "string" },
         "materialType": { "type": "string", "enum": ["TEXTBOOK", "STUDY_NOTE", "SUMMARY", "IMPORTANT_QUESTIONS", "WORKSHEET", "PRACTICE_EXAM"] },
         "title": { "type": "string" },
         "description": { "type": "string" },
         "coverUrl": { "type": "string" },
         "fileUrl": { "type": "string" },
         "published": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["DRAFT", "PUBLISHED", "ARCHIVED"] },
+        "deletedAt": { "type": "string", "format": "date-time" },
         "createdBy": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
@@ -102,6 +331,8 @@
         "subjectId": { "type": "string" },
         "pinned": { "type": "boolean" },
         "published": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["DRAFT", "PUBLISHED", "ARCHIVED"] },
+        "deletedAt": { "type": "string", "format": "date-time" },
         "createdBy": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
@@ -158,19 +389,55 @@
   "firestore": {
     "/admins/{adminUid}": {
       "schema": { "$ref": "#/entities/AdminEntry" },
-      "description": "Explicit administrator access registry"
+      "description": "Explicit administrator and staff RBAC registry"
     },
     "/users/{userId}": {
       "schema": { "$ref": "#/entities/UserProfile" },
       "description": "User profiles and account status"
     },
+    "/catalogNodes/{nodeId}": {
+      "schema": { "$ref": "#/entities/CatalogNode" },
+      "description": "Dynamic hierarchy of stages, grades, branches, courses, and custom nodes"
+    },
     "/subjects/{subjectId}": {
       "schema": { "$ref": "#/entities/Subject" },
       "description": "Educational subjects catalog"
     },
+    "/units/{unitId}": {
+      "schema": { "$ref": "#/entities/UnitItem" },
+      "description": "Ordered units within subjects"
+    },
+    "/teachers/{teacherId}": {
+      "schema": { "$ref": "#/entities/Teacher" },
+      "description": "Teachers directory"
+    },
     "/lessons/{lessonId}": {
       "schema": { "$ref": "#/entities/Lesson" },
-      "description": "Educational video lessons"
+      "description": "Educational lessons"
+    },
+    "/lessonExplanations/{explanationId}": {
+      "schema": { "$ref": "#/entities/LessonExplanation" },
+      "description": "Independent teacher explanations per lesson"
+    },
+    "/contentBlocks/{blockId}": {
+      "schema": { "$ref": "#/entities/ContentBlock" },
+      "description": "Modular ordered content blocks within a teacher explanation"
+    },
+    "/customSectionTypes/{typeId}": {
+      "schema": { "$ref": "#/entities/CustomSectionType" },
+      "description": "Custom content section definitions"
+    },
+    "/platformConfig/{configId}": {
+      "schema": { "$ref": "#/entities/PlatformConfig" },
+      "description": "Dynamic platform branding and UI configuration"
+    },
+    "/auditLogs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Immutable admin operations audit log"
+    },
+    "/backups/{backupId}": {
+      "schema": { "$ref": "#/entities/BackupSnapshot" },
+      "description": "Super Admin backup snapshot registry"
     },
     "/materials/{materialId}": {
       "schema": { "$ref": "#/entities/StudyMaterial" },

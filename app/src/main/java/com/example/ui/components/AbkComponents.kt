@@ -73,10 +73,13 @@ import coil.compose.AsyncImage
 import com.example.R
 import com.example.data.model.Announcement
 import com.example.data.model.AnnouncementCategory
+import com.example.data.model.CatalogNode
 import com.example.data.model.Lesson
 import com.example.data.model.LessonProgress
+import com.example.data.model.PlatformConfig
 import com.example.data.model.StudyMaterial
 import com.example.data.model.Subject
+import com.example.data.model.Teacher
 import com.example.ui.theme.AbkNavyDeep
 import com.example.ui.theme.AbkNavyPrimary
 import com.example.ui.theme.AbkSkyContainer
@@ -84,34 +87,228 @@ import com.example.ui.theme.AbkSkyLight
 import com.example.ui.theme.AbkSkyPrimary
 import com.example.ui.theme.AbkSuccess
 import com.example.ui.theme.AbkWarning
+import com.example.ui.theme.parseSafeHexColor
 import com.example.util.UrlUtils
 
 @Composable
-fun AbkLogoMark(modifier: Modifier = Modifier) {
+fun AbkLogoMark(
+    platformConfig: PlatformConfig = PlatformConfig(),
+    modifier: Modifier = Modifier
+) {
+    val name = platformConfig.platformName.ifBlank { "ABK" }
+    val tagline = platformConfig.platformTagline.ifBlank { "المنصة التعليمية" }
     Row(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Image(
-            painter = painterResource(id = R.drawable.abk_app_icon),
-            contentDescription = stringResource(R.string.app_name),
-            modifier = Modifier
-                .size(40.dp)
-                .clip(RoundedCornerShape(12.dp)),
-            contentScale = ContentScale.Crop
-        )
+        if (!platformConfig.logoUrl.isNullOrBlank()) {
+            AsyncImage(
+                model = platformConfig.logoUrl,
+                contentDescription = name,
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(12.dp)),
+                contentScale = ContentScale.Crop,
+                error = painterResource(id = R.drawable.abk_app_icon),
+                placeholder = painterResource(id = R.drawable.abk_app_icon)
+            )
+        } else {
+            Image(
+                painter = painterResource(id = R.drawable.abk_app_icon),
+                contentDescription = stringResource(R.string.app_name),
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(12.dp)),
+                contentScale = ContentScale.Crop
+            )
+        }
         Column {
             Text(
-                text = "ABK",
+                text = name,
                 style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
                 color = MaterialTheme.colorScheme.primary
             )
             Text(
-                text = "المنصة التعليمية",
+                text = tagline,
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.secondary
             )
+        }
+    }
+}
+
+@Composable
+fun CatalogNodeCard(
+    node: CatalogNode,
+    childCount: Int,
+    subjectCount: Int,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val fallbackAccent = subjectVisuals(node.iconKey ?: "general").second
+    val accent = parseSafeHexColor(node.accentColorHex, fallbackAccent)
+    val badgeLabel = node.typeLabel.ifBlank { node.parsedNodeType().labelAr }
+
+    Card(
+        modifier = modifier
+            .clickable(onClick = onClick)
+            .testTag("catalog_node_card_${node.id}"),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Column {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(92.dp)
+            ) {
+                if (!node.imageUrl.isNullOrBlank()) {
+                    AsyncImage(
+                        model = node.imageUrl,
+                        contentDescription = node.title,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop,
+                        error = painterResource(id = R.drawable.img_abk_hero)
+                    )
+                } else {
+                    Image(
+                        painter = painterResource(id = R.drawable.img_abk_hero),
+                        contentDescription = node.title,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(Color.Black.copy(alpha = 0.15f), accent.copy(alpha = 0.88f))
+                            )
+                        )
+                )
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = Color.White.copy(alpha = 0.92f),
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(8.dp)
+                ) {
+                    Text(
+                        text = badgeLabel,
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        color = accent,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                    )
+                }
+                Text(
+                    text = node.title,
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    color = Color.White,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(horizontal = 10.dp, vertical = 8.dp)
+                )
+            }
+            Column(
+                modifier = Modifier.padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                if (!node.subtitle.isNullOrBlank()) {
+                    Text(
+                        text = node.subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (childCount > 0) {
+                        InfoPill(text = "$childCount أقسام")
+                    }
+                    if (subjectCount > 0) {
+                        InfoPill(text = "$subjectCount مواد")
+                    }
+                    if (childCount == 0 && subjectCount == 0) {
+                        InfoPill(text = "تصفح")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun TeacherShowcaseCard(
+    teacher: Teacher,
+    subtitle: String? = null,
+    onClick: (() -> Unit)? = null,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .testTag("teacher_card_${teacher.id}"),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (!teacher.photoUrl.isNullOrBlank()) {
+                AsyncImage(
+                    model = teacher.photoUrl,
+                    contentDescription = teacher.name,
+                    modifier = Modifier
+                        .size(52.dp)
+                        .clip(CircleShape)
+                        .border(1.dp, MaterialTheme.colorScheme.secondary, CircleShape),
+                    contentScale = ContentScale.Crop,
+                    error = painterResource(id = R.drawable.abk_app_icon)
+                )
+            } else {
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    modifier = Modifier.size(52.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            text = teacher.name.take(2),
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = teacher.name,
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                val line = subtitle ?: teacher.headline
+                if (!line.isNullOrBlank()) {
+                    Text(
+                        text = line,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
         }
     }
 }

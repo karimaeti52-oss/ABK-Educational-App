@@ -1,0 +1,16 @@
+node_modules
+dist
+.env
+.env.*
+!.env.example
+*service-account*.json
+*firebase-adminsdk*.json
+*.pem
+*.key
+src
+server/tests
+index.html
+vite.config.ts
+tsconfig.json
+firebase.hosting.json
+README_ADMIN.md

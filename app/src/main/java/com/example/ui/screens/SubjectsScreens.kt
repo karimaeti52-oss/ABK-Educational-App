@@ -61,6 +61,7 @@ import com.example.data.model.MaterialType
 import com.example.data.model.StudyMaterial
 import com.example.data.model.Subject
 import com.example.data.model.UiState
+import com.example.data.model.UnitItem
 import com.example.ui.components.AbkEmptyState
 import com.example.ui.components.AbkSearchBar
 import com.example.ui.components.LessonCard
@@ -151,7 +152,8 @@ fun SubjectDetailScreen(
     onDownloadMaterial: (StudyMaterial) -> Unit,
     onShareMaterial: (StudyMaterial) -> Unit,
     onToggleFavoriteLesson: (Lesson) -> Unit,
-    onToggleFavoriteMaterial: (StudyMaterial) -> Unit
+    onToggleFavoriteMaterial: (StudyMaterial) -> Unit,
+    units: List<UnitItem> = emptyList()
 ) {
     val context = LocalContext.current
     var selectedTab by remember { mutableIntStateOf(0) }
@@ -200,9 +202,16 @@ fun SubjectDetailScreen(
         }
 
         val (_, accent, fallbackRes) = subjectVisuals(subject.iconKey)
-        val groupedLessons = remember(lessons) {
-            lessons.sortedWith(compareBy<Lesson> { it.unitOrder }.thenBy { it.lessonOrder })
-                .groupBy { it.unitTitle.ifBlank { "الدروس" } }
+        val unitTitleById = remember(units) { units.associate { it.id to it.title } }
+        val unitOrderById = remember(units) { units.associate { it.id to it.sortOrder } }
+        val groupedLessons = remember(lessons, units) {
+            lessons.sortedWith(
+                compareBy<Lesson> { it.unitId?.let { id -> unitOrderById[id] } ?: it.unitOrder }
+                    .thenBy { it.lessonOrder }
+            ).groupBy { lesson ->
+                val explicitUnit = lesson.unitId?.let { unitTitleById[it] }
+                explicitUnit?.ifBlank { null } ?: lesson.unitTitle.ifBlank { "الدروس" }
+            }
         }
         val filteredMaterials = remember(materials, selectedMaterialFilter) {
             if (selectedMaterialFilter == null) materials

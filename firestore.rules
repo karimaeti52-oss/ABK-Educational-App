@@ -2,7 +2,7 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Global safety net
+    // Global zero-trust safety net
     match /{document=**} {
       allow read, write: if false;
     }
@@ -32,9 +32,59 @@ service cloud.firestore {
              request.auth.token.email == 'karimaeti07@gmail.com';
     }
 
+    function adminDocExists() {
+      return isSignedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    function adminDocData() {
+      return get(/databases/$(database)/documents/admins/$(request.auth.uid)).data;
+    }
+
+    function isAdminDocActive() {
+      return adminDocExists() && (!('active' in adminDocData()) || adminDocData().active == true);
+    }
+
+    function effectiveRole() {
+      return isBootstrappedAdmin()
+        ? 'SUPER_ADMIN'
+        : (
+            isSignedIn() &&
+            'abkRole' in request.auth.token &&
+            request.auth.token.abkRole in ['SUPER_ADMIN', 'ADMIN', 'CONTENT_MANAGER', 'TEACHER', 'VIEWER']
+          )
+          ? request.auth.token.abkRole
+          : (
+              isAdminDocActive()
+              ? (
+                  ('role' in adminDocData() && adminDocData().role in ['SUPER_ADMIN', 'ADMIN', 'CONTENT_MANAGER', 'TEACHER', 'VIEWER'])
+                    ? adminDocData().role
+                    : 'ADMIN'
+                )
+              : 'STUDENT'
+            );
+    }
+
+    function isSuperAdmin() {
+      return effectiveRole() == 'SUPER_ADMIN';
+    }
+
+    // Standard full Admin or Super Admin (preserves backwards compatibility with existing tests/admin actions)
     function isAdmin() {
-      return isBootstrappedAdmin() ||
-             (isSignedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
+      return effectiveRole() in ['SUPER_ADMIN', 'ADMIN'];
+    }
+
+    // Content managers, admins, and super admins
+    function isContentStaff() {
+      return effectiveRole() in ['SUPER_ADMIN', 'ADMIN', 'CONTENT_MANAGER'];
+    }
+
+    function isTeacherStaff() {
+      return effectiveRole() == 'TEACHER';
+    }
+
+    // Any authenticated staff user who can view admin portal data
+    function isAnyStaffReader() {
+      return effectiveRole() in ['SUPER_ADMIN', 'ADMIN', 'CONTENT_MANAGER', 'TEACHER', 'VIEWER'];
     }
 
     function isOwner(userId) {
@@ -42,18 +92,47 @@ service cloud.firestore {
     }
 
     function isOptionalString(data, key, maxLen) {
-      return !(key in data) || (data[key] is string && data[key].size() <= maxLen);
+      return !(key in data) || data[key] == null || (data[key] is string && data[key].size() <= maxLen);
+    }
+
+    function isOptionalBool(data, key) {
+      return !(key in data) || data[key] is bool;
+    }
+
+    function isOptionalStringList(data, key, maxItems) {
+      return !(key in data) || (data[key] is list && data[key].size() <= maxItems);
+    }
+
+    function isValidStatusFields(data) {
+      return data.published is bool &&
+             (!('status' in data) || data.status in ['DRAFT', 'PUBLISHED', 'ARCHIVED']) &&
+             (!('deletedAt' in data) || data.deletedAt == null || (data.deletedAt is timestamp && data.deletedAt <= request.time)) &&
+             // If soft-deleted or archived/draft, published cannot be true
+             ((!('deletedAt' in data) || data.deletedAt == null) || data.published == false) &&
+             ((!('status' in data) || data.status == 'PUBLISHED') || data.published == false);
+    }
+
+    function isStudentVisible(data) {
+      return data.published == true &&
+             (!('status' in data) || data.status == 'PUBLISHED') &&
+             (!('deletedAt' in data) || data.deletedAt == null);
     }
 
     // --- ENTITY VALIDATION HELPERS ---
 
     function isValidAdminEntry(data) {
       return data.keys().hasAll(['uid', 'email', 'grantedBy', 'createdAt']) &&
-             data.keys().hasOnly(['uid', 'email', 'grantedBy', 'createdAt']) &&
+             data.keys().hasOnly(['uid', 'email', 'displayName', 'role', 'permissions', 'teacherId', 'active', 'grantedBy', 'createdAt', 'updatedAt']) &&
              isValidId(data.uid) &&
              data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
+             isOptionalString(data, 'displayName', 100) &&
+             (!('role' in data) || data.role in ['SUPER_ADMIN', 'ADMIN', 'CONTENT_MANAGER', 'TEACHER', 'VIEWER']) &&
+             isOptionalStringList(data, 'permissions', 30) &&
+             isOptionalString(data, 'teacherId', 128) &&
+             isOptionalBool(data, 'active') &&
              data.grantedBy is string && data.grantedBy.size() >= 1 && data.grantedBy.size() <= 160 &&
-             data.createdAt is timestamp && data.createdAt <= request.time;
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             (!('updatedAt' in data) || (data.updatedAt is timestamp && data.updatedAt <= request.time));
     }
 
     function isValidUserProfile(data) {
@@ -63,22 +142,77 @@ service cloud.firestore {
              data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100 &&
              data.email is string && data.email.size() <= 160 &&
              isOptionalString(data, 'photoUrl', 500) &&
-             data.role in ['STUDENT', 'ADMIN'] &&
+             data.role in ['STUDENT', 'ADMIN', 'SUPER_ADMIN', 'CONTENT_MANAGER', 'TEACHER', 'VIEWER'] &&
              data.accountStatus in ['ACTIVE', 'SUSPENDED'] &&
              (!('lastActiveAt' in data) || (data.lastActiveAt is timestamp && data.lastActiveAt <= request.time)) &&
              data.createdAt is timestamp && data.createdAt <= request.time &&
              data.updatedAt is timestamp && data.updatedAt <= request.time;
     }
 
+    function isValidCatalogNode(data) {
+      return data.keys().hasAll(['nodeType', 'typeLabel', 'title', 'sortOrder', 'published', 'createdBy', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['parentId', 'nodeType', 'typeLabel', 'title', 'subtitle', 'imageUrl', 'iconKey', 'accentColorHex', 'sortOrder', 'published', 'status', 'deletedAt', 'createdBy', 'createdAt', 'updatedAt']) &&
+             isOptionalString(data, 'parentId', 128) &&
+             data.nodeType in ['STAGE', 'GRADE', 'BRANCH', 'COURSE', 'CUSTOM'] &&
+             data.typeLabel is string && data.typeLabel.size() >= 1 && data.typeLabel.size() <= 60 &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 100 &&
+             isOptionalString(data, 'subtitle', 300) &&
+             isOptionalString(data, 'imageUrl', 1000) &&
+             isOptionalString(data, 'iconKey', 50) &&
+             isOptionalString(data, 'accentColorHex', 16) &&
+             data.sortOrder is int && data.sortOrder >= 0 && data.sortOrder <= 5000 &&
+             isValidStatusFields(data) &&
+             data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
     function isValidSubject(data) {
       return data.keys().hasAll(['title', 'description', 'iconKey', 'sortOrder', 'published', 'createdBy', 'createdAt', 'updatedAt']) &&
-             data.keys().hasOnly(['title', 'description', 'imageUrl', 'iconKey', 'sortOrder', 'published', 'createdBy', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['title', 'description', 'imageUrl', 'iconKey', 'nodeIds', 'nodePathLabel', 'teacherIds', 'sortOrder', 'published', 'status', 'deletedAt', 'createdBy', 'createdAt', 'updatedAt']) &&
              data.title is string && data.title.size() >= 1 && data.title.size() <= 80 &&
              data.description is string && data.description.size() <= 400 &&
-             isOptionalString(data, 'imageUrl', 500) &&
+             isOptionalString(data, 'imageUrl', 1000) &&
              data.iconKey is string && data.iconKey.size() >= 1 && data.iconKey.size() <= 40 &&
+             isOptionalStringList(data, 'nodeIds', 50) &&
+             isOptionalString(data, 'nodePathLabel', 200) &&
+             isOptionalStringList(data, 'teacherIds', 50) &&
              data.sortOrder is int && data.sortOrder >= 0 && data.sortOrder <= 1000 &&
-             data.published is bool &&
+             isValidStatusFields(data) &&
+             data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidUnit(data) {
+      return data.keys().hasAll(['subjectId', 'subjectName', 'title', 'sortOrder', 'published', 'createdBy', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['subjectId', 'subjectName', 'title', 'description', 'sortOrder', 'published', 'status', 'deletedAt', 'createdBy', 'createdAt', 'updatedAt']) &&
+             isValidId(data.subjectId) &&
+             data.subjectName is string && data.subjectName.size() >= 1 && data.subjectName.size() <= 80 &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+             isOptionalString(data, 'description', 400) &&
+             data.sortOrder is int && data.sortOrder >= 0 && data.sortOrder <= 1000 &&
+             isValidStatusFields(data) &&
+             data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidTeacher(data) {
+      return data.keys().hasAll(['name', 'sortOrder', 'published', 'createdBy', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['name', 'headline', 'bio', 'photoUrl', 'linkedUid', 'subjectIds', 'nodeIds', 'youtubeUrl', 'telegramUrl', 'websiteUrl', 'sortOrder', 'published', 'status', 'deletedAt', 'createdBy', 'createdAt', 'updatedAt']) &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+             isOptionalString(data, 'headline', 140) &&
+             isOptionalString(data, 'bio', 1000) &&
+             isOptionalString(data, 'photoUrl', 1000) &&
+             isOptionalString(data, 'linkedUid', 128) &&
+             isOptionalStringList(data, 'subjectIds', 50) &&
+             isOptionalStringList(data, 'nodeIds', 50) &&
+             isOptionalString(data, 'youtubeUrl', 500) &&
+             isOptionalString(data, 'telegramUrl', 500) &&
+             isOptionalString(data, 'websiteUrl', 500) &&
+             data.sortOrder is int && data.sortOrder >= 0 && data.sortOrder <= 5000 &&
+             isValidStatusFields(data) &&
              data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128 &&
              data.createdAt is timestamp && data.createdAt <= request.time &&
              data.updatedAt is timestamp && data.updatedAt <= request.time;
@@ -86,9 +220,10 @@ service cloud.firestore {
 
     function isValidLesson(data) {
       return data.keys().hasAll(['subjectId', 'subjectName', 'unitTitle', 'unitOrder', 'lessonOrder', 'title', 'description', 'videoUrl', 'videoSourceType', 'published', 'createdBy', 'createdAt', 'updatedAt']) &&
-             data.keys().hasOnly(['subjectId', 'subjectName', 'unitTitle', 'unitOrder', 'lessonOrder', 'title', 'description', 'teacherName', 'durationLabel', 'thumbnailUrl', 'videoUrl', 'videoSourceType', 'published', 'createdBy', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['subjectId', 'subjectName', 'unitId', 'unitTitle', 'unitOrder', 'lessonOrder', 'title', 'description', 'teacherName', 'durationLabel', 'thumbnailUrl', 'videoUrl', 'videoSourceType', 'published', 'status', 'deletedAt', 'createdBy', 'createdAt', 'updatedAt']) &&
              isValidId(data.subjectId) &&
              data.subjectName is string && data.subjectName.size() >= 1 && data.subjectName.size() <= 80 &&
+             isOptionalString(data, 'unitId', 128) &&
              data.unitTitle is string && data.unitTitle.size() >= 1 && data.unitTitle.size() <= 100 &&
              data.unitOrder is int && data.unitOrder >= 0 && data.unitOrder <= 500 &&
              data.lessonOrder is int && data.lessonOrder >= 0 && data.lessonOrder <= 500 &&
@@ -96,28 +231,112 @@ service cloud.firestore {
              data.description is string && data.description.size() <= 1000 &&
              isOptionalString(data, 'teacherName', 100) &&
              isOptionalString(data, 'durationLabel', 30) &&
-             isOptionalString(data, 'thumbnailUrl', 500) &&
-             data.videoUrl is string && data.videoUrl.size() >= 1 && data.videoUrl.size() <= 1000 &&
+             isOptionalString(data, 'thumbnailUrl', 1000) &&
+             data.videoUrl is string && data.videoUrl.size() <= 1000 &&
              data.videoSourceType in ['YOUTUBE', 'MP4', 'EXTERNAL'] &&
+             isValidStatusFields(data) &&
+             data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidLessonExplanation(data) {
+      return data.keys().hasAll(['lessonId', 'subjectId', 'teacherId', 'teacherName', 'title', 'sortOrder', 'published', 'createdBy', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['lessonId', 'lessonTitle', 'subjectId', 'subjectName', 'teacherId', 'teacherName', 'teacherPhotoUrl', 'teacherUid', 'title', 'summary', 'sortOrder', 'published', 'status', 'deletedAt', 'createdBy', 'createdAt', 'updatedAt']) &&
+             isValidId(data.lessonId) &&
+             isOptionalString(data, 'lessonTitle', 140) &&
+             isValidId(data.subjectId) &&
+             isOptionalString(data, 'subjectName', 80) &&
+             isValidId(data.teacherId) &&
+             data.teacherName is string && data.teacherName.size() >= 1 && data.teacherName.size() <= 120 &&
+             isOptionalString(data, 'teacherPhotoUrl', 1000) &&
+             isOptionalString(data, 'teacherUid', 128) &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+             isOptionalString(data, 'summary', 1000) &&
+             data.sortOrder is int && data.sortOrder >= 0 && data.sortOrder <= 1000 &&
+             isValidStatusFields(data) &&
+             data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidContentBlock(data) {
+      return data.keys().hasAll(['explanationId', 'lessonId', 'subjectId', 'teacherId', 'blockType', 'title', 'sortOrder', 'published', 'createdBy', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['explanationId', 'lessonId', 'subjectId', 'teacherId', 'teacherUid', 'blockType', 'customTypeKey', 'title', 'subtitle', 'bodyText', 'mediaUrl', 'thumbnailUrl', 'durationLabel', 'fileSizeLabel', 'qaItems', 'quizQuestions', 'sortOrder', 'published', 'status', 'deletedAt', 'createdBy', 'createdAt', 'updatedAt']) &&
+             isValidId(data.explanationId) &&
+             isValidId(data.lessonId) &&
+             isValidId(data.subjectId) &&
+             isValidId(data.teacherId) &&
+             isOptionalString(data, 'teacherUid', 128) &&
+             data.blockType in ['YOUTUBE_VIDEO', 'EXTERNAL_VIDEO', 'PDF_FILE', 'IMAGE', 'NOTE_SUMMARY', 'QA', 'QUIZ_MCQ', 'QUIZ_TRUE_FALSE', 'INTERACTIVE_EXAM', 'RICH_TEXT', 'EXTERNAL_LINK', 'DOWNLOAD_FILE', 'CUSTOM'] &&
+             isOptionalString(data, 'customTypeKey', 60) &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+             isOptionalString(data, 'subtitle', 300) &&
+             isOptionalString(data, 'bodyText', 10000) &&
+             isOptionalString(data, 'mediaUrl', 1000) &&
+             isOptionalString(data, 'thumbnailUrl', 1000) &&
+             isOptionalString(data, 'durationLabel', 40) &&
+             isOptionalString(data, 'fileSizeLabel', 40) &&
+             (!('qaItems' in data) || (data.qaItems is list && data.qaItems.size() <= 100)) &&
+             (!('quizQuestions' in data) || (data.quizQuestions is list && data.quizQuestions.size() <= 100)) &&
+             data.sortOrder is int && data.sortOrder >= 0 && data.sortOrder <= 5000 &&
+             isValidStatusFields(data) &&
+             data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidCustomSectionType(data) {
+      return data.keys().hasAll(['key', 'labelAr', 'published', 'createdBy', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['key', 'labelAr', 'description', 'iconKey', 'accentColorHex', 'published', 'createdBy', 'createdAt', 'updatedAt']) &&
+             isValidId(data.key) &&
+             data.labelAr is string && data.labelAr.size() >= 1 && data.labelAr.size() <= 80 &&
+             isOptionalString(data, 'description', 300) &&
+             isOptionalString(data, 'iconKey', 50) &&
+             isOptionalString(data, 'accentColorHex', 16) &&
              data.published is bool &&
              data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128 &&
              data.createdAt is timestamp && data.createdAt <= request.time &&
              data.updatedAt is timestamp && data.updatedAt <= request.time;
     }
 
+    function isValidPlatformConfig(data) {
+      return data.keys().hasAll(['platformName', 'homeHeadline', 'primaryColorHex', 'secondaryColorHex', 'updatedBy', 'updatedAt']) &&
+             data.keys().hasOnly(['platformName', 'platformTagline', 'homeHeadline', 'welcomeTitle', 'welcomeSubtitle', 'logoUrl', 'heroBannerUrl', 'primaryColorHex', 'secondaryColorHex', 'accentColorHex', 'bottomNavItems', 'allowOfflinePdf', 'showAnnouncements', 'showContinueWatching', 'maintenanceMode', 'updatedBy', 'updatedAt']) &&
+             data.platformName is string && data.platformName.size() >= 1 && data.platformName.size() <= 60 &&
+             isOptionalString(data, 'platformTagline', 100) &&
+             data.homeHeadline is string && data.homeHeadline.size() >= 1 && data.homeHeadline.size() <= 100 &&
+             isOptionalString(data, 'welcomeTitle', 140) &&
+             isOptionalString(data, 'welcomeSubtitle', 300) &&
+             isOptionalString(data, 'logoUrl', 1000) &&
+             isOptionalString(data, 'heroBannerUrl', 1000) &&
+             data.primaryColorHex is string && data.primaryColorHex.matches('^#[0-9a-fA-F]{6}$') &&
+             data.secondaryColorHex is string && data.secondaryColorHex.matches('^#[0-9a-fA-F]{6}$') &&
+             (!('accentColorHex' in data) || data.accentColorHex == null || data.accentColorHex.matches('^#[0-9a-fA-F]{6}$')) &&
+             (!('bottomNavItems' in data) || (data.bottomNavItems is list && data.bottomNavItems.size() <= 8)) &&
+             isOptionalBool(data, 'allowOfflinePdf') &&
+             isOptionalBool(data, 'showAnnouncements') &&
+             isOptionalBool(data, 'showContinueWatching') &&
+             isOptionalBool(data, 'maintenanceMode') &&
+             data.updatedBy is string && data.updatedBy.size() >= 1 && data.updatedBy.size() <= 128 &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
     function isValidMaterial(data) {
       return data.keys().hasAll(['subjectId', 'subjectName', 'materialType', 'title', 'description', 'fileUrl', 'published', 'createdBy', 'createdAt', 'updatedAt']) &&
-             data.keys().hasOnly(['subjectId', 'subjectName', 'lessonId', 'lessonTitle', 'materialType', 'title', 'description', 'coverUrl', 'fileUrl', 'published', 'createdBy', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['subjectId', 'subjectName', 'lessonId', 'lessonTitle', 'teacherId', 'teacherUid', 'materialType', 'title', 'description', 'coverUrl', 'fileUrl', 'published', 'status', 'deletedAt', 'createdBy', 'createdAt', 'updatedAt']) &&
              isValidId(data.subjectId) &&
              data.subjectName is string && data.subjectName.size() >= 1 && data.subjectName.size() <= 80 &&
              isOptionalString(data, 'lessonId', 128) &&
              isOptionalString(data, 'lessonTitle', 140) &&
+             isOptionalString(data, 'teacherId', 128) &&
+             isOptionalString(data, 'teacherUid', 128) &&
              data.materialType in ['TEXTBOOK', 'STUDY_NOTE', 'SUMMARY', 'IMPORTANT_QUESTIONS', 'WORKSHEET', 'PRACTICE_EXAM'] &&
              data.title is string && data.title.size() >= 1 && data.title.size() <= 140 &&
              data.description is string && data.description.size() <= 1000 &&
-             isOptionalString(data, 'coverUrl', 500) &&
+             isOptionalString(data, 'coverUrl', 1000) &&
              data.fileUrl is string && data.fileUrl.size() >= 1 && data.fileUrl.size() <= 1000 &&
-             data.published is bool &&
+             isValidStatusFields(data) &&
              data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128 &&
              data.createdAt is timestamp && data.createdAt <= request.time &&
              data.updatedAt is timestamp && data.updatedAt <= request.time;
@@ -125,16 +344,29 @@ service cloud.firestore {
 
     function isValidAnnouncement(data) {
       return data.keys().hasAll(['title', 'body', 'category', 'pinned', 'published', 'createdBy', 'createdAt', 'updatedAt']) &&
-             data.keys().hasOnly(['title', 'body', 'category', 'subjectId', 'pinned', 'published', 'createdBy', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['title', 'body', 'category', 'subjectId', 'pinned', 'published', 'status', 'deletedAt', 'createdBy', 'createdAt', 'updatedAt']) &&
              data.title is string && data.title.size() >= 1 && data.title.size() <= 140 &&
              data.body is string && data.body.size() >= 1 && data.body.size() <= 1000 &&
              data.category in ['NEW_LESSON', 'NEW_MATERIAL', 'GENERAL', 'URGENT'] &&
              isOptionalString(data, 'subjectId', 128) &&
              data.pinned is bool &&
-             data.published is bool &&
+             isValidStatusFields(data) &&
              data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128 &&
              data.createdAt is timestamp && data.createdAt <= request.time &&
              data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidAuditLog(data) {
+      return data.keys().hasAll(['actorUid', 'action', 'entityType', 'createdAt']) &&
+             data.keys().hasOnly(['actorUid', 'actorEmail', 'actorRole', 'action', 'entityType', 'entityId', 'summary', 'createdAt']) &&
+             data.actorUid == request.auth.uid &&
+             isOptionalString(data, 'actorEmail', 160) &&
+             isOptionalString(data, 'actorRole', 40) &&
+             data.action is string && data.action.size() >= 1 && data.action.size() <= 80 &&
+             data.entityType is string && data.entityType.size() >= 1 && data.entityType.size() <= 80 &&
+             isOptionalString(data, 'entityId', 128) &&
+             isOptionalString(data, 'summary', 500) &&
+             data.createdAt is timestamp && data.createdAt <= request.time;
     }
 
     function isValidFavorite(data, userId) {
@@ -146,7 +378,7 @@ service cloud.firestore {
              data.title is string && data.title.size() >= 1 && data.title.size() <= 140 &&
              data.subtitle is string && data.subtitle.size() <= 140 &&
              data.subjectName is string && data.subjectName.size() <= 80 &&
-             isOptionalString(data, 'imageUrl', 500) &&
+             isOptionalString(data, 'imageUrl', 1000) &&
              data.createdAt is timestamp && data.createdAt <= request.time;
     }
 
@@ -158,7 +390,7 @@ service cloud.firestore {
              data.lessonTitle is string && data.lessonTitle.size() >= 1 && data.lessonTitle.size() <= 140 &&
              isValidId(data.subjectId) &&
              data.subjectName is string && data.subjectName.size() <= 80 &&
-             isOptionalString(data, 'thumbnailUrl', 500) &&
+             isOptionalString(data, 'thumbnailUrl', 1000) &&
              data.lastPositionMs is int && data.lastPositionMs >= 0 &&
              data.durationMs is int && data.durationMs >= 0 &&
              data.completed is bool &&
@@ -177,7 +409,7 @@ service cloud.firestore {
     // --- COLLECTION RULES ---
 
     match /admins/{adminUid} {
-      allow get: if isSignedIn() && isValidId(adminUid) && (request.auth.uid == adminUid || isAdmin());
+      allow get: if isSignedIn() && isValidId(adminUid) && (request.auth.uid == adminUid || isAnyStaffReader());
       allow list: if isAdmin();
       allow create, update: if isAdmin() && isValidId(adminUid) && isValidAdminEntry(incoming()) && incoming().uid == adminUid;
       allow delete: if isAdmin() && isValidId(adminUid);
@@ -211,7 +443,7 @@ service cloud.firestore {
                          )
                        );
 
-      allow delete: if isAdmin() && isValidId(userId);
+      allow delete: if isSuperAdmin() && isValidId(userId);
 
       match /favorites/{favoriteId} {
         allow get: if isOwner(userId) && isValidId(favoriteId);
@@ -244,36 +476,145 @@ service cloud.firestore {
       }
     }
 
+    match /catalogNodes/{nodeId} {
+      allow get: if isSignedIn() && isValidId(nodeId) && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow list: if isSignedIn() && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow create: if isContentStaff() && isValidId(nodeId) && isValidCatalogNode(incoming()) && incoming().createdBy == request.auth.uid;
+      allow update: if isContentStaff() && isValidId(nodeId) && isValidCatalogNode(incoming()) && incoming().createdAt == existing().createdAt && incoming().createdBy == existing().createdBy;
+      allow delete: if isAdmin() && isValidId(nodeId);
+    }
+
     match /subjects/{subjectId} {
-      allow get: if isSignedIn() && isValidId(subjectId) && (existing().published == true || isAdmin());
-      allow list: if isSignedIn() && (existing().published == true || isAdmin());
-      allow create: if isAdmin() && isValidId(subjectId) && isValidSubject(incoming()) && incoming().createdBy == request.auth.uid;
-      allow update: if isAdmin() && isValidId(subjectId) && isValidSubject(incoming()) && incoming().createdAt == existing().createdAt && incoming().createdBy == existing().createdBy;
+      allow get: if isSignedIn() && isValidId(subjectId) && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow list: if isSignedIn() && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow create: if isContentStaff() && isValidId(subjectId) && isValidSubject(incoming()) && incoming().createdBy == request.auth.uid;
+      allow update: if isContentStaff() && isValidId(subjectId) && isValidSubject(incoming()) && incoming().createdAt == existing().createdAt && incoming().createdBy == existing().createdBy;
       allow delete: if isAdmin() && isValidId(subjectId);
     }
 
+    match /units/{unitId} {
+      allow get: if isSignedIn() && isValidId(unitId) && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow list: if isSignedIn() && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow create: if isContentStaff() && isValidId(unitId) && isValidUnit(incoming()) && incoming().createdBy == request.auth.uid && exists(/databases/$(database)/documents/subjects/$(incoming().subjectId));
+      allow update: if isContentStaff() && isValidId(unitId) && isValidUnit(incoming()) && incoming().createdAt == existing().createdAt && incoming().createdBy == existing().createdBy;
+      allow delete: if isAdmin() && isValidId(unitId);
+    }
+
+    match /teachers/{teacherId} {
+      allow get: if isSignedIn() && isValidId(teacherId) && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow list: if isSignedIn() && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow create: if isContentStaff() && isValidId(teacherId) && isValidTeacher(incoming()) && incoming().createdBy == request.auth.uid;
+      allow update: if isContentStaff() && isValidId(teacherId) && isValidTeacher(incoming()) && incoming().createdAt == existing().createdAt && incoming().createdBy == existing().createdBy;
+      allow delete: if isAdmin() && isValidId(teacherId);
+    }
+
     match /lessons/{lessonId} {
-      allow get: if isSignedIn() && isValidId(lessonId) && (existing().published == true || isAdmin());
-      allow list: if isSignedIn() && (existing().published == true || isAdmin());
-      allow create: if isAdmin() && isValidId(lessonId) && isValidLesson(incoming()) && incoming().createdBy == request.auth.uid && exists(/databases/$(database)/documents/subjects/$(incoming().subjectId));
-      allow update: if isAdmin() && isValidId(lessonId) && isValidLesson(incoming()) && incoming().createdAt == existing().createdAt && incoming().createdBy == existing().createdBy;
+      allow get: if isSignedIn() && isValidId(lessonId) && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow list: if isSignedIn() && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow create: if isContentStaff() && isValidId(lessonId) && isValidLesson(incoming()) && incoming().createdBy == request.auth.uid && exists(/databases/$(database)/documents/subjects/$(incoming().subjectId));
+      allow update: if isContentStaff() && isValidId(lessonId) && isValidLesson(incoming()) && incoming().createdAt == existing().createdAt && incoming().createdBy == existing().createdBy;
       allow delete: if isAdmin() && isValidId(lessonId);
     }
 
+    match /lessonExplanations/{explanationId} {
+      allow get: if isSignedIn() && isValidId(explanationId) && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow list: if isSignedIn() && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow create: if isValidId(explanationId) &&
+                       isValidLessonExplanation(incoming()) &&
+                       incoming().createdBy == request.auth.uid &&
+                       exists(/databases/$(database)/documents/lessons/$(incoming().lessonId)) &&
+                       exists(/databases/$(database)/documents/teachers/$(incoming().teacherId)) &&
+                       (
+                         isContentStaff() ||
+                         (isTeacherStaff() && ('teacherUid' in incoming()) && incoming().teacherUid == request.auth.uid && incoming().published == false)
+                       );
+      allow update: if isValidId(explanationId) &&
+                       isValidLessonExplanation(incoming()) &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().createdBy == existing().createdBy &&
+                       (
+                         isContentStaff() ||
+                         (isTeacherStaff() && ('teacherUid' in existing()) && existing().teacherUid == request.auth.uid && incoming().teacherUid == existing().teacherUid && incoming().published == existing().published)
+                       );
+      allow delete: if isAdmin() && isValidId(explanationId);
+    }
+
+    match /contentBlocks/{blockId} {
+      allow get: if isSignedIn() && isValidId(blockId) && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow list: if isSignedIn() && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow create: if isValidId(blockId) &&
+                       isValidContentBlock(incoming()) &&
+                       incoming().createdBy == request.auth.uid &&
+                       exists(/databases/$(database)/documents/lessonExplanations/$(incoming().explanationId)) &&
+                       (
+                         isContentStaff() ||
+                         (isTeacherStaff() && ('teacherUid' in incoming()) && incoming().teacherUid == request.auth.uid && incoming().published == false)
+                       );
+      allow update: if isValidId(blockId) &&
+                       isValidContentBlock(incoming()) &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().createdBy == existing().createdBy &&
+                       (
+                         isContentStaff() ||
+                         (isTeacherStaff() && ('teacherUid' in existing()) && existing().teacherUid == request.auth.uid && incoming().teacherUid == existing().teacherUid && incoming().published == existing().published)
+                       );
+      allow delete: if (isAdmin() || (isTeacherStaff() && ('teacherUid' in existing()) && existing().teacherUid == request.auth.uid)) && isValidId(blockId);
+    }
+
+    match /customSectionTypes/{typeId} {
+      allow get: if isSignedIn() && isValidId(typeId) && (existing().published == true || isAnyStaffReader());
+      allow list: if isSignedIn() && (existing().published == true || isAnyStaffReader());
+      allow create: if isContentStaff() && isValidId(typeId) && isValidCustomSectionType(incoming()) && incoming().createdBy == request.auth.uid;
+      allow update: if isContentStaff() && isValidId(typeId) && isValidCustomSectionType(incoming()) && incoming().createdAt == existing().createdAt && incoming().createdBy == existing().createdBy;
+      allow delete: if isAdmin() && isValidId(typeId);
+    }
+
+    match /platformConfig/{configId} {
+      allow get: if isSignedIn() && isValidId(configId) && (configId == 'main' || isAnyStaffReader());
+      allow list: if isAnyStaffReader();
+      allow create, update: if isAdmin() && configId == 'main' && isValidPlatformConfig(incoming());
+      allow delete: if isSuperAdmin() && configId != 'main';
+    }
+
     match /materials/{materialId} {
-      allow get: if isSignedIn() && isValidId(materialId) && (existing().published == true || isAdmin());
-      allow list: if isSignedIn() && (existing().published == true || isAdmin());
-      allow create: if isAdmin() && isValidId(materialId) && isValidMaterial(incoming()) && incoming().createdBy == request.auth.uid && exists(/databases/$(database)/documents/subjects/$(incoming().subjectId));
-      allow update: if isAdmin() && isValidId(materialId) && isValidMaterial(incoming()) && incoming().createdAt == existing().createdAt && incoming().createdBy == existing().createdBy;
+      allow get: if isSignedIn() && isValidId(materialId) && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow list: if isSignedIn() && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow create: if isValidId(materialId) &&
+                       isValidMaterial(incoming()) &&
+                       incoming().createdBy == request.auth.uid &&
+                       exists(/databases/$(database)/documents/subjects/$(incoming().subjectId)) &&
+                       (
+                         isContentStaff() ||
+                         (isTeacherStaff() && ('teacherUid' in incoming()) && incoming().teacherUid == request.auth.uid && incoming().published == false)
+                       );
+      allow update: if isValidId(materialId) &&
+                       isValidMaterial(incoming()) &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().createdBy == existing().createdBy &&
+                       (
+                         isContentStaff() ||
+                         (isTeacherStaff() && ('teacherUid' in existing()) && existing().teacherUid == request.auth.uid && incoming().teacherUid == existing().teacherUid && incoming().published == existing().published)
+                       );
       allow delete: if isAdmin() && isValidId(materialId);
     }
 
     match /announcements/{announcementId} {
-      allow get: if isSignedIn() && isValidId(announcementId) && (existing().published == true || isAdmin());
-      allow list: if isSignedIn() && (existing().published == true || isAdmin());
-      allow create: if isAdmin() && isValidId(announcementId) && isValidAnnouncement(incoming()) && incoming().createdBy == request.auth.uid;
-      allow update: if isAdmin() && isValidId(announcementId) && isValidAnnouncement(incoming()) && incoming().createdAt == existing().createdAt && incoming().createdBy == existing().createdBy;
+      allow get: if isSignedIn() && isValidId(announcementId) && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow list: if isSignedIn() && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow create: if isContentStaff() && isValidId(announcementId) && isValidAnnouncement(incoming()) && incoming().createdBy == request.auth.uid;
+      allow update: if isContentStaff() && isValidId(announcementId) && isValidAnnouncement(incoming()) && incoming().createdAt == existing().createdAt && incoming().createdBy == existing().createdBy;
       allow delete: if isAdmin() && isValidId(announcementId);
+    }
+
+    match /auditLogs/{logId} {
+      allow get, list: if isAnyStaffReader();
+      allow create: if isAnyStaffReader() && isValidId(logId) && isValidAuditLog(incoming());
+      allow update, delete: if false;
+    }
+
+    match /backups/{backupId} {
+      allow get, list: if isSuperAdmin();
+      allow create, update, delete: if isSuperAdmin() && isValidId(backupId);
     }
   }
 }
