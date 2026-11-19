@@ -58,6 +58,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.example.R
 import com.example.data.firebase.authStateFlow
+import com.example.data.firebase.ensureFirebaseInitialized
 import com.example.data.firebase.signOutUser
 import com.example.data.model.AccountStatus
 import com.example.data.model.FavoriteType
@@ -123,12 +124,29 @@ private val studentTabs = listOf(
 )
 
 @Composable
-fun AbkAppNavigation(auth: FirebaseAuth = Firebase.auth) {
-    val currentUser by auth.authStateFlow().collectAsStateWithLifecycle(initialValue = auth.currentUser)
+fun AbkAppNavigation(auth: FirebaseAuth? = null) {
+    val context = LocalContext.current
+    val resolvedAuth = remember(auth, context) {
+        auth ?: if (ensureFirebaseInitialized(context)) {
+            runCatching { Firebase.auth }.getOrNull()
+        } else {
+            null
+        }
+    }
+
+    if (resolvedAuth == null) {
+        AuthScreen(
+            onAuthSuccess = {},
+            firebaseReady = false
+        )
+        return
+    }
+
+    val currentUser by resolvedAuth.authStateFlow().collectAsStateWithLifecycle(initialValue = resolvedAuth.currentUser)
     val user = currentUser
 
     if (user == null) {
-        AuthScreen(onAuthSuccess = {})
+        AuthScreen(onAuthSuccess = {}, firebaseReady = true)
     } else {
         key(user.uid) {
             AuthenticatedAbkApp(firebaseUser = user)
@@ -140,15 +158,16 @@ fun AbkAppNavigation(auth: FirebaseAuth = Firebase.auth) {
 private fun AuthenticatedAbkApp(firebaseUser: FirebaseUser) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val credentialManager = remember { CredentialManager.create(context) }
+    val credentialManager = remember {
+        runCatching { CredentialManager.create(context) }.getOrNull()
+    }
 
     val mainViewModel: MainViewModel = viewModel(
         key = firebaseUser.uid,
         factory = viewModelFactory {
             initializer {
                 val app = checkNotNull(this[APPLICATION_KEY]) as Application
-                val dbId = app.getString(R.string.firestore_database_id)
-                val db = FirebaseFirestore.getInstance(dbId)
+                val db = resolveAbkFirestore(app)
                 MainViewModel(
                     contentRepository = AbkContentRepository(db),
                     studentRepository = StudentRepository(db),
@@ -513,8 +532,7 @@ private fun AuthenticatedAbkApp(firebaseUser: FirebaseUser) {
                                 factory = viewModelFactory {
                                     initializer {
                                         val app = checkNotNull(this[APPLICATION_KEY]) as Application
-                                        val dbId = app.getString(R.string.firestore_database_id)
-                                        val db = FirebaseFirestore.getInstance(dbId)
+                                        val db = resolveAbkFirestore(app)
                                         AdminViewModel(AdminRepository(db))
                                     }
                                 }
@@ -533,5 +551,16 @@ private fun AuthenticatedAbkApp(firebaseUser: FirebaseUser) {
                 }
             }
         }
+    }
+}
+
+private fun resolveAbkFirestore(app: Application): FirebaseFirestore {
+    val dbId = runCatching { app.getString(R.string.firestore_database_id) }
+        .getOrNull()
+        ?.takeIf { it.isNotBlank() }
+    return if (dbId != null) {
+        runCatching { FirebaseFirestore.getInstance(dbId) }.getOrElse { FirebaseFirestore.getInstance() }
+    } else {
+        FirebaseFirestore.getInstance()
     }
 }

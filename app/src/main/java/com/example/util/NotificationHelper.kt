@@ -20,15 +20,18 @@ object NotificationHelper {
 
     fun ensureChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                CHANNEL_NAME,
-                NotificationManager.IMPORTANCE_DEFAULT
-            ).apply {
-                description = "تنبيهات الدروس الجديدة والملفات والإعلانات في منصة ABK"
+            runCatching {
+                val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                    ?: return
+                val channel = NotificationChannel(
+                    CHANNEL_ID,
+                    CHANNEL_NAME,
+                    NotificationManager.IMPORTANCE_DEFAULT
+                ).apply {
+                    description = "تنبيهات الدروس الجديدة والملفات والإعلانات في منصة ABK"
+                }
+                manager.createNotificationChannel(channel)
             }
-            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            manager.createNotificationChannel(channel)
         }
     }
 

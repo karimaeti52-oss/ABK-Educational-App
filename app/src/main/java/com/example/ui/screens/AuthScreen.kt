@@ -66,17 +66,29 @@ import com.example.ui.theme.AbkSkyPrimary
 
 @Composable
 fun AuthScreen(
-    onAuthSuccess: () -> Unit
+    onAuthSuccess: () -> Unit,
+    firebaseReady: Boolean = true
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val credentialManager = remember { CredentialManager.create(context) }
+    val credentialManager = remember {
+        runCatching { CredentialManager.create(context) }.getOrNull()
+    }
 
     var isLoading by remember { mutableStateOf(false) }
-    var isAttemptingSilent by remember { mutableStateOf(true) }
-    var errorMessage by remember { mutableStateOf<String?>(null) }
+    var isAttemptingSilent by remember { mutableStateOf(firebaseReady && credentialManager != null) }
+    var errorMessage by remember {
+        mutableStateOf(
+            if (firebaseReady) null
+            else "تعذر تهيئة Firebase في هذه النسخة لعدم تضمين ملف google-services.json أثناء البناء. يرجى إعادة بناء التطبيق مع إعدادات Firebase."
+        )
+    }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(firebaseReady, credentialManager) {
+        if (!firebaseReady || credentialManager == null) {
+            isAttemptingSilent = false
+            return@LaunchedEffect
+        }
         attemptAutoSignIn(
             context = context,
             credentialManager = credentialManager,
@@ -169,14 +181,14 @@ fun AuthScreen(
                 }
             }
 
-            if (errorMessage != null) {
+            errorMessage?.let { message ->
                 Surface(
                     shape = RoundedCornerShape(12.dp),
                     color = MaterialTheme.colorScheme.errorContainer,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
-                        text = errorMessage!!,
+                        text = message,
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onErrorContainer,
                         modifier = Modifier.padding(12.dp),
@@ -187,11 +199,16 @@ fun AuthScreen(
 
             Button(
                 onClick = {
+                    val manager = credentialManager
+                    if (!firebaseReady || manager == null) {
+                        errorMessage = "خدمة تسجيل الدخول غير متاحة لأن إعدادات Firebase غير مكتملة في هذا البناء."
+                        return@Button
+                    }
                     errorMessage = null
                     isLoading = true
                     onGoogleSignInClicked(
                         context = context,
-                        credentialManager = credentialManager,
+                        credentialManager = manager,
                         onAuthSuccess = {
                             isLoading = false
                             onAuthSuccess()
