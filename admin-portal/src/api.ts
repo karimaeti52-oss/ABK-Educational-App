@@ -40,7 +40,11 @@ async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
 export async function checkBackendHealth(): Promise<boolean> {
   try {
     const res = await fetch(`${API_BASE}/api/health`);
-    return res.ok;
+    if (!res.ok) return false;
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) return false;
+    const data = await res.json().catch(() => null);
+    return Boolean(data && data.ok === true && data.service === 'abk-admin-backend');
   } catch {
     return false;
   }
