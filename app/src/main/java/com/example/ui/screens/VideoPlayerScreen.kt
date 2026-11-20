@@ -2,7 +2,11 @@ package com.example.ui.screens
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.Intent
 import android.content.pm.ActivityInfo
+import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.view.View
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
@@ -33,10 +37,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -345,6 +351,25 @@ fun VideoPlayerScreen(
                             Text("ملء الشاشة")
                         }
                     }
+
+                    if (effectiveType == VideoSourceType.YOUTUBE) {
+                        OutlinedButton(
+                            onClick = {
+                                val watchUri = Uri.parse(UrlUtils.toYouTubeWatchUrl(lesson.videoUrl))
+                                runCatching {
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, watchUri))
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("open_on_youtube_btn"),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("فتح الفيديو على YouTube")
+                        }
+                    }
                 }
             }
 
@@ -484,6 +509,7 @@ private fun YouTubeInAppPlayerView(
     onPositionUpdate: (Long, Long, Boolean) -> Unit,
     onPersistProgress: (Long, Long, Boolean) -> Unit
 ) {
+    val context = LocalContext.current
     val videoId = remember(videoUrl) { UrlUtils.extractYouTubeVideoId(videoUrl) }
     if (videoId == null) {
         ExternalVideoWebView(videoUrl = videoUrl, onMarkStarted = {})
@@ -494,6 +520,51 @@ private fun YouTubeInAppPlayerView(
     var latestPos by remember { mutableLongStateOf(startPositionMs) }
     var latestDur by remember { mutableLongStateOf(0L) }
     var latestDone by remember { mutableStateOf(false) }
+    var playerErrorCode by remember(videoId) { mutableStateOf<Int?>(null) }
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
+
+    if (playerErrorCode != null) {
+        val errorMessage = when (playerErrorCode) {
+            100 -> "هذا الفيديو غير موجود أو خاص على YouTube."
+            101, 150 -> "مالك الفيديو منع تشغيله عبر التضمين خارج تطبيق YouTube."
+            153 -> "رفض YouTube تشغيل التضمين داخل هذا الجهاز (رمز 153)."
+            else -> "تعذر تشغيل الفيديو داخل المشغل المضمّن حالياً."
+        }
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color(0xFF0F172A))
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Icon(
+                imageVector = Icons.Filled.ErrorOutline,
+                contentDescription = null,
+                tint = Color(0xFFFBBF24),
+                modifier = Modifier.size(36.dp)
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = errorMessage,
+                color = Color.White,
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Spacer(Modifier.height(12.dp))
+            Button(
+                onClick = {
+                    val watchUri = Uri.parse(UrlUtils.toYouTubeWatchUrl(videoUrl))
+                    runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, watchUri)) }
+                },
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("فتح الفيديو على YouTube")
+            }
+        }
+        return
+    }
 
     val html = remember(videoId, startSeconds) {
         """
@@ -502,7 +573,7 @@ private fun YouTubeInAppPlayerView(
         <head>
           <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
           <style>
-            html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }
+            html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #0F172A; overflow: hidden; }
             #player { width: 100%; height: 100%; }
           </style>
         </head>
@@ -511,16 +582,35 @@ private fun YouTubeInAppPlayerView(
           <script src="https://www.youtube.com/iframe_api"></script>
           <script>
             var player;
+            var ready = false;
+            setTimeout(function() {
+              if (!ready && window.AbkBridge && window.AbkBridge.onPlayerError) {
+                window.AbkBridge.onPlayerError(-2);
+              }
+            }, 12000);
             function onYouTubeIframeAPIReady() {
               player = new YT.Player('player', {
                 videoId: '$videoId',
                 playerVars: {
                   'playsinline': 1,
+                  'autoplay': 0,
+                  'controls': 1,
+                  'fs': 1,
                   'rel': 0,
                   'modestbranding': 1,
+                  'origin': 'https://www.youtube.com',
                   'start': $startSeconds
                 },
                 events: {
+                  'onReady': function() {
+                    ready = true;
+                  },
+                  'onError': function(event) {
+                    ready = true;
+                    if (window.AbkBridge && window.AbkBridge.onPlayerError) {
+                      window.AbkBridge.onPlayerError(event && typeof event.data === 'number' ? event.data : -1);
+                    }
+                  },
                   'onStateChange': function(event) {
                     if (event.data === YT.PlayerState.ENDED && window.AbkBridge) {
                       var dur = Math.floor((player.getDuration() || 0) * 1000);
@@ -555,26 +645,34 @@ private fun YouTubeInAppPlayerView(
             WebView(ctx).apply {
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
-                settings.mediaPlaybackRequiresUserGesture = false
+                settings.mediaPlaybackRequiresUserGesture = true
                 settings.loadWithOverviewMode = true
                 settings.useWideViewPort = true
                 webChromeClient = WebChromeClient()
                 webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                         val host = request?.url?.host ?: return false
-                        // Keep student strictly inside the app!
                         return !host.contains("youtube.com") && !host.contains("youtube-nocookie.com")
                     }
                 }
                 addJavascriptInterface(object {
                     @JavascriptInterface
                     fun onProgress(posMs: Long, durMs: Long, completed: Boolean) {
-                        latestPos = posMs
-                        latestDur = durMs
-                        if (completed) latestDone = true
-                        onPositionUpdate(posMs, durMs, completed)
-                        if (posMs > 0L) {
-                            onPersistProgress(posMs, durMs, completed)
+                        mainHandler.post {
+                            latestPos = posMs
+                            latestDur = durMs
+                            if (completed) latestDone = true
+                            onPositionUpdate(posMs, durMs, completed)
+                            if (posMs > 0L) {
+                                onPersistProgress(posMs, durMs, completed)
+                            }
+                        }
+                    }
+
+                    @JavascriptInterface
+                    fun onPlayerError(code: Int) {
+                        mainHandler.post {
+                            playerErrorCode = code
                         }
                     }
                 }, "AbkBridge")

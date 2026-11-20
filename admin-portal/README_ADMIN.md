@@ -65,3 +65,14 @@ npm run build   # التحقق من TypeScript وبناء الحزمة الثا�
 - الاستعادة الجماعية لنسخة احتياطية كاملة (`/api/backups/restore`).
 
 **ممنوع تماماً** وضع `firebase-admin` أو مفاتيح `Service Account` داخل كود الواجهة الأمامية أو GitHub. عند الحاجة لهذه الوظائف الإضافية لاحقاً، شغّل `admin-portal/server` محلياً أو على استضافة Node مجانية ومرّر رابطها في `VITE_API_BASE_URL` مع وضع `FIREBASE_SERVICE_ACCOUNT_JSON` في متغيرات بيئة الخادم فقط.
+
+---
+
+## 4. رفع الملفات ومشغل YouTube
+
+- **رفع الملفات (`AssetUrlOrUploadInput`)**:
+  - يستخدم `uploadBytesResumable` لعرض نسبة التقدم الحقيقية مع أزرار **إلغاء الرفع** و**إعادة المحاولة** ومهلة أمان (15–20 ثانية) وفحص مسبق لجاهزية الـ Bucket (`checkStorageBucketAvailability`).
+  - إذا أرجع المشروع `HTTP 404` (بسبب عدم تفعيل Firebase Storage على خطة Spark المجانية بدون بطاقة)، يتوقف الرفع فوراً برسالة عربية واضحة دون حفظ ملفات Base64 داخل Firestore، ويمكن لصق روابط HTTPS مجانية مباشرة (Google Drive / Cloudflare R2 Free / GitHub / YouTube).
+- **فيديوهات YouTube (`src/utils/youtube.ts` + `YouTubePlayer.tsx`)**:
+  - يدعم جميع صيغ الروابط (`watch?v=...`، `youtu.be/...`، `shorts/...`، `embed/...`، `live/...`، وروابط الهاتف `m.youtube.com`) مع حفظ الرابط الأصلي كما هو في Firestore والتحويل إلى Embed (`autoplay=0`) عند العرض فقط بنسبة `16:9`، مع رسالة واضحة وزر **«فتح الفيديو على YouTube»** إذا منع المالك التضمين.
+

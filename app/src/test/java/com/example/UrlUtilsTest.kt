@@ -11,9 +11,17 @@ class UrlUtilsTest {
     @Test
     fun extractsYouTubeIdsFromAllFormats() {
         assertEquals("dQw4w9WgXcQ", UrlUtils.extractYouTubeVideoId("https://www.youtube.com/watch?v=dQw4w9WgXcQ"))
+        assertEquals("dQw4w9WgXcQ", UrlUtils.extractYouTubeVideoId("https://www.youtube.com/watch?app=desktop&si=abc&v=dQw4w9WgXcQ&t=42s"))
+        assertEquals("dQw4w9WgXcQ", UrlUtils.extractYouTubeVideoId("https://m.youtube.com/watch?si=xyz&v=dQw4w9WgXcQ"))
         assertEquals("dQw4w9WgXcQ", UrlUtils.extractYouTubeVideoId("https://youtu.be/dQw4w9WgXcQ?t=12"))
         assertEquals("dQw4w9WgXcQ", UrlUtils.extractYouTubeVideoId("https://www.youtube.com/shorts/dQw4w9WgXcQ"))
+        assertEquals("dQw4w9WgXcQ", UrlUtils.extractYouTubeVideoId("https://m.youtube.com/shorts/dQw4w9WgXcQ"))
         assertEquals("dQw4w9WgXcQ", UrlUtils.extractYouTubeVideoId("https://www.youtube.com/embed/dQw4w9WgXcQ"))
+        assertEquals("dQw4w9WgXcQ", UrlUtils.extractYouTubeVideoId("https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ"))
+        assertEquals(
+            "https://www.youtube.com/embed/dQw4w9WgXcQ?rel=0&modestbranding=1&playsinline=1&controls=1&fs=1&autoplay=0&enablejsapi=1",
+            UrlUtils.toYouTubeEmbedUrl("https://m.youtube.com/watch?v=dQw4w9WgXcQ")
+        )
         assertNull(UrlUtils.extractYouTubeVideoId("https://example.com/lesson.mp4"))
     }
 

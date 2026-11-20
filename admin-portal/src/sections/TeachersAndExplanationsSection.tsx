@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { ArrowDown, ArrowUp, GripVertical, Plus, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, GripVertical, Play, Plus, Trash2 } from 'lucide-react';
 import {
   AssetUrlOrUploadInput,
   EmptyBox,
@@ -8,6 +8,8 @@ import {
   StatusBadge,
   StatusSelector,
 } from '../components/CommonUi';
+import { VideoPreviewModal, YouTubeVideoPlayer } from '../components/YouTubePlayer';
+import { isYouTubeUrl } from '../utils/youtube';
 import {
   commitSortOrderBatch,
   hardDeleteEntity,
@@ -345,6 +347,7 @@ export function ExplanationsAndBlocksSection({
   const [blockSort, setBlockSort] = useState(1);
   const [blockStatus, setBlockStatus] = useState<PublishStatus>('PUBLISHED');
   const [dragBlockId, setDragBlockId] = useState<string | null>(null);
+  const [previewVideo, setPreviewVideo] = useState<{ title: string; url: string } | null>(null);
 
   const filteredLessons = useMemo(
     () => activeLessons.filter((l) => (!selectedSubjectId ? true : l.subjectId === selectedSubjectId)),
@@ -771,9 +774,16 @@ export function ExplanationsAndBlocksSection({
                 )}
 
                 {(['YOUTUBE_VIDEO', 'EXTERNAL_VIDEO'].includes(blockType)) && (
-                  <div className="max-w-xs">
-                    <label className="mb-1 block text-xs font-semibold text-slate-600">المدة (مثال 14:30)</label>
-                    <input value={blockDuration} onChange={(e) => setBlockDuration(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" />
+                  <div className="space-y-3">
+                    <div className="max-w-xs">
+                      <label className="mb-1 block text-xs font-semibold text-slate-600">المدة (مثال 14:30)</label>
+                      <input value={blockDuration} onChange={(e) => setBlockDuration(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" />
+                    </div>
+                    {blockType === 'YOUTUBE_VIDEO' && blockMediaUrl.trim() && isYouTubeUrl(blockMediaUrl) && (
+                      <div className="rounded-2xl border border-slate-200 bg-white p-3">
+                        <YouTubeVideoPlayer url={blockMediaUrl} title={blockTitle || 'معاينة الفيديو'} />
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -951,21 +961,33 @@ export function ExplanationsAndBlocksSection({
                         )}
                       </div>
                     </div>
-                    <RowActionButtons
-                      published={blk.published}
-                      deletedAt={blk.deletedAt}
-                      canEdit={canMutateBlocks}
-                      canHardDelete={canHardDelete}
-                      onTogglePublish={
-                        canEdit
-                          ? () => updateEntityStatus('contentBlocks', blk.id, blk.published ? 'DRAFT' : 'PUBLISHED', staff, blk.title)
-                          : undefined
-                      }
-                      onEdit={() => startEditBlock(blk)}
-                      onSoftDelete={() => softDeleteEntity('contentBlocks', blk.id, staff, blk.title)}
-                      onRestore={() => restoreEntity('contentBlocks', blk.id, staff, blk.title)}
-                      onHardDelete={() => hardDeleteEntity('contentBlocks', blk.id, staff, blk.title)}
-                    />
+                    <div className="flex flex-wrap items-center gap-2">
+                      {blk.mediaUrl && (blk.blockType === 'YOUTUBE_VIDEO' || blk.blockType === 'EXTERNAL_VIDEO') && (
+                        <button
+                          type="button"
+                          onClick={() => setPreviewVideo({ title: blk.title, url: blk.mediaUrl! })}
+                          className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100"
+                        >
+                          <Play className="h-3.5 w-3.5" />
+                          مشاهدة الفيديو
+                        </button>
+                      )}
+                      <RowActionButtons
+                        published={blk.published}
+                        deletedAt={blk.deletedAt}
+                        canEdit={canMutateBlocks}
+                        canHardDelete={canHardDelete}
+                        onTogglePublish={
+                          canEdit
+                            ? () => updateEntityStatus('contentBlocks', blk.id, blk.published ? 'DRAFT' : 'PUBLISHED', staff, blk.title)
+                            : undefined
+                        }
+                        onEdit={() => startEditBlock(blk)}
+                        onSoftDelete={() => softDeleteEntity('contentBlocks', blk.id, staff, blk.title)}
+                        onRestore={() => restoreEntity('contentBlocks', blk.id, staff, blk.title)}
+                        onHardDelete={() => hardDeleteEntity('contentBlocks', blk.id, staff, blk.title)}
+                      />
+                    </div>
                   </div>
                 ))}
               </div>
@@ -973,6 +995,13 @@ export function ExplanationsAndBlocksSection({
           </div>
         </div>
       )}
+
+      <VideoPreviewModal
+        open={Boolean(previewVideo)}
+        title={previewVideo?.title || 'مشاهدة الفيديو'}
+        url={previewVideo?.url || ''}
+        onClose={() => setPreviewVideo(null)}
+      />
     </div>
   );
 }

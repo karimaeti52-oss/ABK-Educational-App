@@ -5,8 +5,9 @@ import java.util.Locale
 
 object UrlUtils {
 
-    private val youtubeRegex = Regex(
-        "(?:youtube\\.com/(?:watch\\?v=|embed/|shorts/|live/)|youtu\\.be/)([a-zA-Z0-9_-]{11})"
+    private val videoIdRegex = Regex("^[a-zA-Z0-9_-]{11}$")
+    private val youtubeFallbackRegex = Regex(
+        "(?:youtu\\.be/|(?:m\\.|www\\.|music\\.)?youtube(?:-nocookie)?\\.com/(?:embed/|shorts/|live/|v/|watch\\?(?:[^#]*&)?v=))([a-zA-Z0-9_-]{11})"
     )
 
     private val driveFileRegex = Regex(
@@ -19,10 +20,55 @@ object UrlUtils {
 
     fun extractYouTubeVideoId(url: String): String? {
         val trimmed = url.trim()
-        if (trimmed.length == 11 && trimmed.matches(Regex("^[a-zA-Z0-9_-]{11}$"))) {
+        if (trimmed.isEmpty()) return null
+        if (videoIdRegex.matches(trimmed)) {
             return trimmed
         }
-        return youtubeRegex.find(trimmed)?.groupValues?.getOrNull(1)
+
+        val candidate = if (!trimmed.startsWith("http://", ignoreCase = true) &&
+            !trimmed.startsWith("https://", ignoreCase = true) &&
+            (trimmed.contains("youtube", ignoreCase = true) || trimmed.contains("youtu.be", ignoreCase = true))
+        ) {
+            "https://$trimmed"
+        } else {
+            trimmed
+        }
+
+        runCatching {
+            val uri = java.net.URI(candidate)
+            val host = (uri.host ?: "").lowercase(Locale.ROOT).removePrefix("www.")
+            if (host == "youtu.be") {
+                val seg = uri.path?.trim('/')?.split('/')?.firstOrNull().orEmpty()
+                if (videoIdRegex.matches(seg)) return seg
+            }
+            if (host == "youtube.com" || host == "m.youtube.com" || host == "music.youtube.com" || host == "youtube-nocookie.com") {
+                val query = uri.rawQuery.orEmpty()
+                for (pair in query.split('&')) {
+                    val idx = pair.indexOf('=')
+                    if (idx > 0 && pair.substring(0, idx) == "v") {
+                        val value = pair.substring(idx + 1)
+                        if (videoIdRegex.matches(value)) return value
+                    }
+                }
+                val segments = uri.path.orEmpty().split('/').filter { it.isNotBlank() }
+                if (segments.size >= 2 && segments[0] in setOf("embed", "shorts", "live", "v", "e")) {
+                    val id = segments[1]
+                    if (videoIdRegex.matches(id)) return id
+                }
+            }
+        }
+
+        return youtubeFallbackRegex.find(trimmed)?.groupValues?.getOrNull(1)
+    }
+
+    fun toYouTubeEmbedUrl(url: String): String? {
+        val id = extractYouTubeVideoId(url) ?: return null
+        return "https://www.youtube.com/embed/$id?rel=0&modestbranding=1&playsinline=1&controls=1&fs=1&autoplay=0&enablejsapi=1"
+    }
+
+    fun toYouTubeWatchUrl(url: String): String {
+        val id = extractYouTubeVideoId(url)
+        return if (id != null) "https://www.youtube.com/watch?v=$id" else url.trim()
     }
 
     fun getYouTubeThumbnailUrl(url: String): String? {
