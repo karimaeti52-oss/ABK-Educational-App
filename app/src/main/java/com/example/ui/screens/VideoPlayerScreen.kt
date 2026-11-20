@@ -2,21 +2,21 @@ package com.example.ui.screens
 
 import android.annotation.SuppressLint
 import android.app.Activity
-import android.content.Intent
 import android.content.pm.ActivityInfo
-import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.Message
 import android.view.View
+import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.FrameLayout
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -42,7 +42,7 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
-import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -60,6 +60,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.movableContentOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -69,6 +71,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
@@ -108,6 +111,8 @@ fun VideoPlayerScreen(
     val context = LocalContext.current
     val activity = context as? Activity
     var isFullscreen by remember { mutableStateOf(false) }
+    var webCustomView by remember { mutableStateOf<View?>(null) }
+    var webCustomCallback by remember { mutableStateOf<WebChromeClient.CustomViewCallback?>(null) }
 
     var latestPositionMs by remember(lesson?.id) {
         mutableLongStateOf(initialProgress?.lastPositionMs ?: 0L)
@@ -119,12 +124,14 @@ fun VideoPlayerScreen(
         mutableStateOf(initialProgress?.completed == true)
     }
 
-    // Manage screen orientation & system bars for fullscreen mode
-    DisposableEffect(isFullscreen) {
+    val activeFullscreen = isFullscreen || webCustomView != null
+
+    // Manage screen orientation & system bars for in-app fullscreen mode
+    DisposableEffect(activeFullscreen) {
         val window = activity?.window
         if (activity != null && window != null) {
             val controller = WindowCompat.getInsetsController(window, window.decorView)
-            if (isFullscreen) {
+            if (activeFullscreen) {
                 activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                 controller.hide(WindowInsetsCompat.Type.systemBars())
                 controller.systemBarsBehavior =
@@ -144,13 +151,22 @@ fun VideoPlayerScreen(
     }
 
     BackHandler {
-        if (isFullscreen) {
-            isFullscreen = false
-        } else {
-            if (lesson != null) {
-                onSaveProgress(latestPositionMs, latestDurationMs, markedCompleted)
+        when {
+            webCustomView != null -> {
+                webCustomCallback?.onCustomViewHidden()
+                webCustomView = null
+                webCustomCallback = null
+                isFullscreen = false
             }
-            onBack()
+            isFullscreen -> {
+                isFullscreen = false
+            }
+            else -> {
+                if (lesson != null) {
+                    onSaveProgress(latestPositionMs, latestDurationMs, markedCompleted)
+                }
+                onBack()
+            }
         }
     }
 
@@ -183,13 +199,9 @@ fun VideoPlayerScreen(
         }
     }
 
-    if (isFullscreen) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black)
-                .testTag("video_fullscreen_container")
-        ) {
+    // Preserve the exact same WebView / ExoPlayer instance across normal <-> fullscreen transitions
+    val sharedPlayerContent = remember(lesson.id, lesson.videoUrl, effectiveType) {
+        movableContentOf {
             InAppPlayerContent(
                 lesson = lesson,
                 sourceType = effectiveType,
@@ -201,8 +213,68 @@ fun VideoPlayerScreen(
                 },
                 onPersistProgress = { pos, dur, done ->
                     onSaveProgress(pos, dur, done || markedCompleted)
+                },
+                onShowCustomFullscreen = { view, callback ->
+                    webCustomView = view
+                    webCustomCallback = callback
+                },
+                onHideCustomFullscreen = {
+                    webCustomView = null
+                    webCustomCallback = null
                 }
             )
+        }
+    }
+
+    if (webCustomView != null) {
+        val currentCustomView = webCustomView!!
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+                .testTag("video_fullscreen_container")
+        ) {
+            AndroidView(
+                factory = { ctx ->
+                    FrameLayout(ctx).apply {
+                        (currentCustomView.parent as? ViewGroup)?.removeView(currentCustomView)
+                        addView(
+                            currentCustomView,
+                            FrameLayout.LayoutParams(
+                                FrameLayout.LayoutParams.MATCH_PARENT,
+                                FrameLayout.LayoutParams.MATCH_PARENT
+                            )
+                        )
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+            IconButton(
+                onClick = {
+                    webCustomCallback?.onCustomViewHidden()
+                    webCustomView = null
+                    webCustomCallback = null
+                },
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(16.dp)
+                    .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(10.dp))
+                    .testTag("exit_fullscreen_button")
+            ) {
+                Icon(Icons.Filled.FullscreenExit, contentDescription = "العودة إلى ABK", tint = Color.White)
+            }
+        }
+        return
+    }
+
+    if (isFullscreen) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+                .testTag("video_fullscreen_container")
+        ) {
+            sharedPlayerContent()
             IconButton(
                 onClick = { isFullscreen = false },
                 modifier = Modifier
@@ -266,19 +338,7 @@ fun VideoPlayerScreen(
                         .aspectRatio(16f / 9f)
                         .background(Color.Black)
                 ) {
-                    InAppPlayerContent(
-                        lesson = lesson,
-                        sourceType = effectiveType,
-                        startPositionMs = latestPositionMs,
-                        onPositionUpdate = { pos, dur, done ->
-                            latestPositionMs = pos
-                            latestDurationMs = dur
-                            if (done) markedCompleted = true
-                        },
-                        onPersistProgress = { pos, dur, done ->
-                            onSaveProgress(pos, dur, done || markedCompleted)
-                        }
-                    )
+                    sharedPlayerContent()
                 }
             }
 
@@ -351,25 +411,6 @@ fun VideoPlayerScreen(
                             Text("ملء الشاشة")
                         }
                     }
-
-                    if (effectiveType == VideoSourceType.YOUTUBE) {
-                        OutlinedButton(
-                            onClick = {
-                                val watchUri = Uri.parse(UrlUtils.toYouTubeWatchUrl(lesson.videoUrl))
-                                runCatching {
-                                    context.startActivity(Intent(Intent.ACTION_VIEW, watchUri))
-                                }
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("open_on_youtube_btn"),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("فتح الفيديو على YouTube")
-                        }
-                    }
                 }
             }
 
@@ -405,7 +446,9 @@ private fun InAppPlayerContent(
     sourceType: VideoSourceType,
     startPositionMs: Long,
     onPositionUpdate: (posMs: Long, durMs: Long, completed: Boolean) -> Unit,
-    onPersistProgress: (posMs: Long, durMs: Long, completed: Boolean) -> Unit
+    onPersistProgress: (posMs: Long, durMs: Long, completed: Boolean) -> Unit,
+    onShowCustomFullscreen: (View, WebChromeClient.CustomViewCallback) -> Unit,
+    onHideCustomFullscreen: () -> Unit
 ) {
     when (sourceType) {
         VideoSourceType.MP4 -> ExoVideoPlayerView(
@@ -418,7 +461,9 @@ private fun InAppPlayerContent(
             videoUrl = lesson.videoUrl,
             startPositionMs = startPositionMs,
             onPositionUpdate = onPositionUpdate,
-            onPersistProgress = onPersistProgress
+            onPersistProgress = onPersistProgress,
+            onShowCustomFullscreen = onShowCustomFullscreen,
+            onHideCustomFullscreen = onHideCustomFullscreen
         )
         VideoSourceType.EXTERNAL -> ExternalVideoWebView(
             videoUrl = lesson.videoUrl,
@@ -507,9 +552,10 @@ private fun YouTubeInAppPlayerView(
     videoUrl: String,
     startPositionMs: Long,
     onPositionUpdate: (Long, Long, Boolean) -> Unit,
-    onPersistProgress: (Long, Long, Boolean) -> Unit
+    onPersistProgress: (Long, Long, Boolean) -> Unit,
+    onShowCustomFullscreen: (View, WebChromeClient.CustomViewCallback) -> Unit,
+    onHideCustomFullscreen: () -> Unit
 ) {
-    val context = LocalContext.current
     val videoId = remember(videoUrl) { UrlUtils.extractYouTubeVideoId(videoUrl) }
     if (videoId == null) {
         ExternalVideoWebView(videoUrl = videoUrl, onMarkStarted = {})
@@ -521,20 +567,22 @@ private fun YouTubeInAppPlayerView(
     var latestDur by remember { mutableLongStateOf(0L) }
     var latestDone by remember { mutableStateOf(false) }
     var playerErrorCode by remember(videoId) { mutableStateOf<Int?>(null) }
+    var reloadNonce by remember(videoId) { mutableIntStateOf(0) }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
 
     if (playerErrorCode != null) {
         val errorMessage = when (playerErrorCode) {
-            100 -> "هذا الفيديو غير موجود أو خاص على YouTube."
-            101, 150 -> "مالك الفيديو منع تشغيله عبر التضمين خارج تطبيق YouTube."
-            153 -> "رفض YouTube تشغيل التضمين داخل هذا الجهاز (رمز 153)."
-            else -> "تعذر تشغيل الفيديو داخل المشغل المضمّن حالياً."
+            100 -> "هذا الفيديو غير متاح أو تم ضبطه كفيديو خاص من قِبل صاحبه."
+            101, 150 -> "صاحب هذا الفيديو منع تشغيله عبر التضمين خارج منصة YouTube، لذلك لا يمكن تشغيله داخل التطبيق."
+            153 -> "رفض خادم التضمين تشغيل الفيديو داخل هذا المشغل حالياً."
+            else -> "تعذر تحميل مشغل الفيديو المضمّن داخل التطبيق. تحقق من الاتصال ثم أعد المحاولة."
         }
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color(0xFF0F172A))
-                .padding(16.dp),
+                .padding(16.dp)
+                .testTag("youtube_embed_error_box"),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
@@ -548,25 +596,27 @@ private fun YouTubeInAppPlayerView(
             Text(
                 text = errorMessage,
                 color = Color.White,
-                style = MaterialTheme.typography.bodyMedium
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center
             )
             Spacer(Modifier.height(12.dp))
             Button(
                 onClick = {
-                    val watchUri = Uri.parse(UrlUtils.toYouTubeWatchUrl(videoUrl))
-                    runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, watchUri)) }
+                    playerErrorCode = null
+                    reloadNonce++
                 },
-                shape = RoundedCornerShape(10.dp)
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.testTag("youtube_retry_btn")
             ) {
-                Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(6.dp))
-                Text("فتح الفيديو على YouTube")
+                Text("إعادة المحاولة")
             }
         }
         return
     }
 
-    val html = remember(videoId, startSeconds) {
+    val html = remember(videoId, startSeconds, reloadNonce) {
         """
         <!DOCTYPE html>
         <html>
@@ -636,6 +686,7 @@ private fun YouTubeInAppPlayerView(
 
     DisposableEffect(videoId) {
         onDispose {
+            onHideCustomFullscreen()
             onPersistProgress(latestPos, latestDur, latestDone)
         }
     }
@@ -648,11 +699,37 @@ private fun YouTubeInAppPlayerView(
                 settings.mediaPlaybackRequiresUserGesture = true
                 settings.loadWithOverviewMode = true
                 settings.useWideViewPort = true
-                webChromeClient = WebChromeClient()
+                settings.setSupportMultipleWindows(true)
+                settings.javaScriptCanOpenWindowsAutomatically = false
+                webChromeClient = object : WebChromeClient() {
+                    override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
+                        if (view != null && callback != null) {
+                            onShowCustomFullscreen(view, callback)
+                        }
+                    }
+
+                    override fun onHideCustomView() {
+                        onHideCustomFullscreen()
+                    }
+
+                    override fun onCreateWindow(
+                        view: WebView?,
+                        isDialog: Boolean,
+                        isUserGesture: Boolean,
+                        resultMsg: Message?
+                    ): Boolean {
+                        // Never open external browser/YouTube popups from inside ABK
+                        return false
+                    }
+                }
                 webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                        val host = request?.url?.host ?: return false
-                        return !host.contains("youtube.com") && !host.contains("youtube-nocookie.com")
+                        val urlStr = request?.url?.toString().orEmpty()
+                        val host = request?.url?.host?.lowercase().orEmpty()
+                        val isEmbedFrame = (host.contains("youtube.com") || host.contains("youtube-nocookie.com")) &&
+                            (urlStr.contains("/embed/") || urlStr.contains("/iframe_api"))
+                        // Block navigating away from the embedded player to YouTube app/website
+                        return !isEmbedFrame
                     }
                 }
                 addJavascriptInterface(object {
@@ -679,7 +756,15 @@ private fun YouTubeInAppPlayerView(
                 loadDataWithBaseURL("https://www.youtube.com", html, "text/html", "utf-8", null)
             }
         },
-        modifier = Modifier.fillMaxSize()
+        update = { webView ->
+            if (reloadNonce > 0 && webView.tag != reloadNonce) {
+                webView.tag = reloadNonce
+                webView.loadDataWithBaseURL("https://www.youtube.com", html, "text/html", "utf-8", null)
+            }
+        },
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag("youtube_inapp_webview")
     )
 }
 
@@ -697,10 +782,25 @@ private fun ExternalVideoWebView(
             WebView(ctx).apply {
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
-                settings.mediaPlaybackRequiresUserGesture = false
+                settings.mediaPlaybackRequiresUserGesture = true
+                settings.setSupportMultipleWindows(true)
+                settings.javaScriptCanOpenWindowsAutomatically = false
                 settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-                webChromeClient = WebChromeClient()
-                webViewClient = WebViewClient()
+                webChromeClient = object : WebChromeClient() {
+                    override fun onCreateWindow(
+                        view: WebView?,
+                        isDialog: Boolean,
+                        isUserGesture: Boolean,
+                        resultMsg: Message?
+                    ): Boolean = false
+                }
+                webViewClient = object : WebViewClient() {
+                    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                        val scheme = request?.url?.scheme?.lowercase().orEmpty()
+                        // Strictly block launching external apps (youtube://, vnd.youtube:, intent://, market://)
+                        return scheme != "http" && scheme != "https"
+                    }
+                }
                 loadUrl(videoUrl)
             }
         },

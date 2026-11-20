@@ -666,7 +666,7 @@ export function VideosOverviewSection({
                       className="inline-flex items-center gap-1 rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
                     >
                       <ExternalLink className="h-3.5 w-3.5" />
-                      فتح على YouTube
+                      معاينة على YouTube (تشخيص الإدارة)
                     </a>
                   </div>
                 )}
@@ -711,7 +711,7 @@ export function VideosOverviewSection({
                     className="inline-flex items-center gap-1 rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
                   >
                     <ExternalLink className="h-3.5 w-3.5" />
-                    فتح على YouTube
+                    معاينة على YouTube (تشخيص الإدارة)
                   </a>
                 </div>
               </div>

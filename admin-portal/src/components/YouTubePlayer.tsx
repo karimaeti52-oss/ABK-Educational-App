@@ -90,7 +90,7 @@ export function YouTubeVideoPlayer({ url, title = 'مشغل فيديو YouTube' 
             className="inline-flex items-center gap-1.5 rounded-xl bg-rose-600 px-4 py-2 text-xs font-bold text-white hover:bg-rose-700"
           >
             <ExternalLink className="h-3.5 w-3.5" />
-            فتح الفيديو على YouTube
+            فتح على YouTube (معاينة وتشخيص الإدارة)
           </a>
         )}
       </div>
@@ -113,7 +113,7 @@ export function YouTubeVideoPlayer({ url, title = 'مشغل فيديو YouTube' 
             className="inline-flex items-center gap-1.5 rounded-xl bg-[#0F294A] px-4 py-2.5 text-xs font-bold text-white hover:bg-[#163A66]"
           >
             <ExternalLink className="h-4 w-4" />
-            فتح الفيديو على YouTube
+            فتح على YouTube (معاينة وتشخيص الإدارة)
           </a>
         </div>
       ) : (
@@ -148,7 +148,7 @@ export function YouTubeVideoPlayer({ url, title = 'مشغل فيديو YouTube' 
           className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 font-bold text-[#0F294A] shadow-2xs ring-1 ring-slate-200 hover:bg-slate-100"
         >
           <ExternalLink className="h-3.5 w-3.5 text-rose-600" />
-          فتح الفيديو على YouTube
+          فتح على YouTube (معاينة وتشخيص الإدارة)
         </a>
       </div>
     </div>

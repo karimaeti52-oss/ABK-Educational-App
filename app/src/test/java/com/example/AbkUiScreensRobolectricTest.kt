@@ -28,6 +28,7 @@ import com.example.ui.screens.ExplanationDetailScreen
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.LessonTeachersScreen
 import com.example.ui.screens.SuspendedAccountScreen
+import com.example.ui.screens.VideoPlayerScreen
 import com.example.ui.theme.ABKTheme
 import com.example.viewmodel.SearchResults
 import org.junit.Assert.assertEquals
@@ -322,5 +323,55 @@ class AbkUiScreensRobolectricTest {
         composeTestRule.onNodeWithTag("block_assignment_card_b_hw").assertIsDisplayed()
         composeTestRule.onNodeWithText("واجب الدرس الأول").assertIsDisplayed()
         composeTestRule.onNodeWithText("حل التمارين من 1 إلى 5").assertIsDisplayed()
+    }
+
+    @Test
+    fun `VideoPlayerScreen plays YouTube Shorts in-app, toggles fullscreen cleanly, and hides external YouTube button`() {
+        val sampleLesson = Lesson(
+            id = "les_yt_1",
+            subjectId = "math",
+            subjectName = "الرياضيات",
+            unitTitle = "المتتاليات",
+            title = "شرح درس المتتاليات الهندسية",
+            teacherName = "أ. كريم عيتي",
+            videoUrl = "https://www.youtube.com/shorts/dQw4w9WgXcQ",
+            videoSourceType = "YOUTUBE"
+        )
+
+        composeTestRule.setContent {
+            ABKTheme {
+                VideoPlayerScreen(
+                    lesson = sampleLesson,
+                    relatedMaterials = emptyList(),
+                    initialProgress = null,
+                    isFavorite = false,
+                    onBack = {},
+                    onSaveProgress = { _, _, _ -> },
+                    onToggleFavorite = {},
+                    onOpenMaterial = {},
+                    onDownloadMaterial = {},
+                    onShareMaterial = {}
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("video_player_screen").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("youtube_inapp_webview").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("open_on_youtube_btn").assertDoesNotExist()
+        composeTestRule.onNodeWithText("فتح الفيديو على YouTube").assertDoesNotExist()
+        composeTestRule.onNodeWithText("فتح على YouTube").assertDoesNotExist()
+
+        // Enter fullscreen inside ABK
+        composeTestRule.onNodeWithTag("enter_fullscreen_button").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("video_fullscreen_container").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("exit_fullscreen_button").assertIsDisplayed()
+
+        // Exit fullscreen back to lesson view inside ABK
+        composeTestRule.onNodeWithTag("exit_fullscreen_button").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("video_player_screen").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("youtube_inapp_webview").assertIsDisplayed()
     }
 }
