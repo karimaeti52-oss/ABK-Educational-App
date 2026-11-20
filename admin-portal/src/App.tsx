@@ -506,7 +506,14 @@ export default function App() {
       case 'media':
         return <MediaLibrarySection onToast={showToast} />;
       case 'students':
-        return <StudentsSection store={store} staff={staff!} onToast={showToast} />;
+        return (
+          <StudentsSection
+            store={store}
+            staff={staff!}
+            onRequireReauth={() => setShowReauthModal(true)}
+            onToast={showToast}
+          />
+        );
       case 'admins':
         return (
           <AdminsRbacSection

@@ -754,3 +754,97 @@ test("Student favorites, progress, and readAnnouncements isolate strictly by use
     })
   );
 });
+
+test("BANNED and SUSPENDED users are blocked from reading content or writing student data, while ASSIGNMENT blocks/materials validate cleanly", async () => {
+  const admDb = adminContext().firestore();
+  const aliceDb = testEnv.authenticatedContext(STUDENT_ALICE, { email: "alice@example.com", email_verified: true }).firestore();
+  const now = new Date(Date.now() - 2000);
+
+  await assertSucceeds(
+    admDb.collection("subjects").doc("subj_math").set({
+      title: "الرياضيات",
+      description: "الجبر",
+      iconKey: "math",
+      sortOrder: 1,
+      published: true,
+      createdBy: ADMIN_UID,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Admin can create an ASSIGNMENT study material
+  await assertSucceeds(
+    admDb.collection("materials").doc("mat_assign_1").set({
+      subjectId: "subj_math",
+      subjectName: "الرياضيات",
+      materialType: "ASSIGNMENT",
+      title: "واجب التفاضل الأول",
+      description: "يرجى حل التمارين 1 إلى 5",
+      fileUrl: "https://example.com/assignment1.pdf",
+      published: true,
+      createdBy: ADMIN_UID,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Admin creates BANNED user profile for Alice with banReason
+  await assertSucceeds(
+    admDb.collection("users").doc(STUDENT_ALICE).set({
+      userId: STUDENT_ALICE,
+      displayName: "Alice",
+      email: "alice@example.com",
+      role: "STUDENT",
+      accountStatus: "BANNED",
+      banReason: "مخالفة تعليمات المنصة",
+      bannedAt: now,
+      bannedBy: ADMIN_EMAIL,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Alice can read her own user profile doc so the app can render the Banned screen
+  await assertSucceeds(aliceDb.collection("users").doc(STUDENT_ALICE).get());
+
+  // Alice is denied reading subjects, materials, announcements, platformConfig, or writing favorites/progress
+  await assertFails(aliceDb.collection("subjects").where("published", "==", true).get());
+  await assertFails(aliceDb.collection("materials").where("published", "==", true).get());
+  await assertFails(aliceDb.collection("announcements").where("published", "==", true).get());
+  await assertFails(aliceDb.collection("platformConfig").doc("main").get());
+  await assertFails(
+    aliceDb.collection("users").doc(STUDENT_ALICE).collection("favorites").doc("fav_blocked").set({
+      userId: STUDENT_ALICE,
+      itemId: "mat_assign_1",
+      itemType: "MATERIAL",
+      title: "واجب",
+      subtitle: "واجب",
+      subjectName: "الرياضيات",
+      createdAt: now,
+    })
+  );
+
+  // Admin unbans Alice -> reads & favorites resume
+  await assertSucceeds(
+    admDb.collection("users").doc(STUDENT_ALICE).update({
+      accountStatus: "ACTIVE",
+      banReason: null,
+      bannedAt: null,
+      updatedAt: new Date(Date.now() - 500),
+    })
+  );
+  await assertSucceeds(aliceDb.collection("subjects").where("published", "==", true).get());
+  await assertSucceeds(
+    aliceDb.collection("users").doc(STUDENT_ALICE).collection("favorites").doc("fav_ok").set({
+      userId: STUDENT_ALICE,
+      itemId: "mat_assign_1",
+      itemType: "MATERIAL",
+      title: "واجب",
+      subtitle: "واجب",
+      subjectName: "الرياضيات",
+      createdAt: now,
+    })
+  );
+});
+

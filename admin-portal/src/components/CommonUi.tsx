@@ -99,7 +99,11 @@ export function AssetUrlOrUploadInput({
       onChange(uploaded.url, uploaded.sizeLabel);
       onToast(`تم رفع الملف بنجاح (${uploaded.sizeLabel})`);
     } catch (err) {
-      onToast(err instanceof Error ? err.message : 'فشل رفع الملف', true);
+      const msg = err instanceof Error ? err.message : '';
+      const hint = msg.toLowerCase().includes('storage') || msg.toLowerCase().includes('unauthorized') || msg.toLowerCase().includes('permission')
+        ? 'تعذر الرفع إلى Storage (قد يتطلب ترقية الخطة أو تفعيل Storage) — يمكنك مجاناً لصق رابط HTTPS مباشر مثل Google Drive أو YouTube في الحقل المجاور.'
+        : msg || 'فشل رفع الملف';
+      onToast(hint, true);
     } finally {
       setUploading(false);
       e.target.value = '';
@@ -130,6 +134,9 @@ export function AssetUrlOrUploadInput({
           />
         </label>
       </div>
+      <p className="text-[11px] text-slate-400">
+        مجاني 100%: الصق رابط HTTPS مباشر (Google Drive / Cloudflare R2 / YouTube / GitHub)، أو استخدم الرفع المباشر عند تفعيل Storage.
+      </p>
       {imageOnly && value && (
         <img
           src={value}

@@ -91,6 +91,14 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
 
+    function isAccountActive() {
+      return isSignedIn() && (
+        isAnyStaffReader() ||
+        !exists(/databases/$(database)/documents/users/$(request.auth.uid)) ||
+        !(get(/databases/$(database)/documents/users/$(request.auth.uid)).data.accountStatus in ['SUSPENDED', 'BANNED'])
+      );
+    }
+
     function isOptionalString(data, key, maxLen) {
       return !(key in data) || data[key] == null || (data[key] is string && data[key].size() <= maxLen);
     }
@@ -137,13 +145,16 @@ service cloud.firestore {
 
     function isValidUserProfile(data) {
       return data.keys().hasAll(['userId', 'displayName', 'email', 'role', 'accountStatus', 'createdAt', 'updatedAt']) &&
-             data.keys().hasOnly(['userId', 'displayName', 'email', 'photoUrl', 'role', 'accountStatus', 'lastActiveAt', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['userId', 'displayName', 'email', 'photoUrl', 'role', 'accountStatus', 'banReason', 'bannedAt', 'bannedBy', 'lastActiveAt', 'createdAt', 'updatedAt']) &&
              isValidId(data.userId) &&
              data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100 &&
              data.email is string && data.email.size() <= 160 &&
              isOptionalString(data, 'photoUrl', 500) &&
              data.role in ['STUDENT', 'ADMIN', 'SUPER_ADMIN', 'CONTENT_MANAGER', 'TEACHER', 'VIEWER'] &&
-             data.accountStatus in ['ACTIVE', 'SUSPENDED'] &&
+             data.accountStatus in ['ACTIVE', 'SUSPENDED', 'BANNED'] &&
+             isOptionalString(data, 'banReason', 300) &&
+             (!('bannedAt' in data) || data.bannedAt == null || (data.bannedAt is timestamp && data.bannedAt <= request.time)) &&
+             isOptionalString(data, 'bannedBy', 160) &&
              (!('lastActiveAt' in data) || (data.lastActiveAt is timestamp && data.lastActiveAt <= request.time)) &&
              data.createdAt is timestamp && data.createdAt <= request.time &&
              data.updatedAt is timestamp && data.updatedAt <= request.time;
@@ -268,7 +279,7 @@ service cloud.firestore {
              isValidId(data.subjectId) &&
              isValidId(data.teacherId) &&
              isOptionalString(data, 'teacherUid', 128) &&
-             data.blockType in ['YOUTUBE_VIDEO', 'EXTERNAL_VIDEO', 'PDF_FILE', 'IMAGE', 'NOTE_SUMMARY', 'QA', 'QUIZ_MCQ', 'QUIZ_TRUE_FALSE', 'INTERACTIVE_EXAM', 'RICH_TEXT', 'EXTERNAL_LINK', 'DOWNLOAD_FILE', 'CUSTOM'] &&
+             data.blockType in ['YOUTUBE_VIDEO', 'EXTERNAL_VIDEO', 'PDF_FILE', 'IMAGE', 'NOTE_SUMMARY', 'QA', 'QUIZ_MCQ', 'QUIZ_TRUE_FALSE', 'INTERACTIVE_EXAM', 'RICH_TEXT', 'EXTERNAL_LINK', 'DOWNLOAD_FILE', 'ASSIGNMENT', 'CUSTOM'] &&
              isOptionalString(data, 'customTypeKey', 60) &&
              data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
              isOptionalString(data, 'subtitle', 300) &&
@@ -331,7 +342,7 @@ service cloud.firestore {
              isOptionalString(data, 'lessonTitle', 140) &&
              isOptionalString(data, 'teacherId', 128) &&
              isOptionalString(data, 'teacherUid', 128) &&
-             data.materialType in ['TEXTBOOK', 'STUDY_NOTE', 'SUMMARY', 'IMPORTANT_QUESTIONS', 'WORKSHEET', 'PRACTICE_EXAM'] &&
+             data.materialType in ['TEXTBOOK', 'STUDY_NOTE', 'SUMMARY', 'IMPORTANT_QUESTIONS', 'WORKSHEET', 'PRACTICE_EXAM', 'ASSIGNMENT'] &&
              data.title is string && data.title.size() >= 1 && data.title.size() <= 140 &&
              data.description is string && data.description.size() <= 1000 &&
              isOptionalString(data, 'coverUrl', 1000) &&
@@ -446,79 +457,80 @@ service cloud.firestore {
       allow delete: if isSuperAdmin() && isValidId(userId);
 
       match /favorites/{favoriteId} {
-        allow get: if isOwner(userId) && isValidId(favoriteId);
-        allow list: if isOwner(userId);
-        allow create: if isOwner(userId) && isValidId(favoriteId) && isValidFavorite(incoming(), userId);
+        allow get: if isOwner(userId) && isAccountActive() && isValidId(favoriteId);
+        allow list: if isOwner(userId) && isAccountActive();
+        allow create: if isOwner(userId) && isAccountActive() && isValidId(favoriteId) && isValidFavorite(incoming(), userId);
         allow update: if false;
-        allow delete: if isOwner(userId) && isValidId(favoriteId);
+        allow delete: if isOwner(userId) && isAccountActive() && isValidId(favoriteId);
       }
 
       match /progress/{lessonId} {
-        allow get: if isOwner(userId) && isValidId(lessonId);
-        allow list: if isOwner(userId);
-        allow create: if isOwner(userId) && isValidId(lessonId) && isValidProgress(incoming(), userId) && incoming().lessonId == lessonId;
+        allow get: if isOwner(userId) && isAccountActive() && isValidId(lessonId);
+        allow list: if isOwner(userId) && isAccountActive();
+        allow create: if isOwner(userId) && isAccountActive() && isValidId(lessonId) && isValidProgress(incoming(), userId) && incoming().lessonId == lessonId;
         allow update: if isOwner(userId) &&
+                         isAccountActive() &&
                          isValidId(lessonId) &&
                          isValidProgress(incoming(), userId) &&
                          incoming().userId == existing().userId &&
                          incoming().lessonId == existing().lessonId &&
                          incoming().createdAt == existing().createdAt &&
                          incoming().diff(existing()).affectedKeys().hasOnly(['lessonTitle', 'subjectId', 'subjectName', 'thumbnailUrl', 'lastPositionMs', 'durationMs', 'completed', 'updatedAt']);
-        allow delete: if isOwner(userId) && isValidId(lessonId);
+        allow delete: if isOwner(userId) && isAccountActive() && isValidId(lessonId);
       }
 
       match /readAnnouncements/{announcementId} {
-        allow get: if isOwner(userId) && isValidId(announcementId);
-        allow list: if isOwner(userId);
-        allow create: if isOwner(userId) && isValidId(announcementId) && isValidReadAnnouncement(incoming(), userId, announcementId);
+        allow get: if isOwner(userId) && isAccountActive() && isValidId(announcementId);
+        allow list: if isOwner(userId) && isAccountActive();
+        allow create: if isOwner(userId) && isAccountActive() && isValidId(announcementId) && isValidReadAnnouncement(incoming(), userId, announcementId);
         allow update: if false;
-        allow delete: if isOwner(userId) && isValidId(announcementId);
+        allow delete: if isOwner(userId) && isAccountActive() && isValidId(announcementId);
       }
     }
 
     match /catalogNodes/{nodeId} {
-      allow get: if isSignedIn() && isValidId(nodeId) && (isStudentVisible(existing()) || isAnyStaffReader());
-      allow list: if isSignedIn() && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow get: if isAccountActive() && isValidId(nodeId) && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow list: if isAccountActive() && (isStudentVisible(existing()) || isAnyStaffReader());
       allow create: if isContentStaff() && isValidId(nodeId) && isValidCatalogNode(incoming()) && incoming().createdBy == request.auth.uid;
       allow update: if isContentStaff() && isValidId(nodeId) && isValidCatalogNode(incoming()) && incoming().createdAt == existing().createdAt && incoming().createdBy == existing().createdBy;
       allow delete: if isAdmin() && isValidId(nodeId);
     }
 
     match /subjects/{subjectId} {
-      allow get: if isSignedIn() && isValidId(subjectId) && (isStudentVisible(existing()) || isAnyStaffReader());
-      allow list: if isSignedIn() && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow get: if isAccountActive() && isValidId(subjectId) && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow list: if isAccountActive() && (isStudentVisible(existing()) || isAnyStaffReader());
       allow create: if isContentStaff() && isValidId(subjectId) && isValidSubject(incoming()) && incoming().createdBy == request.auth.uid;
       allow update: if isContentStaff() && isValidId(subjectId) && isValidSubject(incoming()) && incoming().createdAt == existing().createdAt && incoming().createdBy == existing().createdBy;
       allow delete: if isAdmin() && isValidId(subjectId);
     }
 
     match /units/{unitId} {
-      allow get: if isSignedIn() && isValidId(unitId) && (isStudentVisible(existing()) || isAnyStaffReader());
-      allow list: if isSignedIn() && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow get: if isAccountActive() && isValidId(unitId) && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow list: if isAccountActive() && (isStudentVisible(existing()) || isAnyStaffReader());
       allow create: if isContentStaff() && isValidId(unitId) && isValidUnit(incoming()) && incoming().createdBy == request.auth.uid && exists(/databases/$(database)/documents/subjects/$(incoming().subjectId));
       allow update: if isContentStaff() && isValidId(unitId) && isValidUnit(incoming()) && incoming().createdAt == existing().createdAt && incoming().createdBy == existing().createdBy;
       allow delete: if isAdmin() && isValidId(unitId);
     }
 
     match /teachers/{teacherId} {
-      allow get: if isSignedIn() && isValidId(teacherId) && (isStudentVisible(existing()) || isAnyStaffReader());
-      allow list: if isSignedIn() && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow get: if isAccountActive() && isValidId(teacherId) && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow list: if isAccountActive() && (isStudentVisible(existing()) || isAnyStaffReader());
       allow create: if isContentStaff() && isValidId(teacherId) && isValidTeacher(incoming()) && incoming().createdBy == request.auth.uid;
       allow update: if isContentStaff() && isValidId(teacherId) && isValidTeacher(incoming()) && incoming().createdAt == existing().createdAt && incoming().createdBy == existing().createdBy;
       allow delete: if isAdmin() && isValidId(teacherId);
     }
 
     match /lessons/{lessonId} {
-      allow get: if isSignedIn() && isValidId(lessonId) && (isStudentVisible(existing()) || isAnyStaffReader());
-      allow list: if isSignedIn() && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow get: if isAccountActive() && isValidId(lessonId) && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow list: if isAccountActive() && (isStudentVisible(existing()) || isAnyStaffReader());
       allow create: if isContentStaff() && isValidId(lessonId) && isValidLesson(incoming()) && incoming().createdBy == request.auth.uid && exists(/databases/$(database)/documents/subjects/$(incoming().subjectId));
       allow update: if isContentStaff() && isValidId(lessonId) && isValidLesson(incoming()) && incoming().createdAt == existing().createdAt && incoming().createdBy == existing().createdBy;
       allow delete: if isAdmin() && isValidId(lessonId);
     }
 
     match /lessonExplanations/{explanationId} {
-      allow get: if isSignedIn() && isValidId(explanationId) && (isStudentVisible(existing()) || isAnyStaffReader());
-      allow list: if isSignedIn() && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow get: if isAccountActive() && isValidId(explanationId) && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow list: if isAccountActive() && (isStudentVisible(existing()) || isAnyStaffReader());
       allow create: if isValidId(explanationId) &&
                        isValidLessonExplanation(incoming()) &&
                        incoming().createdBy == request.auth.uid &&
@@ -540,8 +552,8 @@ service cloud.firestore {
     }
 
     match /contentBlocks/{blockId} {
-      allow get: if isSignedIn() && isValidId(blockId) && (isStudentVisible(existing()) || isAnyStaffReader());
-      allow list: if isSignedIn() && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow get: if isAccountActive() && isValidId(blockId) && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow list: if isAccountActive() && (isStudentVisible(existing()) || isAnyStaffReader());
       allow create: if isValidId(blockId) &&
                        isValidContentBlock(incoming()) &&
                        incoming().createdBy == request.auth.uid &&
@@ -562,23 +574,23 @@ service cloud.firestore {
     }
 
     match /customSectionTypes/{typeId} {
-      allow get: if isSignedIn() && isValidId(typeId) && (existing().published == true || isAnyStaffReader());
-      allow list: if isSignedIn() && (existing().published == true || isAnyStaffReader());
+      allow get: if isAccountActive() && isValidId(typeId) && (existing().published == true || isAnyStaffReader());
+      allow list: if isAccountActive() && (existing().published == true || isAnyStaffReader());
       allow create: if isContentStaff() && isValidId(typeId) && isValidCustomSectionType(incoming()) && incoming().createdBy == request.auth.uid;
       allow update: if isContentStaff() && isValidId(typeId) && isValidCustomSectionType(incoming()) && incoming().createdAt == existing().createdAt && incoming().createdBy == existing().createdBy;
       allow delete: if isAdmin() && isValidId(typeId);
     }
 
     match /platformConfig/{configId} {
-      allow get: if isSignedIn() && isValidId(configId) && (configId == 'main' || isAnyStaffReader());
+      allow get: if isAccountActive() && isValidId(configId) && (configId == 'main' || isAnyStaffReader());
       allow list: if isAnyStaffReader();
       allow create, update: if isAdmin() && configId == 'main' && isValidPlatformConfig(incoming());
       allow delete: if isSuperAdmin() && configId != 'main';
     }
 
     match /materials/{materialId} {
-      allow get: if isSignedIn() && isValidId(materialId) && (isStudentVisible(existing()) || isAnyStaffReader());
-      allow list: if isSignedIn() && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow get: if isAccountActive() && isValidId(materialId) && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow list: if isAccountActive() && (isStudentVisible(existing()) || isAnyStaffReader());
       allow create: if isValidId(materialId) &&
                        isValidMaterial(incoming()) &&
                        incoming().createdBy == request.auth.uid &&
@@ -599,8 +611,8 @@ service cloud.firestore {
     }
 
     match /announcements/{announcementId} {
-      allow get: if isSignedIn() && isValidId(announcementId) && (isStudentVisible(existing()) || isAnyStaffReader());
-      allow list: if isSignedIn() && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow get: if isAccountActive() && isValidId(announcementId) && (isStudentVisible(existing()) || isAnyStaffReader());
+      allow list: if isAccountActive() && (isStudentVisible(existing()) || isAnyStaffReader());
       allow create: if isContentStaff() && isValidId(announcementId) && isValidAnnouncement(incoming()) && incoming().createdBy == request.auth.uid;
       allow update: if isContentStaff() && isValidId(announcementId) && isValidAnnouncement(incoming()) && incoming().createdAt == existing().createdAt && incoming().createdBy == existing().createdBy;
       allow delete: if isAdmin() && isValidId(announcementId);

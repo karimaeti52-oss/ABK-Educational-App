@@ -219,9 +219,12 @@ private fun AuthenticatedAbkApp(firebaseUser: FirebaseUser) {
     val isOnline by NetworkMonitor.observeIsOnline(context).collectAsStateWithLifecycle(initialValue = true)
 
     ABKTheme(platformConfig = platformConfig) {
-        // If account was disabled by admin, lock to Suspended screen
-        if (userProfile?.parsedStatus() == AccountStatus.SUSPENDED) {
+        // If account was disabled or banned by admin, lock to Suspended/Banned screen
+        val currentStatus = userProfile?.parsedStatus()
+        if (currentStatus == AccountStatus.SUSPENDED || currentStatus == AccountStatus.BANNED) {
             SuspendedAccountScreen(
+                status = currentStatus,
+                banReason = userProfile?.banReason,
                 onSignOut = {
                     signOutUser(credentialManager, scope)
                 }

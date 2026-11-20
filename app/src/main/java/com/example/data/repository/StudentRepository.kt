@@ -69,7 +69,7 @@ class StudentRepository(
                 userRef.set(payload).await()
             } else {
                 val status = existingSnap.getString("accountStatus")
-                if (status != AccountStatus.SUSPENDED.name) {
+                if (status != AccountStatus.SUSPENDED.name && status != AccountStatus.BANNED.name) {
                     val updateMap = mutableMapOf<String, Any>(
                         "displayName" to safeName,
                         "email" to safeEmail,

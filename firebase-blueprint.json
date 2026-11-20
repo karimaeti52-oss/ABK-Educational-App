@@ -28,7 +28,10 @@
         "email": { "type": "string" },
         "photoUrl": { "type": "string" },
         "role": { "type": "string", "enum": ["STUDENT", "ADMIN", "SUPER_ADMIN", "CONTENT_MANAGER", "TEACHER", "VIEWER"] },
-        "accountStatus": { "type": "string", "enum": ["ACTIVE", "SUSPENDED"] },
+        "accountStatus": { "type": "string", "enum": ["ACTIVE", "SUSPENDED", "BANNED"] },
+        "banReason": { "type": "string" },
+        "bannedAt": { "type": "string", "format": "date-time" },
+        "bannedBy": { "type": "string" },
         "lastActiveAt": { "type": "string", "format": "date-time" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
@@ -201,6 +204,7 @@
             "RICH_TEXT",
             "EXTERNAL_LINK",
             "DOWNLOAD_FILE",
+            "ASSIGNMENT",
             "CUSTOM"
           ]
         },
@@ -306,7 +310,7 @@
         "lessonTitle": { "type": "string" },
         "teacherId": { "type": "string" },
         "teacherUid": { "type": "string" },
-        "materialType": { "type": "string", "enum": ["TEXTBOOK", "STUDY_NOTE", "SUMMARY", "IMPORTANT_QUESTIONS", "WORKSHEET", "PRACTICE_EXAM"] },
+        "materialType": { "type": "string", "enum": ["TEXTBOOK", "STUDY_NOTE", "SUMMARY", "IMPORTANT_QUESTIONS", "WORKSHEET", "PRACTICE_EXAM", "ASSIGNMENT"] },
         "title": { "type": "string" },
         "description": { "type": "string" },
         "coverUrl": { "type": "string" },

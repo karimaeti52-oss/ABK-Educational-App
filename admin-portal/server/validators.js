@@ -14,7 +14,12 @@ export const RevokeAdminSchema = z.object({
 });
 
 export const UpdateUserStatusSchema = z.object({
-  accountStatus: z.enum(['ACTIVE', 'SUSPENDED']),
+  accountStatus: z.enum(['ACTIVE', 'SUSPENDED', 'BANNED']),
+  reason: z.string().trim().max(300).optional().or(z.literal('')),
+});
+
+export const DeleteUserSchema = z.object({
+  confirmTarget: z.string().trim().min(1, 'يرجى تأكيد البريد الإلكتروني أو المعرف قبل الحذف').max(160),
 });
 
 export const AuditLogSchema = z.object({

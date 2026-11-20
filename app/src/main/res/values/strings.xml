@@ -20,4 +20,6 @@
     <string name="admin_panel_title">لوحة تحكم المدير</string>
     <string name="account_suspended_title">تم تعطيل الحساب مؤقتاً</string>
     <string name="account_suspended_desc">تم إيقاف هذا الحساب من قبل إدارة منصة ABK. يرجى التواصل مع الإدارة للمراجعة.</string>
+    <string name="account_banned_title">تم حظر الحساب من الإدارة</string>
+    <string name="account_banned_desc">تم حظر هذا الحساب نهائياً من استخدام منصة ABK لعدم الالتزام بشروط الاستخدام.</string>
 </resources>

@@ -26,11 +26,15 @@ export function DashboardSection({
   const activeBlocks = store.blocks.filter((b) => !b.deletedAt);
   const activeMaterials = store.materials.filter((m) => !m.deletedAt);
 
+  const activeUsersCount = store.users.filter((u) => u.accountStatus === 'ACTIVE').length;
+  const suspendedUsersCount = store.users.filter((u) => u.accountStatus === 'SUSPENDED').length;
+  const bannedUsersCount = store.users.filter((u) => u.accountStatus === 'BANNED').length;
+
   const cards = [
     {
-      label: 'الطلاب المسجلون',
+      label: 'الطلاب والحسابات المسجلة',
       value: store.users.length,
-      sub: `${store.users.filter((u) => u.accountStatus === 'ACTIVE').length} حساب نشط`,
+      sub: `${activeUsersCount} نشط • ${suspendedUsersCount} معطل • ${bannedUsersCount} محظور`,
       icon: Users,
       color: 'bg-sky-50 text-sky-700 border-sky-200',
       nav: 'students' as NavSectionId,

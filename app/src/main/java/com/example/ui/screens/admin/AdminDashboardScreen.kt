@@ -387,7 +387,8 @@ fun AdminDashboardScreen(
                             ) {
                                 items(filteredUsers, key = { it.userId }) { user ->
                                     val isSelf = user.userId == currentUserId
-                                    val isSuspended = user.parsedStatus() == AccountStatus.SUSPENDED
+                                    val parsedStatus = user.parsedStatus()
+                                    val isBlocked = parsedStatus == AccountStatus.SUSPENDED || parsedStatus == AccountStatus.BANNED
                                     val isUserAdmin = user.parsedRole() == UserRole.ADMIN
                                     Card(
                                         shape = RoundedCornerShape(16.dp),
@@ -419,9 +420,9 @@ fun AdminDashboardScreen(
                                                         contentColor = if (isUserAdmin) Color.White else MaterialTheme.colorScheme.onPrimaryContainer
                                                     )
                                                     InfoPill(
-                                                        text = user.parsedStatus().labelAr,
-                                                        containerColor = if (isSuspended) MaterialTheme.colorScheme.errorContainer else Color(0xFFD1FAE5),
-                                                        contentColor = if (isSuspended) MaterialTheme.colorScheme.error else AbkSuccess
+                                                        text = parsedStatus.labelAr,
+                                                        containerColor = if (isBlocked) MaterialTheme.colorScheme.errorContainer else Color(0xFFD1FAE5),
+                                                        contentColor = if (isBlocked) MaterialTheme.colorScheme.error else AbkSuccess
                                                     )
                                                 }
                                             }
@@ -431,16 +432,16 @@ fun AdminDashboardScreen(
                                                         onClick = { adminViewModel.toggleUserSuspension(user) },
                                                         shape = RoundedCornerShape(10.dp),
                                                         colors = ButtonDefaults.outlinedButtonColors(
-                                                            contentColor = if (isSuspended) AbkSuccess else MaterialTheme.colorScheme.error
+                                                            contentColor = if (isBlocked) AbkSuccess else MaterialTheme.colorScheme.error
                                                         )
                                                     ) {
                                                         Icon(
-                                                            imageVector = if (isSuspended) Icons.Filled.CheckCircle else Icons.Filled.Block,
+                                                            imageVector = if (isBlocked) Icons.Filled.CheckCircle else Icons.Filled.Block,
                                                             contentDescription = null,
                                                             modifier = Modifier.size(16.dp)
                                                         )
                                                         Spacer(Modifier.width(4.dp))
-                                                        Text(if (isSuspended) "تفعيل الحساب" else "تعطيل الحساب")
+                                                        Text(if (isBlocked) "تفعيل الحساب" else "تعطيل الحساب")
                                                     }
                                                     TextButton(
                                                         onClick = { adminViewModel.toggleAdminPrivilege(user, !isUserAdmin) }

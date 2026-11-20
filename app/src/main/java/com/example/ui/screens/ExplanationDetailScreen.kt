@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Assignment
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ExpandLess
@@ -276,6 +277,15 @@ fun ExplanationDetailScreen(
                         ContentBlockType.QUIZ_TRUE_FALSE,
                         ContentBlockType.INTERACTIVE_EXAM -> {
                             BlockQuizRunnerCard(block = block)
+                        }
+                        ContentBlockType.ASSIGNMENT -> {
+                            BlockAssignmentCard(
+                                block = block,
+                                onOpenPdf = { onOpenBlockPdf(block) },
+                                onOpenUrl = { url ->
+                                    if (url.isNotBlank()) runCatching { uriHandler.openUri(url) }
+                                }
+                            )
                         }
                         ContentBlockType.NOTE_SUMMARY,
                         ContentBlockType.RICH_TEXT,
@@ -551,6 +561,75 @@ private fun BlockTextCard(block: ContentBlock, customBadge: String?) {
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BlockAssignmentCard(
+    block: ContentBlock,
+    onOpenPdf: () -> Unit,
+    onOpenUrl: (String) -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("block_assignment_card_${block.id}"),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Assignment,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.secondary
+                )
+                InfoPill(text = block.parsedBlockType().labelAr)
+            }
+            Text(
+                text = block.title,
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                color = MaterialTheme.colorScheme.primary
+            )
+            if (!block.subtitle.isNullOrBlank()) {
+                Text(
+                    text = block.subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary
+                )
+            }
+            if (!block.bodyText.isNullOrBlank()) {
+                Text(
+                    text = block.bodyText,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+            val url = block.mediaUrl
+            if (!url.isNullOrBlank()) {
+                val isPdf = url.contains(".pdf", ignoreCase = true)
+                OutlinedButton(
+                    onClick = { if (isPdf) onOpenPdf() else onOpenUrl(url) },
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        imageVector = if (isPdf) Icons.Filled.PictureAsPdf else Icons.Filled.Link,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(if (isPdf) "فتح ملف الواجب (PDF)" else "فتح مرفق الواجب")
+                }
             }
         }
     }

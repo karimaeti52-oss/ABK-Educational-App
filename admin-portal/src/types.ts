@@ -14,7 +14,8 @@ export type MaterialType =
   | 'SUMMARY'
   | 'IMPORTANT_QUESTIONS'
   | 'WORKSHEET'
-  | 'PRACTICE_EXAM';
+  | 'PRACTICE_EXAM'
+  | 'ASSIGNMENT';
 export type AnnouncementCategory = 'NEW_LESSON' | 'NEW_MATERIAL' | 'GENERAL' | 'URGENT';
 export type ContentBlockType =
   | 'YOUTUBE_VIDEO'
@@ -29,6 +30,7 @@ export type ContentBlockType =
   | 'RICH_TEXT'
   | 'EXTERNAL_LINK'
   | 'DOWNLOAD_FILE'
+  | 'ASSIGNMENT'
   | 'CUSTOM';
 
 export type NavSectionId =
@@ -297,6 +299,8 @@ export interface Announcement {
   updatedAt?: unknown;
 }
 
+export type UserAccountStatus = 'ACTIVE' | 'SUSPENDED' | 'BANNED';
+
 export interface UserProfile {
   id: string;
   userId: string;
@@ -304,9 +308,31 @@ export interface UserProfile {
   email: string;
   photoUrl?: string;
   role: string;
-  accountStatus: 'ACTIVE' | 'SUSPENDED';
+  accountStatus: UserAccountStatus;
+  banReason?: string;
+  bannedAt?: unknown;
+  bannedBy?: string;
   lastActiveAt?: unknown;
   createdAt?: unknown;
+}
+
+export interface AuthUserRecord {
+  uid: string;
+  email: string;
+  displayName: string;
+  photoUrl?: string | null;
+  disabled: boolean;
+  emailVerified: boolean;
+  creationTime?: string | null;
+  lastSignInTime?: string | null;
+  providerIds: string[];
+  role: string;
+  accountStatus: UserAccountStatus;
+  banReason?: string | null;
+  bannedAt?: string | null;
+  bannedBy?: string | null;
+  hasFirestoreProfile: boolean;
+  authPresent: boolean;
 }
 
 export interface AdminEntry {
@@ -356,6 +382,7 @@ export const BLOCK_TYPE_LABELS: Record<ContentBlockType, string> = {
   RICH_TEXT: 'نص منسق / مقالة',
   EXTERNAL_LINK: 'رابط خارجي',
   DOWNLOAD_FILE: 'ملف قابل للتنزيل',
+  ASSIGNMENT: 'واجب / تكليف',
   CUSTOM: 'قسم مخصص',
 };
 

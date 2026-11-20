@@ -1,156 +1,112 @@
-name: Deploy ABK Admin Portal, Backend & Firebase Rules
+name: Admin Portal CI & Free-Tier Firebase Spark Deploy
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'admin-portal/**'
+      - 'firestore.rules'
+      - '.github/workflows/deploy-admin-and-firebase.yml'
   workflow_dispatch:
     inputs:
-      region:
-        description: 'Google Cloud Run Region'
+      deploy_hosting_and_rules:
+        description: 'Deploy static Admin UI to Firebase Hosting & Firestore rules (Spark free tier — requires FIREBASE_TOKEN secret)'
         required: true
-        default: 'europe-west1'
-      secret_name:
-        description: 'Google Secret Manager secret name holding Firebase Admin SA JSON'
-        required: true
-        default: 'abk-firebase-admin-sa'
-      extra_allowed_origin:
-        description: 'Optional extra CORS origin URL'
+        type: boolean
+        default: false
+      api_base_url:
+        description: 'Optional Free-Tier Node.js Backend URL (Render / Koyeb / Railway)'
         required: false
         default: ''
 
 permissions:
   contents: read
-  id-token: write
 
 env:
   PROJECT_ID: gen-lang-client-0343268738
-  FIRESTORE_DB_ID: ai-studio-android-abk-452af8d1-cf14-40e7-aead-48a40e7f239d
-  RUNTIME_SA: abk-admin-runtime@gen-lang-client-0343268738.iam.gserviceaccount.com
 
 jobs:
-  deploy-stack:
-    name: Deploy Rules, Cloud Run API (Secret Manager + Least Privilege), and Hosting
+  verify-admin-portal:
+    name: Test & Build Admin Portal (100% Free-Tier CI)
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Validate Keyless Workload Identity Federation Configuration
-        env:
-          WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
-          DEPLOYER_SA: ${{ vars.GCP_DEPLOYER_SA }}
-        run: |
-          if [ -z "$WIF_PROVIDER" ] || [ -z "$DEPLOYER_SA" ]; then
-            echo "::error::Missing GitHub Repository Variables GCP_WIF_PROVIDER and/or GCP_DEPLOYER_SA. Zero JSON keys are allowed in GitHub; configure Workload Identity Federation (OIDC) under Settings -> Secrets and variables -> Actions -> Variables."
-            exit 1
-          fi
-          echo "Using keyless OIDC authentication with deployer SA: $DEPLOYER_SA"
-
-      - name: Authenticate to Google Cloud via OIDC (Zero Keys in GitHub)
-        id: auth
-        uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_DEPLOYER_SA }}
-
-      - name: Set up Cloud SDK (gcloud)
-        uses: google-github-actions/setup-gcloud@v2
 
       - name: Set up Node.js 22
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: admin-portal/package-lock.json
 
-      - name: Run Admin Portal Tests & Verify Build
+      - name: Install dependencies & Run Backend/RBAC Tests
         working-directory: admin-portal
         run: |
           npm ci
           npm test
-          npm run build
 
-      - name: Ensure Required GCP APIs Are Enabled
-        run: |
-          gcloud services enable \
-            run.googleapis.com \
-            cloudbuild.googleapis.com \
-            artifactregistry.googleapis.com \
-            secretmanager.googleapis.com \
-            --project "$PROJECT_ID" || true
-
-      - name: Verify Secret Manager Secret & Least-Privilege Runtime IAM
-        env:
-          SECRET_NAME: ${{ inputs.secret_name }}
-        run: |
-          if ! gcloud secrets describe "$SECRET_NAME" --project "$PROJECT_ID" >/dev/null 2>&1; then
-            echo "::error::Secret Manager secret '$SECRET_NAME' not found in project $PROJECT_ID. Store the Firebase Admin Service Account JSON in Google Secret Manager (not GitHub)."
-            exit 1
-          fi
-          echo "Verified Secret Manager secret '$SECRET_NAME' exists."
-
-      - name: Deploy Firestore & Storage Security Rules
-        run: |
-          npx --yes firebase-tools deploy \
-            --only firestore:rules,storage \
-            --project "$PROJECT_ID" \
-            --non-interactive
-
-      - name: Deploy Trusted Node.js Backend to Google Cloud Run
-        id: cloudrun
-        uses: google-github-actions/deploy-cloudrun@v2
-        with:
-          service: abk-admin-api
-          region: ${{ inputs.region }}
-          project_id: gen-lang-client-0343268738
-          source: admin-portal
-          flags: '--allow-unauthenticated --service-account=abk-admin-runtime@gen-lang-client-0343268738.iam.gserviceaccount.com --memory=512Mi --min-instances=0 --max-instances=3 --cpu-throttling --ingress=all'
-          secrets: |
-            FIREBASE_SERVICE_ACCOUNT_JSON=${{ inputs.secret_name }}:latest
-          env_vars: |
-            HOST=0.0.0.0
-            FIREBASE_PROJECT_ID=gen-lang-client-0343268738
-            FIREBASE_FIRESTORE_DATABASE_ID=ai-studio-android-abk-452af8d1-cf14-40e7-aead-48a40e7f239d
-            SUPER_ADMIN_EMAIL=karimaeti07@gmail.com
-            ADMIN_ALLOWED_ORIGINS=https://gen-lang-client-0343268738.web.app;https://gen-lang-client-0343268738.firebaseapp.com${{ inputs.extra_allowed_origin && format(';{0}', inputs.extra_allowed_origin) || '' }}
-            ENFORCE_APP_CHECK=false
-            SENSITIVE_AUTH_MAX_AGE_SECONDS=1800
-
-      - name: Build Admin Portal Frontend Linked to Live Backend URL
+      - name: Build Admin Portal Static Bundle
         working-directory: admin-portal
         env:
           VITE_FIREBASE_PROJECT_ID: gen-lang-client-0343268738
           VITE_FIREBASE_AUTH_DOMAIN: gen-lang-client-0343268738.firebaseapp.com
           VITE_FIREBASE_STORAGE_BUCKET: gen-lang-client-0343268738.firebasestorage.app
           VITE_FIREBASE_DATABASE_ID: ai-studio-android-abk-452af8d1-cf14-40e7-aead-48a40e7f239d
-          VITE_API_BASE_URL: ${{ steps.cloudrun.outputs.url }}
+          VITE_API_BASE_URL: ${{ inputs.api_base_url }}
+        run: npm run build
+
+      - name: Upload Admin Portal dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: abk-admin-portal-dist
+          path: admin-portal/dist
+
+  deploy-spark-hosting-and-rules:
+    name: Deploy Firebase Hosting & Firestore Rules (Spark Free Tier)
+    needs: verify-admin-portal
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy_hosting_and_rules == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate FIREBASE_TOKEN Secret
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
         run: |
+          if [ -z "$FIREBASE_TOKEN" ]; then
+            echo "::error::Missing FIREBASE_TOKEN in GitHub Secrets. Alternatively, host admin-portal/dist for free on Cloudflare Pages, Vercel, or Netlify without Firebase CLI."
+            exit 1
+          fi
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build Admin Portal
+        working-directory: admin-portal
+        env:
+          VITE_FIREBASE_PROJECT_ID: gen-lang-client-0343268738
+          VITE_FIREBASE_AUTH_DOMAIN: gen-lang-client-0343268738.firebaseapp.com
+          VITE_FIREBASE_STORAGE_BUCKET: gen-lang-client-0343268738.firebasestorage.app
+          VITE_FIREBASE_DATABASE_ID: ai-studio-android-abk-452af8d1-cf14-40e7-aead-48a40e7f239d
+          VITE_API_BASE_URL: ${{ inputs.api_base_url }}
+        run: |
+          npm ci
           npm run build
 
-      - name: Deploy Admin Portal to Firebase Hosting
-        id: hosting
-        working-directory: admin-portal
+      - name: Deploy Firestore Rules & Static Admin Hosting (Zero Billing)
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
         run: |
           npx --yes firebase-tools deploy \
-            --only hosting \
-            --config firebase.hosting.json \
+            --only firestore:rules,hosting \
+            --config admin-portal/firebase.hosting.json \
+            --project "$PROJECT_ID" \
+            --non-interactive || \
+          npx --yes firebase-tools deploy \
+            --only firestore:rules \
             --project "$PROJECT_ID" \
             --non-interactive
-
-      - name: Verify Live Endpoints (Cloud Run Health & Hosting UI)
-        env:
-          API_URL: ${{ steps.cloudrun.outputs.url }}
-        run: |
-          echo "Checking Cloud Run API Health: ${API_URL}/api/health"
-          curl -fsSL "${API_URL}/api/health"
-          echo ""
-          echo "Checking Firebase Hosting UI: https://${PROJECT_ID}.web.app"
-          curl -fsSIL "https://${PROJECT_ID}.web.app" | head -n 5
-
-          {
-            echo "### ABK Live Deployment Summary"
-            echo "- **Web Admin Portal URL**: https://${PROJECT_ID}.web.app"
-            echo "- **Alt Hosting URL**: https://${PROJECT_ID}.firebaseapp.com"
-            echo "- **Cloud Run Backend URL**: ${API_URL}"
-            echo "- **Health Endpoint**: ${API_URL}/api/health"
-            echo "- **Runtime Service Account**: \`${RUNTIME_SA}\`"
-            echo "- **Secret Manager Secret**: \`${{ inputs.secret_name }}:latest\`"
-            echo "- **Firebase Rules Deployed**: Firestore + Storage"
-          } >> "$GITHUB_STEP_SUMMARY"

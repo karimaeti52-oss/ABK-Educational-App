@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Activity,
   Bell,
@@ -13,11 +13,13 @@ import {
   LayoutDashboard,
   LogOut,
   Menu,
+  Moon,
   Palette,
   PlaySquare,
   RefreshCw,
   Settings,
   ShieldCheck,
+  Sun,
   UserCheck,
   Users,
   Video,
@@ -100,6 +102,16 @@ export function AdminLayout({
   children: React.ReactNode;
 }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [darkMode, setDarkMode] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem('abk_admin_theme') === 'dark';
+  });
+
+  useEffect(() => {
+    const theme = darkMode ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-theme', theme);
+    window.localStorage.setItem('abk_admin_theme', theme);
+  }, [darkMode]);
 
   const visibleItems = ADMIN_NAV_ITEMS.filter(
     (item) => !item.minRoles || item.minRoles.includes(staff.role)
@@ -239,6 +251,16 @@ export function AdminLayout({
           </div>
 
           <div className="flex items-center gap-2 text-xs">
+            <button
+              type="button"
+              onClick={() => setDarkMode((prev) => !prev)}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 px-3 py-1.5 font-semibold text-slate-700 hover:bg-slate-50"
+              title={darkMode ? 'التبديل إلى الوضع النهاري' : 'التبديل إلى الوضع الليلي'}
+              aria-label={darkMode ? 'الوضع النهاري' : 'الوضع الليلي'}
+            >
+              {darkMode ? <Sun className="h-4 w-4 text-amber-400" /> : <Moon className="h-4 w-4 text-slate-600" />}
+              <span className="hidden sm:inline">{darkMode ? 'نهاري' : 'ليلي'}</span>
+            </button>
             <span
               className={`hidden rounded-full px-2.5 py-1 font-semibold sm:inline-flex ${
                 idleSecondsLeft < 180

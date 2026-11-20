@@ -49,6 +49,7 @@ enum class ContentBlockType(val labelAr: String) {
     RICH_TEXT("نص منسق"),
     EXTERNAL_LINK("رابط خارجي"),
     DOWNLOAD_FILE("ملف للتنزيل"),
+    ASSIGNMENT("واجب / تكليف"),
     CUSTOM("قسم مخصص");
 
     companion object {
@@ -69,7 +70,8 @@ enum class UserRole {
 
 enum class AccountStatus(val labelAr: String) {
     ACTIVE("نشط"),
-    SUSPENDED("معطل");
+    SUSPENDED("معطل"),
+    BANNED("محظور");
 
     companion object {
         fun fromString(raw: String?): AccountStatus =
@@ -94,7 +96,8 @@ enum class MaterialType(val labelAr: String) {
     SUMMARY("ملخص"),
     IMPORTANT_QUESTIONS("أسئلة مهمة"),
     WORKSHEET("ورقة عمل"),
-    PRACTICE_EXAM("امتحان تدريبي");
+    PRACTICE_EXAM("امتحان تدريبي"),
+    ASSIGNMENT("واجب / تكليف");
 
     companion object {
         fun fromString(raw: String?): MaterialType =
@@ -148,6 +151,7 @@ data class UserProfile(
     val photoUrl: String? = null,
     val role: String = UserRole.STUDENT.name,
     val accountStatus: String = AccountStatus.ACTIVE.name,
+    val banReason: String? = null,
     val lastActiveAt: Timestamp? = null,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null

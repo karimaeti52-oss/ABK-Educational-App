@@ -1,5 +1,5 @@
 import { firebaseAuth } from './firebase';
-import type { AdminEntry, StaffRole } from './types';
+import type { AdminEntry, AuthUserRecord, StaffRole, UserAccountStatus } from './types';
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 
@@ -84,11 +84,33 @@ export async function revokeStaffRoleViaBackend(uid: string) {
   });
 }
 
-export async function updateUserStatusViaBackend(uid: string, accountStatus: 'ACTIVE' | 'SUSPENDED') {
-  return apiFetch<{ ok: boolean }>(`/api/users/${encodeURIComponent(uid)}/status`, {
-    method: 'PATCH',
-    body: JSON.stringify({ accountStatus }),
-  });
+export async function fetchUsersViaBackend(): Promise<AuthUserRecord[]> {
+  const data = await apiFetch<{ users: AuthUserRecord[] }>('/api/users');
+  return data.users;
+}
+
+export async function updateUserStatusViaBackend(
+  uid: string,
+  accountStatus: UserAccountStatus,
+  reason?: string
+) {
+  return apiFetch<{ ok: boolean; accountStatus: UserAccountStatus; disabled: boolean }>(
+    `/api/users/${encodeURIComponent(uid)}/status`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ accountStatus, reason: reason?.trim() || undefined }),
+    }
+  );
+}
+
+export async function deleteUserViaBackend(uid: string, confirmTarget: string) {
+  return apiFetch<{ ok: boolean; deletedDocsCount: number }>(
+    `/api/users/${encodeURIComponent(uid)}`,
+    {
+      method: 'DELETE',
+      body: JSON.stringify({ confirmTarget }),
+    }
+  );
 }
 
 export async function exportFullBackupViaBackend() {

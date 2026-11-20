@@ -8,6 +8,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
+import com.example.data.model.AccountStatus
 import com.example.data.model.CatalogNode
 import com.example.data.model.CatalogNodeType
 import com.example.data.model.ContentBlock
@@ -26,6 +27,7 @@ import com.example.ui.screens.CatalogBrowserScreen
 import com.example.ui.screens.ExplanationDetailScreen
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.LessonTeachersScreen
+import com.example.ui.screens.SuspendedAccountScreen
 import com.example.ui.theme.ABKTheme
 import com.example.viewmodel.SearchResults
 import org.junit.Assert.assertEquals
@@ -268,5 +270,57 @@ class AbkUiScreensRobolectricTest {
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithText("نتيجتك: 1 / 1").assertIsDisplayed()
         composeTestRule.onNodeWithText("التوضيح: مجموع 2 و 3 يساوي 5.").assertIsDisplayed()
+    }
+
+    @Test
+    fun `SuspendedAccountScreen displays BANNED message and ban reason`() {
+        composeTestRule.setContent {
+            ABKTheme {
+                SuspendedAccountScreen(
+                    status = AccountStatus.BANNED,
+                    banReason = "مخالفة تعليمات الاستخدام",
+                    onSignOut = {}
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("تم حظر الحساب من الإدارة").assertIsDisplayed()
+        composeTestRule.onNodeWithText("السبب المسجل: مخالفة تعليمات الاستخدام").assertIsDisplayed()
+    }
+
+    @Test
+    fun `ExplanationDetailScreen renders ASSIGNMENT content block`() {
+        val teacher = Teacher(id = "t1", name = "أ. كريم عيتي")
+        val exp = LessonExplanation(id = "e1", lessonId = "l1", teacherId = "t1", teacherName = teacher.name, title = "الشرح")
+        val assignmentBlock = ContentBlock(
+            id = "b_hw",
+            blockType = ContentBlockType.ASSIGNMENT.name,
+            title = "واجب الدرس الأول",
+            bodyText = "حل التمارين من 1 إلى 5",
+            mediaUrl = "https://example.com/hw.pdf"
+        )
+
+        composeTestRule.setContent {
+            ABKTheme {
+                ExplanationDetailScreen(
+                    explanation = exp,
+                    teacher = teacher,
+                    lesson = null,
+                    blocks = listOf(assignmentBlock),
+                    customSectionTypes = emptyList(),
+                    relatedMaterials = emptyList(),
+                    onBack = {},
+                    onPlayBlockVideo = {},
+                    onOpenBlockPdf = {},
+                    onOpenMaterial = {},
+                    onDownloadMaterial = {},
+                    onShareMaterial = {}
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("block_assignment_card_b_hw").assertIsDisplayed()
+        composeTestRule.onNodeWithText("واجب الدرس الأول").assertIsDisplayed()
+        composeTestRule.onNodeWithText("حل التمارين من 1 إلى 5").assertIsDisplayed()
     }
 }

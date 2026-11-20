@@ -61,6 +61,7 @@ import androidx.credentials.CredentialManager
 import com.example.R
 import com.example.data.firebase.attemptAutoSignIn
 import com.example.data.firebase.onGoogleSignInClicked
+import com.example.data.model.AccountStatus
 import com.example.ui.theme.AbkNavyDeep
 import com.example.ui.theme.AbkSkyContainer
 import com.example.ui.theme.AbkSkyPrimary
@@ -302,7 +303,12 @@ private fun FeatureRow(icon: ImageVector, text: String) {
 }
 
 @Composable
-fun SuspendedAccountScreen(onSignOut: () -> Unit) {
+fun SuspendedAccountScreen(
+    status: AccountStatus = AccountStatus.SUSPENDED,
+    banReason: String? = null,
+    onSignOut: () -> Unit
+) {
+    val isBanned = status == AccountStatus.BANNED
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -312,7 +318,9 @@ fun SuspendedAccountScreen(onSignOut: () -> Unit) {
         contentAlignment = Alignment.Center
     ) {
         Column(
-            modifier = Modifier.widthIn(max = 440.dp),
+            modifier = Modifier
+                .widthIn(max = 440.dp)
+                .testTag("suspended_account_screen"),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
@@ -331,17 +339,37 @@ fun SuspendedAccountScreen(onSignOut: () -> Unit) {
                 }
             }
             Text(
-                text = stringResource(R.string.account_suspended_title),
+                text = stringResource(
+                    if (isBanned) R.string.account_banned_title else R.string.account_suspended_title
+                ),
                 style = MaterialTheme.typography.headlineSmall,
                 color = MaterialTheme.colorScheme.error,
                 textAlign = TextAlign.Center
             )
             Text(
-                text = stringResource(R.string.account_suspended_desc),
+                text = stringResource(
+                    if (isBanned) R.string.account_banned_desc else R.string.account_suspended_desc
+                ),
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center
             )
+            if (!banReason.isNullOrBlank()) {
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.7f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.35f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "السبب المسجل: $banReason",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+            }
             OutlinedButton(
                 onClick = onSignOut,
                 modifier = Modifier

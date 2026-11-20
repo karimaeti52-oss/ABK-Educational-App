@@ -26,14 +26,14 @@ export function initFirebaseAdmin(config) {
     const secretFile = (config.serviceAccountFile || '').trim();
 
     if (rawJson) {
-      // Loaded at runtime from Google Secret Manager env injection (FIREBASE_SERVICE_ACCOUNT_JSON)
+      // Loaded at runtime from environment variable (FIREBASE_SERVICE_ACCOUNT_JSON)
       const parsed = parseServiceAccountCredentials(rawJson, 'FIREBASE_SERVICE_ACCOUNT_JSON');
       admin.initializeApp({
         credential: admin.credential.cert(parsed),
         projectId: config.projectId || parsed.project_id,
       });
     } else if (secretFile && fs.existsSync(secretFile)) {
-      // Loaded at runtime from Secret Manager volume mount
+      // Loaded at runtime from local/mounted secret file
       const fileRaw = fs.readFileSync(secretFile, 'utf8');
       const parsed = parseServiceAccountCredentials(fileRaw, 'FIREBASE_SERVICE_ACCOUNT_FILE');
       admin.initializeApp({
@@ -41,7 +41,7 @@ export function initFirebaseAdmin(config) {
         projectId: config.projectId || parsed.project_id,
       });
     } else {
-      // Uses Cloud Run Runtime Service Account (Application Default Credentials)
+      // Fallback to Application Default Credentials when available
       admin.initializeApp({
         projectId: config.projectId,
       });

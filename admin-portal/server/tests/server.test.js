@@ -182,7 +182,7 @@ test('Express HTTP API /api/health and /api/auth/me enforce tokens and RBAC end-
   }
 });
 
-test('loadConfig binds 0.0.0.0, reads Cloud Run PORT, and parses semicolon-delimited origins', async () => {
+test('loadConfig binds 0.0.0.0, reads PORT env var, and parses semicolon-delimited origins', async () => {
   const { loadConfig } = await import('../config.js');
   const cfg = loadConfig({
     PORT: '8080',
@@ -195,4 +195,225 @@ test('loadConfig binds 0.0.0.0, reads Cloud Run PORT, and parses semicolon-delim
     'https://gen-lang-client-0343268738.firebaseapp.com',
   ]);
 });
+
+test('User Management API lists Auth+Firestore users, revokes tokens on BAN, and enforces reauth + confirmation on DELETE', async () => {
+  const { createAdminApp } = await import('../app.js');
+  const { loadConfig } = await import('../config.js');
+  const config = loadConfig({});
+
+  const revokedUids = [];
+  const deletedAuthUids = [];
+  const auditLogs = [];
+  const userDocs = new Map([
+    [
+      'stu_1',
+      {
+        userId: 'stu_1',
+        displayName: 'طالب أول',
+        email: 'student1@abk.edu',
+        role: 'STUDENT',
+        accountStatus: 'ACTIVE',
+      },
+    ],
+  ]);
+
+  const authStore = new Map([
+    [
+      'stu_1',
+      {
+        uid: 'stu_1',
+        email: 'student1@abk.edu',
+        displayName: 'طالب أول',
+        disabled: false,
+        emailVerified: true,
+        metadata: {
+          creationTime: '2026-01-01T10:00:00Z',
+          lastSignInTime: '2026-05-01T12:00:00Z',
+        },
+        providerData: [{ providerId: 'google.com' }],
+      },
+    ],
+    [
+      'stu_auth_only',
+      {
+        uid: 'stu_auth_only',
+        email: 'authonly@abk.edu',
+        displayName: 'حساب Auth فقط',
+        disabled: false,
+        emailVerified: true,
+        metadata: {
+          creationTime: '2026-02-01T10:00:00Z',
+          lastSignInTime: '2026-05-02T12:00:00Z',
+        },
+        providerData: [{ providerId: 'google.com' }],
+      },
+    ],
+    [
+      'uid_super',
+      {
+        uid: 'uid_super',
+        email: 'karimaeti07@gmail.com',
+        displayName: 'Kareem Super Admin',
+        disabled: false,
+        emailVerified: true,
+        metadata: { creationTime: '2025-12-01T00:00:00Z', lastSignInTime: '2026-05-03T00:00:00Z' },
+        providerData: [{ providerId: 'google.com' }],
+      },
+    ],
+  ]);
+
+  const makeDocRef = (colName, docId) => ({
+    id: docId,
+    collection() {
+      return {
+        async get() {
+          return { docs: [] };
+        },
+      };
+    },
+    async get() {
+      if (colName === 'users' && userDocs.has(docId)) {
+        return { exists: true, data: () => ({ ...userDocs.get(docId) }) };
+      }
+      return { exists: false, data: () => null };
+    },
+    async set(data) {
+      if (colName === 'users') userDocs.set(docId, { ...data });
+    },
+    async update(data) {
+      if (colName === 'users') {
+        const cur = userDocs.get(docId) || {};
+        const next = { ...cur, ...data };
+        userDocs.set(docId, next);
+      }
+    },
+    async delete() {
+      if (colName === 'users') userDocs.delete(docId);
+    },
+  });
+
+  const fakeServices = {
+    auth: {
+      async verifyIdToken(token) {
+        const now = Math.floor(Date.now() / 1000);
+        if (token === 'fresh-super') {
+          return { uid: 'uid_super', email: 'karimaeti07@gmail.com', email_verified: true, auth_time: now };
+        }
+        if (token === 'stale-super') {
+          return { uid: 'uid_super', email: 'karimaeti07@gmail.com', email_verified: true, auth_time: now - 7200 };
+        }
+        throw Object.assign(new Error('bad'), { code: 'auth/invalid-id-token' });
+      },
+      async setCustomUserClaims() {},
+      async listUsers() {
+        return { users: Array.from(authStore.values()) };
+      },
+      async getUser(uid) {
+        const u = authStore.get(uid);
+        if (!u) throw new Error('not found');
+        return u;
+      },
+      async updateUser(uid, patch) {
+        const u = authStore.get(uid);
+        if (u) Object.assign(u, patch);
+      },
+      async revokeRefreshTokens(uid) {
+        revokedUids.push(uid);
+      },
+      async deleteUser(uid) {
+        deletedAuthUids.push(uid);
+        authStore.delete(uid);
+      },
+    },
+    db: {
+      collection(colName) {
+        return {
+          doc: (docId) => makeDocRef(colName, docId),
+          async get() {
+            if (colName === 'users') {
+              return {
+                docs: Array.from(userDocs.entries()).map(([id, data]) => ({ id, data: () => ({ ...data }) })),
+              };
+            }
+            return { docs: [] };
+          },
+          async add(entry) {
+            if (colName === 'auditLogs') auditLogs.push(entry);
+          },
+        };
+      },
+      batch() {
+        return { delete() {}, async commit() {} };
+      },
+    },
+    appCheck: { async verifyToken() {} },
+  };
+
+  const app = createAdminApp({ config, firebaseServices: fakeServices });
+  const server = app.listen(0);
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  try {
+    // 1. List merges Auth-only + Firestore users
+    const listRes = await fetch(`${baseUrl}/api/users`, {
+      headers: { Authorization: 'Bearer fresh-super' },
+    });
+    assert.equal(listRes.status, 200);
+    const listJson = await listRes.json();
+    assert.equal(listJson.users.length, 3);
+    assert.ok(listJson.users.some((u) => u.uid === 'stu_auth_only' && u.hasFirestoreProfile === false));
+
+    // 2. Ban user revokes refresh tokens & updates Auth disabled + Firestore banReason
+    const banRes = await fetch(`${baseUrl}/api/users/stu_1/status`, {
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer fresh-super', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accountStatus: 'BANNED', reason: 'انتحال هوية' }),
+    });
+    assert.equal(banRes.status, 200);
+    const banJson = await banRes.json();
+    assert.equal(banJson.disabled, true);
+    assert.equal(banJson.revokedTokens, true);
+    assert.deepEqual(revokedUids, ['stu_1']);
+    assert.equal(authStore.get('stu_1').disabled, true);
+    assert.equal(userDocs.get('stu_1').banReason, 'انتحال هوية');
+
+    // 3. Super Admin primary account cannot be banned
+    const lockRes = await fetch(`${baseUrl}/api/users/uid_super/status`, {
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer fresh-super', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accountStatus: 'BANNED' }),
+    });
+    assert.equal(lockRes.status, 400); // self-action blocked cleanly
+
+    // 4. Delete requires recent reauth (428 when stale)
+    const staleDel = await fetch(`${baseUrl}/api/users/stu_1`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer stale-super', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmTarget: 'student1@abk.edu' }),
+    });
+    assert.equal(staleDel.status, 428);
+
+    // 5. Delete rejects mismatched confirmation
+    const mismatchDel = await fetch(`${baseUrl}/api/users/stu_1`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer fresh-super', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmTarget: 'wrong@abk.edu' }),
+    });
+    assert.equal(mismatchDel.status, 400);
+
+    // 6. Delete succeeds with fresh auth and email confirmation
+    const okDel = await fetch(`${baseUrl}/api/users/stu_1`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer fresh-super', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmTarget: 'student1@abk.edu' }),
+    });
+    assert.equal(okDel.status, 200);
+    assert.deepEqual(deletedAuthUids, ['stu_1']);
+    assert.equal(userDocs.has('stu_1'), false);
+    assert.ok(auditLogs.some((a) => a.action === 'BAN_USER') && auditLogs.some((a) => a.action === 'DELETE_USER'));
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 

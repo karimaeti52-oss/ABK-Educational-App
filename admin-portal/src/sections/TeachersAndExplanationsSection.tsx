@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { GripVertical, Plus, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, GripVertical, Plus, Trash2 } from 'lucide-react';
 import {
   AssetUrlOrUploadInput,
   EmptyBox,
@@ -126,6 +126,16 @@ export function TeachersSection({
     }
   }
 
+  async function moveTeacherOrder(index: number, delta: number) {
+    const target = index + delta;
+    if (target < 0 || target >= teachers.length) return;
+    const reordered = [...teachers];
+    const [moved] = reordered.splice(index, 1);
+    reordered.splice(target, 0, moved);
+    await commitSortOrderBatch('teachers', reordered.map((x) => x.id));
+    onToast('تم تحديث ترتيب الأساتذة');
+  }
+
   return (
     <div>
       <SectionHeader
@@ -224,7 +234,7 @@ export function TeachersSection({
         <EmptyBox title="لا يوجد أساتذة بعد" subtitle="أضف أساتذة المنصة لربط شروحاتهم المتعددة بالدروس." />
       ) : (
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-          {teachers.map((t) => (
+          {teachers.map((t, idx) => (
             <div key={t.id} className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4">
               <div className="flex items-center gap-3">
                 {t.photoUrl ? (
@@ -236,7 +246,7 @@ export function TeachersSection({
                 )}
                 <div>
                   <div className="flex items-center gap-2">
-                    <h4 className="font-bold text-[#0F294A]">{t.name}</h4>
+                    <h4 className="font-bold text-[#0F294A]">{t.sortOrder}. {t.name}</h4>
                     <StatusBadge status={t.status} published={t.published} deletedAt={t.deletedAt} />
                   </div>
                   <p className="text-xs text-slate-500">{t.headline || 'مدرس في منصة ABK'}</p>
@@ -245,17 +255,41 @@ export function TeachersSection({
                   </p>
                 </div>
               </div>
-              <RowActionButtons
-                published={t.published}
-                deletedAt={t.deletedAt}
-                canEdit={canEdit}
-                canHardDelete={canHardDelete}
-                onTogglePublish={() => updateEntityStatus('teachers', t.id, t.published ? 'DRAFT' : 'PUBLISHED', staff, t.name)}
-                onEdit={() => startEdit(t)}
-                onSoftDelete={() => softDeleteEntity('teachers', t.id, staff, t.name)}
-                onRestore={() => restoreEntity('teachers', t.id, staff, t.name)}
-                onHardDelete={() => hardDeleteEntity('teachers', t.id, staff, t.name)}
-              />
+              <div className="flex items-center gap-2">
+                {canEdit && !t.deletedAt && (
+                  <div className="flex gap-1">
+                    <button
+                      type="button"
+                      onClick={() => void moveTeacherOrder(idx, -1)}
+                      disabled={idx === 0}
+                      className="rounded-lg border border-slate-200 p-1.5 text-slate-500 disabled:opacity-30"
+                      title="تحريك للأعلى"
+                    >
+                      <ArrowUp className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void moveTeacherOrder(idx, 1)}
+                      disabled={idx === teachers.length - 1}
+                      className="rounded-lg border border-slate-200 p-1.5 text-slate-500 disabled:opacity-30"
+                      title="تحريك للأسفل"
+                    >
+                      <ArrowDown className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                )}
+                <RowActionButtons
+                  published={t.published}
+                  deletedAt={t.deletedAt}
+                  canEdit={canEdit}
+                  canHardDelete={canHardDelete}
+                  onTogglePublish={() => updateEntityStatus('teachers', t.id, t.published ? 'DRAFT' : 'PUBLISHED', staff, t.name)}
+                  onEdit={() => startEdit(t)}
+                  onSoftDelete={() => softDeleteEntity('teachers', t.id, staff, t.name)}
+                  onRestore={() => restoreEntity('teachers', t.id, staff, t.name)}
+                  onHardDelete={() => hardDeleteEntity('teachers', t.id, staff, t.name)}
+                />
+              </div>
             </div>
           ))}
         </div>
@@ -714,9 +748,17 @@ export function ExplanationsAndBlocksSection({
                   </div>
                 </div>
 
-                {(['YOUTUBE_VIDEO', 'EXTERNAL_VIDEO', 'PDF_FILE', 'IMAGE', 'EXTERNAL_LINK', 'DOWNLOAD_FILE'].includes(blockType)) && (
+                {(['YOUTUBE_VIDEO', 'EXTERNAL_VIDEO', 'PDF_FILE', 'IMAGE', 'EXTERNAL_LINK', 'DOWNLOAD_FILE', 'ASSIGNMENT'].includes(blockType)) && (
                   <AssetUrlOrUploadInput
-                    label={blockType === 'YOUTUBE_VIDEO' ? 'رابط YouTube' : blockType === 'EXTERNAL_LINK' ? 'الرابط الخارجي' : 'رابط الملف / أو ارفعه مباشرة'}
+                    label={
+                      blockType === 'YOUTUBE_VIDEO'
+                        ? 'رابط YouTube'
+                        : blockType === 'EXTERNAL_LINK'
+                          ? 'الرابط الخارجي'
+                          : blockType === 'ASSIGNMENT'
+                            ? 'مرفق الواجب / رابط الملف (اختياري)'
+                            : 'رابط الملف / أو ارفعه مباشرة'
+                    }
                     value={blockMediaUrl}
                     onChange={(url, size) => {
                       setBlockMediaUrl(url);
@@ -735,9 +777,11 @@ export function ExplanationsAndBlocksSection({
                   </div>
                 )}
 
-                {(['NOTE_SUMMARY', 'RICH_TEXT', 'CUSTOM', 'EXTERNAL_LINK'].includes(blockType)) && (
+                {(['NOTE_SUMMARY', 'RICH_TEXT', 'CUSTOM', 'EXTERNAL_LINK', 'ASSIGNMENT'].includes(blockType)) && (
                   <div>
-                    <label className="mb-1 block text-xs font-semibold text-slate-600">المحتوى النصي / الملخص</label>
+                    <label className="mb-1 block text-xs font-semibold text-slate-600">
+                      {blockType === 'ASSIGNMENT' ? 'نص الواجب / تعليمات التسليم' : 'المحتوى النصي / الملخص'}
+                    </label>
                     <textarea rows={4} value={blockBodyText} onChange={(e) => setBlockBodyText(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" />
                   </div>
                 )}

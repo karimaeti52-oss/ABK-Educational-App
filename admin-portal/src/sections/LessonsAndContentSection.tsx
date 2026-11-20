@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Copy, ExternalLink, Plus } from 'lucide-react';
+import { ArrowDown, ArrowUp, Copy, ExternalLink, Plus } from 'lucide-react';
 import { getDownloadURL, listAll, ref } from 'firebase/storage';
 import {
   AssetUrlOrUploadInput,
@@ -11,6 +11,7 @@ import {
 } from '../components/CommonUi';
 import { firebaseStorage } from '../firebase';
 import {
+  commitSortOrderBatch,
   hardDeleteEntity,
   normalizeStatusFlags,
   restoreEntity,
@@ -140,6 +141,16 @@ export function LessonsSection({
     } catch (err) {
       onToast(err instanceof Error ? err.message : 'فشل الحفظ', true);
     }
+  }
+
+  async function moveLessonOrder(index: number, delta: number) {
+    const target = index + delta;
+    if (target < 0 || target >= lessons.length) return;
+    const reordered = [...lessons];
+    const [moved] = reordered.splice(index, 1);
+    reordered.splice(target, 0, moved);
+    await commitSortOrderBatch('lessons', reordered.map((x) => x.id), 'lessonOrder');
+    onToast('تم تحديث ترتيب الدروس');
   }
 
   return (
@@ -279,7 +290,7 @@ export function LessonsSection({
         <EmptyBox title="لا توجد دروس" subtitle="أضف أول درس وحدد وحدته ومادته." />
       ) : (
         <div className="space-y-2.5">
-          {lessons.map((l) => {
+          {lessons.map((l, idx) => {
             const expCount = store.explanations.filter((e) => e.lessonId === l.id && !e.deletedAt).length;
             return (
               <div key={l.id} className="flex flex-col justify-between gap-2 rounded-2xl border border-slate-200 bg-white p-4 sm:flex-row sm:items-center">
@@ -294,6 +305,28 @@ export function LessonsSection({
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
+                  {canEdit && !l.deletedAt && (
+                    <div className="flex gap-1">
+                      <button
+                        type="button"
+                        onClick={() => void moveLessonOrder(idx, -1)}
+                        disabled={idx === 0}
+                        className="rounded-lg border border-slate-200 p-1.5 text-slate-500 disabled:opacity-30"
+                        title="تحريك للأعلى"
+                      >
+                        <ArrowUp className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void moveLessonOrder(idx, 1)}
+                        disabled={idx === lessons.length - 1}
+                        className="rounded-lg border border-slate-200 p-1.5 text-slate-500 disabled:opacity-30"
+                        title="تحريك للأسفل"
+                      >
+                        <ArrowDown className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  )}
                   <button
                     type="button"
                     onClick={() => onNavigate('explanations')}
@@ -443,6 +476,7 @@ export function MaterialsSection({
                 <option value="IMPORTANT_QUESTIONS">أسئلة مهمة</option>
                 <option value="WORKSHEET">ورقة عمل</option>
                 <option value="PRACTICE_EXAM">امتحان تدريبي</option>
+                <option value="ASSIGNMENT">واجب / تكليف</option>
               </select>
             </div>
             <div>

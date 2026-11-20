@@ -13,6 +13,7 @@ import {
   AuditLogSchema,
   BACKUP_COLLECTIONS,
   BackupPayloadSchema,
+  DeleteUserSchema,
   GrantAdminSchema,
   RevokeAdminSchema,
   UpdateUserStatusSchema,
@@ -328,39 +329,302 @@ export function createAdminApp({ config, firebaseServices }) {
     }
   );
 
+  const UID_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/;
+
+  async function deleteSubcollectionDocs(docRef, subName) {
+    if (typeof docRef.collection !== 'function') return;
+    const subSnap = await docRef.collection(subName).get();
+    if (!subSnap || !Array.isArray(subSnap.docs) || subSnap.docs.length === 0) return;
+    for (let i = 0; i < subSnap.docs.length; i += 400) {
+      const batch = db.batch();
+      for (const d of subSnap.docs.slice(i, i + 400)) {
+        batch.delete(d.ref);
+      }
+      await batch.commit();
+    }
+  }
+
+  app.get('/api/users', verifyStaff, requirePerm(PERMISSIONS.MANAGE_USERS), async (_req, res) => {
+    const authUsers = [];
+    let pageToken;
+    for (let page = 0; page < 5; page++) {
+      const listResult = await auth.listUsers(1000, pageToken);
+      for (const u of listResult.users || []) {
+        authUsers.push(u);
+      }
+      if (!listResult.pageToken) break;
+      pageToken = listResult.pageToken;
+    }
+
+    const [usersSnap, adminsSnap] = await Promise.all([
+      db.collection('users').get(),
+      db.collection('admins').get(),
+    ]);
+
+    const profileMap = new Map();
+    for (const d of usersSnap.docs || []) {
+      profileMap.set(d.id, serializeFirestoreValue(d.data()));
+    }
+    const adminMap = new Map();
+    for (const d of adminsSnap.docs || []) {
+      adminMap.set(d.id, serializeFirestoreValue(d.data()));
+    }
+
+    const mergedMap = new Map();
+    for (const u of authUsers) {
+      const profile = profileMap.get(u.uid) || null;
+      const adminDoc = adminMap.get(u.uid) || null;
+      const claimsRole = u.customClaims?.abkRole;
+      const effectiveRole =
+        claimsRole ||
+        (adminDoc && adminDoc.active !== false ? adminDoc.role || 'ADMIN' : null) ||
+        profile?.role ||
+        'STUDENT';
+
+      const rawStatus = profile?.accountStatus;
+      const accountStatus =
+        rawStatus === 'BANNED'
+          ? 'BANNED'
+          : rawStatus === 'SUSPENDED' || u.disabled
+            ? 'SUSPENDED'
+            : 'ACTIVE';
+
+      mergedMap.set(u.uid, {
+        uid: u.uid,
+        email: u.email || profile?.email || '',
+        displayName: u.displayName || profile?.displayName || u.email || 'مستخدم ABK',
+        photoUrl: u.photoURL || profile?.photoUrl || null,
+        disabled: Boolean(u.disabled),
+        emailVerified: Boolean(u.emailVerified),
+        creationTime: u.metadata?.creationTime || null,
+        lastSignInTime: u.metadata?.lastSignInTime || null,
+        providerIds: Array.isArray(u.providerData) ? u.providerData.map((p) => p.providerId).filter(Boolean) : [],
+        role: effectiveRole,
+        accountStatus,
+        banReason: profile?.banReason || null,
+        bannedAt: profile?.bannedAt || null,
+        bannedBy: profile?.bannedBy || null,
+        lastActiveAt: profile?.lastActiveAt || null,
+        createdAt: profile?.createdAt || null,
+        hasFirestoreProfile: Boolean(profile),
+        authPresent: true,
+      });
+    }
+
+    // Include any orphaned Firestore-only profiles for visibility/cleanup
+    for (const [uid, profile] of profileMap.entries()) {
+      if (mergedMap.has(uid)) continue;
+      mergedMap.set(uid, {
+        uid,
+        email: profile?.email || '',
+        displayName: profile?.displayName || profile?.email || 'مستخدم ABK',
+        photoUrl: profile?.photoUrl || null,
+        disabled: profile?.accountStatus === 'SUSPENDED' || profile?.accountStatus === 'BANNED',
+        emailVerified: false,
+        creationTime: null,
+        lastSignInTime: null,
+        providerIds: [],
+        role: profile?.role || 'STUDENT',
+        accountStatus:
+          profile?.accountStatus === 'BANNED'
+            ? 'BANNED'
+            : profile?.accountStatus === 'SUSPENDED'
+              ? 'SUSPENDED'
+              : 'ACTIVE',
+        banReason: profile?.banReason || null,
+        bannedAt: profile?.bannedAt || null,
+        bannedBy: profile?.bannedBy || null,
+        lastActiveAt: profile?.lastActiveAt || null,
+        createdAt: profile?.createdAt || null,
+        hasFirestoreProfile: true,
+        authPresent: false,
+      });
+    }
+
+    const users = Array.from(mergedMap.values()).sort((a, b) => {
+      const ta = a.lastSignInTime ? Date.parse(a.lastSignInTime) : 0;
+      const tb = b.lastSignInTime ? Date.parse(b.lastSignInTime) : 0;
+      return tb - ta;
+    });
+
+    res.json({ users });
+  });
+
   app.patch(
     '/api/users/:uid/status',
     sensitiveLimiter,
     verifyStaff,
     requirePerm(PERMISSIONS.MANAGE_USERS),
     async (req, res) => {
+      const { uid } = req.params;
+      if (!UID_PATTERN.test(uid)) {
+        return res.status(400).json({ error: 'INVALID_UID', message: 'معرف المستخدم غير صالح.' });
+      }
       const parsed = UpdateUserStatusSchema.safeParse(req.body);
       if (!parsed.success) {
         return res.status(400).json({ error: 'VALIDATION_ERROR', details: parsed.error.flatten() });
       }
-      const { uid } = req.params;
       if (uid === req.staff.uid) {
-        return res.status(400).json({ error: 'SELF_SUSPEND_DENIED', message: 'لا يمكنك تعطيل حسابك الحالي.' });
+        return res.status(400).json({ error: 'SELF_SUSPEND_DENIED', message: 'لا يمكنك تعطيل أو حظر حسابك الحالي.' });
       }
 
-      const { accountStatus } = parsed.data;
-      await auth.updateUser(uid, { disabled: accountStatus === 'SUSPENDED' }).catch(() => null);
-      await db.collection('users').doc(uid).update({
+      const targetAuth = await auth.getUser(uid).catch(() => null);
+      const userRef = db.collection('users').doc(uid);
+      const existingSnap = await userRef.get();
+      const existingData = existingSnap.exists ? existingSnap.data() : null;
+      const targetEmail = (targetAuth?.email || existingData?.email || '').toLowerCase();
+
+      if (targetEmail && targetEmail === config.superAdminEmail) {
+        return res.status(403).json({
+          error: 'PRIMARY_SUPER_ADMIN_LOCKED',
+          message: 'لا يمكن تعطيل أو حظر حساب المدير العام الأساسي.',
+        });
+      }
+      if (!targetAuth && !existingSnap.exists) {
+        return res.status(404).json({ error: 'USER_NOT_FOUND', message: 'لم يتم العثور على الحساب المطلوب.' });
+      }
+
+      const { accountStatus, reason } = parsed.data;
+      const shouldDisable = accountStatus === 'SUSPENDED' || accountStatus === 'BANNED';
+      if (targetAuth) {
+        await auth.updateUser(uid, { disabled: shouldDisable });
+        if (shouldDisable && typeof auth.revokeRefreshTokens === 'function') {
+          await auth.revokeRefreshTokens(uid);
+        }
+      }
+
+      const nowFields = {
         accountStatus,
         updatedAt: FieldValue.serverTimestamp(),
-      });
+      };
+      if (accountStatus === 'BANNED') {
+        nowFields.banReason = reason || 'مخالفة شروط استخدام المنصة';
+        nowFields.bannedAt = FieldValue.serverTimestamp();
+        nowFields.bannedBy = req.staff.email || req.staff.uid;
+      } else {
+        nowFields.banReason = FieldValue.delete();
+        nowFields.bannedAt = FieldValue.delete();
+        nowFields.bannedBy = FieldValue.delete();
+      }
+
+      if (existingSnap.exists) {
+        await userRef.update(nowFields);
+      } else {
+        await userRef.set({
+          userId: uid,
+          displayName: targetAuth?.displayName || targetAuth?.email || 'طالب ABK',
+          email: targetAuth?.email || '',
+          ...(targetAuth?.photoURL ? { photoUrl: targetAuth.photoURL } : {}),
+          role: 'STUDENT',
+          createdAt: FieldValue.serverTimestamp(),
+          ...nowFields,
+        });
+      }
+
+      const wasBanned = existingData?.accountStatus === 'BANNED';
+      const auditAction =
+        accountStatus === 'BANNED'
+          ? 'BAN_USER'
+          : accountStatus === 'SUSPENDED'
+            ? 'SUSPEND_USER'
+            : wasBanned
+              ? 'UNBAN_USER'
+              : 'ACTIVATE_USER';
 
       await writeAudit({
         actorUid: req.staff.uid,
         actorEmail: req.staff.email,
         actorRole: req.staff.role,
-        action: accountStatus === 'SUSPENDED' ? 'SUSPEND_USER' : 'ACTIVATE_USER',
+        action: auditAction,
         entityType: 'UserProfile',
         entityId: uid,
-        summary: `تغيير حالة الحساب ${uid} إلى ${accountStatus}`,
+        summary: `تغيير حالة الحساب ${targetEmail || uid} إلى ${accountStatus}${reason ? ` (${reason})` : ''}`,
       });
 
-      res.json({ ok: true, uid, accountStatus });
+      res.json({
+        ok: true,
+        uid,
+        accountStatus,
+        disabled: shouldDisable,
+        revokedTokens: shouldDisable,
+      });
+    }
+  );
+
+  app.delete(
+    '/api/users/:uid',
+    sensitiveLimiter,
+    verifyStaff,
+    requirePerm(PERMISSIONS.MANAGE_USERS),
+    requireRecentReauth,
+    async (req, res) => {
+      const { uid } = req.params;
+      if (!UID_PATTERN.test(uid)) {
+        return res.status(400).json({ error: 'INVALID_UID', message: 'معرف المستخدم غير صالح.' });
+      }
+      if (uid === req.staff.uid) {
+        return res.status(400).json({ error: 'SELF_DELETE_DENIED', message: 'لا يمكنك حذف حسابك الحالي.' });
+      }
+
+      const parsed = DeleteUserSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'يجب إرسال تأكيد الحذف (البريد الإلكتروني أو UID).' });
+      }
+
+      const targetAuth = await auth.getUser(uid).catch(() => null);
+      const userRef = db.collection('users').doc(uid);
+      const userSnap = await userRef.get();
+      const targetData = userSnap.exists ? userSnap.data() : null;
+
+      if (!targetAuth && !userSnap.exists) {
+        return res.status(404).json({ error: 'USER_NOT_FOUND', message: 'المستخدم غير موجود.' });
+      }
+
+      const targetEmail = (targetAuth?.email || targetData?.email || '').trim();
+      if (targetEmail.toLowerCase() === config.superAdminEmail) {
+        return res.status(403).json({
+          error: 'PRIMARY_SUPER_ADMIN_LOCKED',
+          message: 'لا يمكن حذف حساب المدير العام الأساسي.',
+        });
+      }
+
+      const confirmValue = parsed.data.confirmTarget.trim();
+      const emailMatches = targetEmail && confirmValue.toLowerCase() === targetEmail.toLowerCase();
+      const uidMatches = confirmValue === uid;
+      if (!emailMatches && !uidMatches) {
+        return res.status(400).json({
+          error: 'CONFIRMATION_MISMATCH',
+          message: 'قيمة التأكيد لا تطابق البريد الإلكتروني أو معرف المستخدم.',
+        });
+      }
+
+      // Clean up student subcollections + profile + admin doc, then remove Firebase Auth account
+      await deleteSubcollectionDocs(userRef, 'favorites');
+      await deleteSubcollectionDocs(userRef, 'progress');
+      await deleteSubcollectionDocs(userRef, 'readAnnouncements');
+      if (userSnap.exists) {
+        await userRef.delete();
+      }
+      const adminRef = db.collection('admins').doc(uid);
+      const adminSnap = await adminRef.get();
+      if (adminSnap.exists) {
+        await adminRef.delete();
+      }
+      if (targetAuth) {
+        await auth.deleteUser(uid);
+      }
+
+      await writeAudit({
+        actorUid: req.staff.uid,
+        actorEmail: req.staff.email,
+        actorRole: req.staff.role,
+        action: 'DELETE_USER',
+        entityType: 'UserProfile',
+        entityId: uid,
+        summary: `حذف المستخدم نهائياً من Auth وFirestore (${targetEmail || uid})`,
+      });
+
+      res.json({ ok: true, uid, deletedEmail: targetEmail || null });
     }
   );
 

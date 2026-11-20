@@ -458,6 +458,16 @@ export function SubjectsSection({
     }
   }
 
+  async function moveSubjectOrder(index: number, delta: number) {
+    const target = index + delta;
+    if (target < 0 || target >= subjects.length) return;
+    const reordered = [...subjects];
+    const [moved] = reordered.splice(index, 1);
+    reordered.splice(target, 0, moved);
+    await commitSortOrderBatch('subjects', reordered.map((x) => x.id));
+    onToast('تم تحديث ترتيب المواد');
+  }
+
   return (
     <div>
       <SectionHeader
@@ -598,7 +608,7 @@ export function SubjectsSection({
         <EmptyBox title="لا توجد مواد دراسية" subtitle="أضف أول مادة وربطها بالمستوى الدراسي." />
       ) : (
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-          {subjects.map((subj) => (
+          {subjects.map((subj, idx) => (
             <div key={subj.id} className="flex flex-col justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-xs">
               <div className="flex items-start gap-3">
                 {subj.imageUrl && (
@@ -620,19 +630,43 @@ export function SubjectsSection({
                   {store.lessons.filter((l) => l.subjectId === subj.id && !l.deletedAt).length} درس •{' '}
                   {store.units.filter((u) => u.subjectId === subj.id && !u.deletedAt).length} وحدة
                 </span>
-                <RowActionButtons
-                  published={subj.published}
-                  deletedAt={subj.deletedAt}
-                  canEdit={canEdit}
-                  canHardDelete={canHardDelete}
-                  onTogglePublish={() =>
-                    updateEntityStatus('subjects', subj.id, subj.published ? 'DRAFT' : 'PUBLISHED', staff, subj.title)
-                  }
-                  onEdit={() => startEdit(subj)}
-                  onSoftDelete={() => softDeleteEntity('subjects', subj.id, staff, subj.title)}
-                  onRestore={() => restoreEntity('subjects', subj.id, staff, subj.title)}
-                  onHardDelete={() => hardDeleteEntity('subjects', subj.id, staff, subj.title)}
-                />
+                <div className="flex items-center gap-2">
+                  {canEdit && !subj.deletedAt && (
+                    <div className="flex gap-1">
+                      <button
+                        type="button"
+                        onClick={() => void moveSubjectOrder(idx, -1)}
+                        disabled={idx === 0}
+                        className="rounded-lg border border-slate-200 p-1.5 text-slate-500 disabled:opacity-30"
+                        title="تحريك للأعلى"
+                      >
+                        <ArrowUp className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void moveSubjectOrder(idx, 1)}
+                        disabled={idx === subjects.length - 1}
+                        className="rounded-lg border border-slate-200 p-1.5 text-slate-500 disabled:opacity-30"
+                        title="تحريك للأسفل"
+                      >
+                        <ArrowDown className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  )}
+                  <RowActionButtons
+                    published={subj.published}
+                    deletedAt={subj.deletedAt}
+                    canEdit={canEdit}
+                    canHardDelete={canHardDelete}
+                    onTogglePublish={() =>
+                      updateEntityStatus('subjects', subj.id, subj.published ? 'DRAFT' : 'PUBLISHED', staff, subj.title)
+                    }
+                    onEdit={() => startEdit(subj)}
+                    onSoftDelete={() => softDeleteEntity('subjects', subj.id, staff, subj.title)}
+                    onRestore={() => restoreEntity('subjects', subj.id, staff, subj.title)}
+                    onHardDelete={() => hardDeleteEntity('subjects', subj.id, staff, subj.title)}
+                  />
+                </div>
               </div>
             </div>
           ))}
@@ -718,6 +752,16 @@ export function UnitsSection({
     }
   }
 
+  async function moveUnitOrder(index: number, delta: number) {
+    const target = index + delta;
+    if (target < 0 || target >= units.length) return;
+    const reordered = [...units];
+    const [moved] = reordered.splice(index, 1);
+    reordered.splice(target, 0, moved);
+    await commitSortOrderBatch('units', reordered.map((x) => x.id));
+    onToast('تم تحديث ترتيب الوحدات');
+  }
+
   return (
     <div>
       <SectionHeader
@@ -791,7 +835,7 @@ export function UnitsSection({
         <EmptyBox title="لا توجد وحدات" subtitle="أضف وحدة جديدة لترتيب الدروس داخل المادة." />
       ) : (
         <div className="space-y-2.5">
-          {units.map((u) => (
+          {units.map((u, idx) => (
             <div key={u.id} className="flex flex-col justify-between gap-2 rounded-2xl border border-slate-200 bg-white p-4 sm:flex-row sm:items-center">
               <div>
                 <div className="flex items-center gap-2">
@@ -801,17 +845,41 @@ export function UnitsSection({
                 </div>
                 {u.description && <p className="mt-1 text-xs text-slate-500">{u.description}</p>}
               </div>
-              <RowActionButtons
-                published={u.published}
-                deletedAt={u.deletedAt}
-                canEdit={canEdit}
-                canHardDelete={canHardDelete}
-                onTogglePublish={() => updateEntityStatus('units', u.id, u.published ? 'DRAFT' : 'PUBLISHED', staff, u.title)}
-                onEdit={() => startEdit(u)}
-                onSoftDelete={() => softDeleteEntity('units', u.id, staff, u.title)}
-                onRestore={() => restoreEntity('units', u.id, staff, u.title)}
-                onHardDelete={() => hardDeleteEntity('units', u.id, staff, u.title)}
-              />
+              <div className="flex items-center gap-2">
+                {canEdit && !u.deletedAt && (
+                  <div className="flex gap-1">
+                    <button
+                      type="button"
+                      onClick={() => void moveUnitOrder(idx, -1)}
+                      disabled={idx === 0}
+                      className="rounded-lg border border-slate-200 p-1.5 text-slate-500 disabled:opacity-30"
+                      title="تحريك للأعلى"
+                    >
+                      <ArrowUp className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void moveUnitOrder(idx, 1)}
+                      disabled={idx === units.length - 1}
+                      className="rounded-lg border border-slate-200 p-1.5 text-slate-500 disabled:opacity-30"
+                      title="تحريك للأسفل"
+                    >
+                      <ArrowDown className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                )}
+                <RowActionButtons
+                  published={u.published}
+                  deletedAt={u.deletedAt}
+                  canEdit={canEdit}
+                  canHardDelete={canHardDelete}
+                  onTogglePublish={() => updateEntityStatus('units', u.id, u.published ? 'DRAFT' : 'PUBLISHED', staff, u.title)}
+                  onEdit={() => startEdit(u)}
+                  onSoftDelete={() => softDeleteEntity('units', u.id, staff, u.title)}
+                  onRestore={() => restoreEntity('units', u.id, staff, u.title)}
+                  onHardDelete={() => hardDeleteEntity('units', u.id, staff, u.title)}
+                />
+              </div>
             </div>
           ))}
         </div>
