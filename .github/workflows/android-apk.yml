@@ -1,14 +1,17 @@
 name: Build Midad Android Release APK
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  build-and-release-v1-1-0:
-    name: Build Release APK and Publish v1.1.0
+  build-and-release-v1-1-1:
+    name: Build, Test & Publish Release v1.1.1 (Midad)
     runs-on: ubuntu-latest
 
     steps:
@@ -26,37 +29,38 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Pre-flight checks (source integrity, v1.1.0 absence, v1.0.0 baseline inspection)
+      - name: Pre-flight checks (source integrity, v1.1.1 check, v1.0.0 baseline inspection)
         id: baseline
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           REPO="${{ github.repository }}"
-          TARGET_TAG="v1.1.0"
+          TARGET_TAG="v1.1.1"
           OLD_TAG="v1.0.0"
 
           echo "Checked out branch/ref: ${{ github.ref_name }}"
           git log -1 --format="Commit: %H%nAuthor Date: %cI%nSubject: %s"
 
           if ! grep -q "ensureFirebaseInitialized" app/src/main/java/com/example/ui/AbkAppNavigation.kt || \
-             ! grep -q "ensureFirebaseInitialized" app/src/main/java/com/example/data/firebase/AuthHelper.kt; then
-            echo "::error::Checked-out source files are missing ensureFirebaseInitialized. Push the latest code before running this workflow."
+             ! grep -q "ensureFirebaseInitialized" app/src/main/java/com/example/data/firebase/AuthHelper.kt || \
+             ! grep -q "VideoPlaybackSupport" app/src/main/java/com/example/ui/screens/VideoPlayerScreen.kt; then
+            echo "::error::Checked-out source files are missing expected Firebase init or VideoPlaybackSupport updates."
             exit 1
           fi
 
-          # Condition 4: Ensure v1.1.0 does not already exist as a Release or Git Tag
-          if gh api "repos/${REPO}/releases/tags/${TARGET_TAG}" >/dev/null 2>&1; then
-            echo "::error::Release '${TARGET_TAG}' already exists on ${REPO}. Aborting without modifying or overwriting existing releases."
-            exit 1
+          # Preserve v1.0.0 and v1.1.0 untouched; check if v1.1.1 already exists
+          RELEASE_EXISTS="false"
+          if gh api "repos/${REPO}/releases/tags/${TARGET_TAG}" >/dev/null 2>&1 || \
+             gh api "repos/${REPO}/git/ref/tags/${TARGET_TAG}" >/dev/null 2>&1; then
+            RELEASE_EXISTS="true"
+            echo "Release or tag '${TARGET_TAG}' already exists on ${REPO}. Will run full build, tests, and signature verification without modifying existing releases."
+          else
+            echo "Verified neither tag nor release '${TARGET_TAG}' exists yet."
           fi
-          if gh api "repos/${REPO}/git/ref/tags/${TARGET_TAG}" >/dev/null 2>&1; then
-            echo "::error::Git tag '${TARGET_TAG}' already exists on ${REPO}. Aborting."
-            exit 1
-          fi
-          echo "Verified neither tag nor release '${TARGET_TAG}' exists yet."
+          echo "release_exists=${RELEASE_EXISTS}" >> "$GITHUB_OUTPUT"
 
-          # Condition 3 & 5: Inspect v1.0.0 APK read-only (never delete or modify v1.0.0)
+          # Inspect v1.0.0 APK read-only (never delete or modify v1.0.0 or v1.1.0)
           OLD_DIR="${RUNNER_TEMP}/old_v100"
           mkdir -p "$OLD_DIR"
           gh release download "$OLD_TAG" --pattern "ABK.apk" --repo "$REPO" --dir "$OLD_DIR" --clobber
@@ -104,7 +108,7 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Prepare temporary Release signing keystore from GitHub Secrets (no new key, no password guessing)
+      - name: Prepare temporary Release signing keystore from GitHub Secrets
         id: keystore_prep
         env:
           DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
@@ -118,7 +122,7 @@ jobs:
             exit 1
           fi
           if [ -z "$DEBUG_KEYSTORE_PASSWORD" ]; then
-            echo "::error::Missing required GitHub Secret DEBUG_KEYSTORE_PASSWORD. Do not guess or assume PKCS12 passwords."
+            echo "::error::Missing required GitHub Secret DEBUG_KEYSTORE_PASSWORD."
             exit 1
           fi
 
@@ -140,7 +144,7 @@ jobs:
             exit 1
           fi
 
-          # Rename alias in temporary runner copy only so Gradle signingConfigs.release (keyAlias="upload") uses the exact same private key & cert
+          # Rename alias in temporary runner copy only so Gradle signingConfigs.release (keyAlias="upload") uses exact v1.0.0 key & cert
           if ! keytool -changealias -alias androiddebugkey -destalias upload -keystore "$REL_KEYSTORE" -storepass:env KS_PASS -keypass:env KS_PASS >/dev/null 2>&1; then
             rm -f "$REL_KEYSTORE"
             echo "::error::Failed to re-alias 'androiddebugkey' to 'upload' on temporary keystore copy."
@@ -204,7 +208,10 @@ jobs:
       - name: Grant execute permission and remove stale APK outputs
         run: |
           chmod +x gradlew
-          rm -f Midad-v1.1.0-release.apk app/build/outputs/apk/release/app-release.apk
+          rm -f Midad.apk Midad-v1.1.1-release.apk app/build/outputs/apk/release/app-release.apk
+
+      - name: Run Android Unit & Robolectric Tests (:app:testDebugUnitTest)
+        run: ./gradlew :app:testDebugUnitTest --no-daemon
 
       - name: Build signed Release APK (:app:assembleRelease)
         env:
@@ -227,7 +234,8 @@ jobs:
         run: |
           set -euo pipefail
           APK_PATH="app/build/outputs/apk/release/app-release.apk"
-          RELEASE_ASSET_NAME="Midad-v1.1.0-release.apk"
+          PERMANENT_ASSET_NAME="Midad.apk"
+          VERSIONED_ASSET_NAME="Midad-v1.1.1-release.apk"
 
           if [ ! -s "$APK_PATH" ]; then
             echo "::error::Expected Release APK was not generated at $APK_PATH"
@@ -247,16 +255,18 @@ jobs:
             exit 1
           fi
 
-          cp -f "$APK_PATH" "$RELEASE_ASSET_NAME"
+          cp -f "$APK_PATH" "$PERMANENT_ASSET_NAME"
+          cp -f "$APK_PATH" "$VERSIONED_ASSET_NAME"
           SRC_SHA256=$(sha256sum "$APK_PATH" | awk '{print $1}')
-          DST_SHA256=$(sha256sum "$RELEASE_ASSET_NAME" | awk '{print $1}')
-          if [ "$SRC_SHA256" != "$DST_SHA256" ]; then
-            echo "::error::Copied $RELEASE_ASSET_NAME checksum mismatch against $APK_PATH"
+          PERM_SHA256=$(sha256sum "$PERMANENT_ASSET_NAME" | awk '{print $1}')
+          VER_SHA256=$(sha256sum "$VERSIONED_ASSET_NAME" | awk '{print $1}')
+          if [ "$SRC_SHA256" != "$PERM_SHA256" ] || [ "$SRC_SHA256" != "$VER_SHA256" ]; then
+            echo "::error::Copied APK checksum mismatch against $APK_PATH"
             exit 1
           fi
 
-          APK_SIZE_BYTES=$(stat -c %s "$RELEASE_ASSET_NAME")
-          APK_SIZE_HUMAN=$(ls -lh "$RELEASE_ASSET_NAME" | awk '{print $5}')
+          APK_SIZE_BYTES=$(stat -c %s "$PERMANENT_ASSET_NAME")
+          APK_SIZE_HUMAN=$(ls -lh "$PERMANENT_ASSET_NAME" | awk '{print $5}')
 
           APKSIGNER_BIN=$(command -v apksigner || find "${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}/build-tools" -name apksigner 2>/dev/null | sort -V | tail -n 1 || true)
           AAPT2_BIN=$(command -v aapt2 || find "${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}/build-tools" -name aapt2 2>/dev/null | sort -V | tail -n 1 || true)
@@ -265,9 +275,8 @@ jobs:
             exit 1
           fi
 
-          # Verify APK Signature
-          if ! APK_CERT_INFO=$("$APKSIGNER_BIN" verify --verbose --print-certs "$RELEASE_ASSET_NAME" 2>&1); then
-            echo "::error::apksigner verification failed for $RELEASE_ASSET_NAME."
+          if ! APK_CERT_INFO=$("$APKSIGNER_BIN" verify --verbose --print-certs "$PERMANENT_ASSET_NAME" 2>&1); then
+            echo "::error::apksigner verification failed for $PERMANENT_ASSET_NAME."
             printf '%s\n' "$APK_CERT_INFO"
             exit 1
           fi
@@ -282,13 +291,11 @@ jobs:
           APK_CERT_SHA1=$(printf '%s' "$APK_CERT_SHA1_HEX" | sed -E 's/../\U&:/g; s/:$//')
           APK_CERT_SHA256=$(printf '%s' "$APK_CERT_SHA256_HEX" | sed -E 's/../\U&:/g; s/:$//')
 
-          # Gate 1: Compare against baseline v1.0.0 certificate
           if [ "$APK_CERT_SHA1_HEX" != "$OLD_SHA1_HEX" ] || [ "$APK_CERT_SHA256_HEX" != "$OLD_SHA256_HEX" ]; then
             echo "::error::Release APK certificate mismatch against v1.0.0! new_sha1=${APK_CERT_SHA1_HEX}, v1_0_0_sha1=${OLD_SHA1_HEX}"
             exit 1
           fi
 
-          # Gate 2: Compare against google-services.json registered SHA-1
           EXPECTED_FIREBASE_SHA1_LIST=$(python3 - <<'PY'
           import json
           with open("app/google-services.json", "r", encoding="utf-8") as f:
@@ -308,8 +315,7 @@ jobs:
             exit 1
           fi
 
-          # Gate 3: Inspect APK manifest / package / versionCode / app label via aapt2
-          NEW_BADGING=$("$AAPT2_BIN" dump badging "$RELEASE_ASSET_NAME")
+          NEW_BADGING=$("$AAPT2_BIN" dump badging "$PERMANENT_ASSET_NAME")
           NEW_PKG=$(printf '%s\n' "$NEW_BADGING" | sed -n "s/.*package: name='\([^']*\)'.*/\1/p" | head -n1)
           NEW_VC=$(printf '%s\n' "$NEW_BADGING" | sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p" | head -n1)
           NEW_VN=$(printf '%s\n' "$NEW_BADGING" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p" | head -n1)
@@ -323,8 +329,8 @@ jobs:
             echo "::error::New versionCode (${NEW_VC}) must be strictly greater than v1.0.0 versionCode (${OLD_VC})."
             exit 1
           fi
-          if [ "$NEW_VC" != "2" ] || [ "$NEW_VN" != "1.1.0" ]; then
-            echo "::error::Expected versionCode=2 and versionName=1.1.0, found versionCode=${NEW_VC}, versionName=${NEW_VN}."
+          if [ "$NEW_VC" != "3" ] || [ "$NEW_VN" != "1.1.1" ]; then
+            echo "::error::Expected versionCode=3 and versionName=1.1.1, found versionCode=${NEW_VC}, versionName=${NEW_VN}."
             exit 1
           fi
           if [ "$NEW_LABEL" != "مداد التعليمية" ]; then
@@ -332,8 +338,9 @@ jobs:
             exit 1
           fi
 
-          echo "asset_name=${RELEASE_ASSET_NAME}" >> "$GITHUB_OUTPUT"
-          echo "sha256=${DST_SHA256}" >> "$GITHUB_OUTPUT"
+          echo "permanent_asset=${PERMANENT_ASSET_NAME}" >> "$GITHUB_OUTPUT"
+          echo "versioned_asset=${VERSIONED_ASSET_NAME}" >> "$GITHUB_OUTPUT"
+          echo "sha256=${PERM_SHA256}" >> "$GITHUB_OUTPUT"
           echo "size_bytes=${APK_SIZE_BYTES}" >> "$GITHUB_OUTPUT"
           echo "size_human=${APK_SIZE_HUMAN}" >> "$GITHUB_OUTPUT"
           echo "build_time_utc=${APK_DATE_UTC}" >> "$GITHUB_OUTPUT"
@@ -346,19 +353,21 @@ jobs:
           echo "app_label=${NEW_LABEL}" >> "$GITHUB_OUTPUT"
 
           echo "=== Verified Release APK Summary ==="
-          echo "APK Asset        : ${RELEASE_ASSET_NAME}"
+          echo "APK Assets       : ${PERMANENT_ASSET_NAME}, ${VERSIONED_ASSET_NAME}"
           echo "Package          : ${NEW_PKG}"
           echo "Version          : ${NEW_VN} (versionCode=${NEW_VC}, v1.0.0=${OLD_VC})"
           echo "App Label        : ${NEW_LABEL}"
           echo "Size             : ${APK_SIZE_BYTES} bytes (${APK_SIZE_HUMAN})"
-          echo "APK File SHA-256 : ${DST_SHA256}"
+          echo "APK File SHA-256 : ${PERM_SHA256}"
           echo "APK Cert SHA-1   : ${APK_CERT_SHA1}"
           echo "APK Cert SHA-256 : ${APK_CERT_SHA256}"
 
-      - name: Create new GitHub Release v1.1.0 (preserving v1.0.0) and verify uploaded APK
+      - name: Create new GitHub Release v1.1.1 (preserving v1.0.0 and v1.1.0) and verify assets
+        if: steps.baseline.outputs.release_exists != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          ASSET_NAME: ${{ steps.apk_info.outputs.asset_name }}
+          PERMANENT_ASSET: ${{ steps.apk_info.outputs.permanent_asset }}
+          VERSIONED_ASSET: ${{ steps.apk_info.outputs.versioned_asset }}
           LOCAL_SIZE_BYTES: ${{ steps.apk_info.outputs.size_bytes }}
           LOCAL_SIZE_HUMAN: ${{ steps.apk_info.outputs.size_human }}
           LOCAL_SHA256: ${{ steps.apk_info.outputs.sha256 }}
@@ -374,54 +383,53 @@ jobs:
         run: |
           set -euo pipefail
           REPO="${{ github.repository }}"
-          TAG="v1.1.0"
+          TAG="v1.1.1"
 
           if gh api "repos/${REPO}/releases/tags/${TAG}" >/dev/null 2>&1; then
-            echo "::error::Release ${TAG} appeared concurrently; aborting."
-            exit 1
+            echo "::notice::Release ${TAG} appeared concurrently; skipping creation without overwriting."
+            exit 0
           fi
 
-          gh release create "$TAG" "$ASSET_NAME" \
+          gh release create "$TAG" "$PERMANENT_ASSET" "$VERSIONED_ASSET" \
             --repo "$REPO" \
             --target "${{ github.sha }}" \
-            --title "مداد التعليمية v1.1.0" \
-            --notes "إصدار Release الرسمي لمنصة مداد التعليمية (طريقك نحو التفوق) — versionCode ${VERSION_CODE}، متوافق للترقية المباشرة فوق v1.0.0 بنفس بصمة التوقيع (SHA-1: ${CERT_SHA1})."
+            --title "مداد التعليمية v1.1.1" \
+            --notes "تحديث رسمي لمنصة مداد التعليمية (طريقك نحو التفوق) — versionCode ${VERSION_CODE}، يتضمن إصلاح مشغل الفيديو ودعم البث عبر Cloudflare R2 وتحسين التحديث التلقائي (SHA-256: \`${LOCAL_SHA256}\`). متوافق للترقية المباشرة فوق v1.0.0 و v1.1.0 بنفس بصمة التوقيع (SHA-1: ${CERT_SHA1})."
 
           VERIFIED=0
           for attempt in 1 2 3; do
             RELEASE_AFTER=$(gh api "repos/${REPO}/releases/tags/${TAG}")
-            if python3 - <<'PY' "$RELEASE_AFTER" "$ASSET_NAME" "$LOCAL_SIZE_BYTES" "$LOCAL_SHA256" "$START_ISO"
+            if python3 - <<'PY' "$RELEASE_AFTER" "$PERMANENT_ASSET" "$VERSIONED_ASSET" "$LOCAL_SIZE_BYTES" "$LOCAL_SHA256" "$START_ISO"
           import datetime, json, sys
 
           rel = json.loads(sys.argv[1])
-          asset_name = sys.argv[2]
-          local_size = int(sys.argv[3])
-          local_sha = sys.argv[4].lower()
-          start_dt = datetime.datetime.fromisoformat(sys.argv[5].replace("Z", "+00:00"))
+          expected_names = [sys.argv[2], sys.argv[3]]
+          local_size = int(sys.argv[4])
+          local_sha = sys.argv[5].lower()
+          start_dt = datetime.datetime.fromisoformat(sys.argv[6].replace("Z", "+00:00"))
 
-          assets = [a for a in rel.get("assets", []) if a.get("name") == asset_name]
-          if len(assets) != 1:
-              print(f"Expected 1 asset named {asset_name}, found {len(assets)}", file=sys.stderr)
-              sys.exit(1)
+          for asset_name in expected_names:
+              assets = [a for a in rel.get("assets", []) if a.get("name") == asset_name]
+              if len(assets) != 1:
+                  print(f"Expected 1 asset named {asset_name}, found {len(assets)}", file=sys.stderr)
+                  sys.exit(1)
+              asset = assets[0]
+              remote_size = int(asset.get("size", -1))
+              updated_raw = asset.get("updated_at", "")
+              updated_dt = datetime.datetime.fromisoformat(updated_raw.replace("Z", "+00:00"))
+              digest = (asset.get("digest") or "").lower()
+              download_url = asset.get("browser_download_url", "")
 
-          asset = assets[0]
-          remote_size = int(asset.get("size", -1))
-          updated_raw = asset.get("updated_at", "")
-          updated_dt = datetime.datetime.fromisoformat(updated_raw.replace("Z", "+00:00"))
-          digest = (asset.get("digest") or "").lower()
-          download_url = asset.get("browser_download_url", "")
-
-          if remote_size != local_size:
-              print(f"Size mismatch: remote={remote_size} vs local={local_size}", file=sys.stderr)
-              sys.exit(1)
-          if updated_dt < start_dt - datetime.timedelta(seconds=5):
-              print(f"Timestamp mismatch: {updated_raw}", file=sys.stderr)
-              sys.exit(1)
-          if digest and digest != f"sha256:{local_sha}":
-              print(f"Digest mismatch: {digest} vs sha256:{local_sha}", file=sys.stderr)
-              sys.exit(1)
-
-          print(f"Verified Release {rel.get('tag_name')} -> {download_url} ({remote_size} bytes)")
+              if remote_size != local_size:
+                  print(f"Size mismatch for {asset_name}: remote={remote_size} vs local={local_size}", file=sys.stderr)
+                  sys.exit(1)
+              if updated_dt < start_dt - datetime.timedelta(seconds=5):
+                  print(f"Timestamp mismatch for {asset_name}: {updated_raw}", file=sys.stderr)
+                  sys.exit(1)
+              if digest and digest != f"sha256:{local_sha}":
+                  print(f"Digest mismatch for {asset_name}: {digest} vs sha256:{local_sha}", file=sys.stderr)
+                  sys.exit(1)
+              print(f"Verified Release {rel.get('tag_name')} -> {download_url} ({remote_size} bytes)")
           PY
             then
               VERIFIED=1
@@ -431,24 +439,35 @@ jobs:
           done
 
           if [ "$VERIFIED" -ne 1 ]; then
-            echo "::error::Failed to verify uploaded release asset on ${TAG}."
+            echo "::error::Failed to verify uploaded release assets on ${TAG}."
             exit 1
           fi
 
           {
             echo "### Midad Release APK Build & Verification (${TAG})"
-            echo "- **Tag**: \`${TAG}\` (v1.0.0 preserved intact)"
+            echo "- **Tag**: \`${TAG}\` (v1.0.0 and v1.1.0 preserved intact)"
             echo "- **Version**: \`${VERSION_NAME}\` (\`versionCode=${VERSION_CODE}\` > v1.0.0 \`versionCode=${OLD_VC}\`)"
             echo "- **Application ID**: \`com.aistudio.abkedu.kpmzqx\`"
             echo "- **APK Signing Cert SHA-1 (Matched v1.0.0 & Firebase)**: \`${CERT_SHA1}\` (\`${CERT_SHA1_HEX}\`)"
             echo "- **APK Signing Cert SHA-256**: \`${CERT_SHA256}\` (\`${CERT_SHA256_HEX}\`)"
             echo "- **APK Size**: \`${LOCAL_SIZE_BYTES} bytes\` (\`${LOCAL_SIZE_HUMAN}\`)"
-            echo "- **APK File SHA-256**: \`${LOCAL_SHA256}\`"
+            echo "- **APK File SHA-256 (for appConfig/android_release)**: \`${LOCAL_SHA256}\`"
             echo "- **Build Time (UTC)**: \`${BUILD_TIME_UTC}\`"
-            echo "- **Direct APK URL**: https://github.com/${REPO}/releases/download/${TAG}/${ASSET_NAME}"
+            echo "- **Permanent Latest APK URL**: https://github.com/${REPO}/releases/latest/download/${PERMANENT_ASSET}"
+            echo "- **Versioned Release URL**: https://github.com/${REPO}/releases/download/${TAG}/${VERSIONED_ASSET}"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload built APK workflow artifact (when release tag already exists)
+        if: steps.baseline.outputs.release_exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: midad-release-v1.1.1-apk
+          path: |
+            Midad.apk
+            Midad-v1.1.1-release.apk
+          retention-days: 7
 
       - name: Clean up temporary keystores and local build copies
         if: always()
         run: |
-          rm -rf "${RUNNER_TEMP}/release-compat.keystore" "${RUNNER_TEMP}/old_v100" Midad-v1.1.0-release.apk
+          rm -rf "${RUNNER_TEMP}/release-compat.keystore" "${RUNNER_TEMP}/old_v100" Midad.apk Midad-v1.1.1-release.apk

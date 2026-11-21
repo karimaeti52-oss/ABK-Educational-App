@@ -106,6 +106,7 @@ import com.example.update.AppUpdateState
 import com.example.util.NetworkMonitor
 import com.example.util.NotificationHelper
 import com.example.util.PdfCacheManager
+import com.example.util.UrlUtils
 import com.example.viewmodel.AdminViewModel
 import com.example.viewmodel.MainViewModel
 import com.google.firebase.Firebase
@@ -116,6 +117,7 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.firestoreSettings
 import com.google.firebase.firestore.persistentCacheSettings
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 import java.io.File
 
 object NavRoutes {
@@ -416,6 +418,12 @@ private fun AuthenticatedAbkApp(
             }
         }
 
+        val authTokenProvider: suspend () -> String? = remember(firebaseUser) {
+            {
+                runCatching { firebaseUser.getIdToken(false).await().token }.getOrNull()
+            }
+        }
+
         val downloadMaterialAction: (StudyMaterial) -> Unit = { mat ->
             scope.launch {
                 mainViewModel.showMessage("جاري تنزيل ${mat.title}…")
@@ -423,7 +431,9 @@ private fun AuthenticatedAbkApp(
                     context = context,
                     materialId = mat.id,
                     title = mat.title,
-                    rawUrl = mat.fileUrl
+                    rawUrl = mat.fileUrl,
+                    r2WorkerBaseUrl = platformConfig.r2WorkerBaseUrl,
+                    authTokenProvider = authTokenProvider
                 )
                 result.onSuccess { msg -> mainViewModel.showMessage(msg) }
                     .onFailure { err -> mainViewModel.showMessage(err.localizedMessage ?: "تعذر تنزيل الملف") }
@@ -812,6 +822,8 @@ private fun AuthenticatedAbkApp(
                                         relatedMaterials = related,
                                         initialProgress = prog,
                                         isFavorite = isFav,
+                                        r2WorkerBaseUrl = platformConfig.r2WorkerBaseUrl,
+                                        authTokenProvider = authTokenProvider,
                                         onBack = { navController.popBackStack() },
                                         onSaveProgress = { pos, dur, done ->
                                             if (lesson != null) {
@@ -835,11 +847,12 @@ private fun AuthenticatedAbkApp(
                                     val parentExp = block?.let { b -> explanations.firstOrNull { it.id == b.explanationId } }
                                     val syntheticLesson = block?.let { b ->
                                         val url = b.mediaUrl ?: ""
-                                        val sourceType = if (b.parsedBlockType() == ContentBlockType.YOUTUBE_VIDEO) {
-                                            VideoSourceType.YOUTUBE.name
+                                        val preferred = if (b.parsedBlockType() == ContentBlockType.YOUTUBE_VIDEO) {
+                                            VideoSourceType.YOUTUBE
                                         } else {
-                                            VideoSourceType.EXTERNAL.name
+                                            VideoSourceType.MP4
                                         }
+                                        val sourceType = UrlUtils.detectVideoSourceType(url, preferred).name
                                         Lesson(
                                             id = parentLesson?.id ?: b.lessonId.ifBlank { b.id },
                                             subjectId = b.subjectId,
@@ -851,7 +864,9 @@ private fun AuthenticatedAbkApp(
                                             durationLabel = b.durationLabel,
                                             thumbnailUrl = b.thumbnailUrl,
                                             videoUrl = url,
-                                            videoSourceType = sourceType
+                                            videoSourceType = sourceType,
+                                            r2ObjectKey = b.r2ObjectKey,
+                                            sizeBytes = b.sizeBytes
                                         )
                                     }
                                     val related = block?.let { b ->
@@ -864,6 +879,8 @@ private fun AuthenticatedAbkApp(
                                         relatedMaterials = related,
                                         initialProgress = prog,
                                         isFavorite = false,
+                                        r2WorkerBaseUrl = platformConfig.r2WorkerBaseUrl,
+                                        authTokenProvider = authTokenProvider,
                                         onBack = { navController.popBackStack() },
                                         onSaveProgress = { pos, dur, done ->
                                             if (parentLesson != null) {
@@ -887,6 +904,8 @@ private fun AuthenticatedAbkApp(
                                     PdfViewerScreen(
                                         material = mat,
                                         isFavorite = isFav,
+                                        r2WorkerBaseUrl = platformConfig.r2WorkerBaseUrl,
+                                        authTokenProvider = authTokenProvider,
                                         onBack = { navController.popBackStack() },
                                         onDownloadClick = { if (mat != null) downloadMaterialAction(mat) },
                                         onShareClick = { if (mat != null) shareMaterialAction(mat) },
@@ -916,6 +935,8 @@ private fun AuthenticatedAbkApp(
                                     PdfViewerScreen(
                                         material = syntheticMat,
                                         isFavorite = false,
+                                        r2WorkerBaseUrl = platformConfig.r2WorkerBaseUrl,
+                                        authTokenProvider = authTokenProvider,
                                         onBack = { navController.popBackStack() },
                                         onDownloadClick = { if (syntheticMat != null) downloadMaterialAction(syntheticMat) },
                                         onShareClick = { if (syntheticMat != null) shareMaterialAction(syntheticMat) },

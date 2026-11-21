@@ -257,6 +257,7 @@ export function CatalogNodesSection({
             onChange={(url) => setImageUrl(url)}
             folderPath="catalog"
             imageOnly
+            platformConfig={store.platformConfig}
             onToast={onToast}
           />
 
@@ -544,6 +545,7 @@ export function SubjectsSection({
             onChange={(url) => setImageUrl(url)}
             folderPath="subjects/covers"
             imageOnly
+            platformConfig={store.platformConfig}
             onToast={onToast}
           />
 

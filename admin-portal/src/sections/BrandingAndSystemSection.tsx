@@ -46,6 +46,8 @@ import type {
   PublishStatus,
   StaffSession,
 } from '../types';
+import { PERMANENT_MIDAD_APK_URL, resolveR2StorageLimits } from '../utils/r2Upload';
+import { fetchR2QuotaStatus } from '../services/r2UploadClient';
 
 export function BrandingSection({
   store,
@@ -199,6 +201,7 @@ export function BrandingSection({
             onChange={(url) => setDraft({ ...draft, logoUrl: url })}
             folderPath="branding"
             imageOnly
+            platformConfig={store.platformConfig}
             onToast={onToast}
           />
           <AssetUrlOrUploadInput
@@ -207,6 +210,7 @@ export function BrandingSection({
             onChange={(url) => setDraft({ ...draft, heroBannerUrl: url })}
             folderPath="branding"
             imageOnly
+            platformConfig={store.platformConfig}
             onToast={onToast}
           />
 
@@ -652,6 +656,12 @@ export function PlatformSettingsSection({
   const [customDesc, setCustomDesc] = useState('');
   const [release, setRelease] = useState<AndroidReleaseManifest>(DEFAULT_ANDROID_RELEASE);
   const [publishingRelease, setPublishingRelease] = useState(false);
+  const [testingR2, setTestingR2] = useState(false);
+  const [r2HealthMsg, setR2HealthMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    setCfg(store.platformConfig);
+  }, [store.platformConfig]);
 
   useEffect(() => {
     const unsub = subscribeAndroidRelease((manifest) => {
@@ -661,8 +671,38 @@ export function PlatformSettingsSection({
   }, []);
 
   async function saveToggles() {
-    await savePlatformConfig(cfg, staff);
-    onToast('تم حفظ إعدادات المنصة العامة');
+    const limits = resolveR2StorageLimits(cfg);
+    await savePlatformConfig(
+      {
+        ...cfg,
+        r2WorkerBaseUrl: (cfg.r2WorkerBaseUrl || '').trim().replace(/\/+$/g, ''),
+        maxVideoSizeMb: limits.maxVideoSizeMb,
+        maxPdfSizeMb: limits.maxPdfSizeMb,
+        maxImageSizeMb: limits.maxImageSizeMb,
+        totalStorageLimitGb: limits.totalStorageLimitGb,
+      },
+      staff
+    );
+    onToast('تم حفظ إعدادات المنصة وحدود التخزين السحابي بنجاح');
+  }
+
+  async function handleTestR2Connection() {
+    setTestingR2(true);
+    setR2HealthMsg(null);
+    try {
+      const q = await fetchR2QuotaStatus(cfg);
+      if (!q) {
+        setR2HealthMsg('يرجى إدخال رابط Cloudflare Worker يبدأ بـ https:// ثم المحاولة.');
+      } else {
+        const usedGb = (q.usedBytes / (1024 * 1024 * 1024)).toFixed(2);
+        const totalGb = (q.totalLimitBytes / (1024 * 1024 * 1024)).toFixed(1);
+        setR2HealthMsg(`متصل بنجاح • عدد الملفات: ${q.fileCount} • المستخدم: ${usedGb} / ${totalGb} GB (${q.usedPercent}%)`);
+      }
+    } catch (err) {
+      setR2HealthMsg(err instanceof Error ? err.message : 'تعذر الاتصال بخادم Cloudflare R2 Worker');
+    } finally {
+      setTestingR2(false);
+    }
   }
 
   async function handlePublishAndroidRelease(e: React.FormEvent) {
@@ -741,28 +781,127 @@ export function PlatformSettingsSection({
             onChange={(e) => setCfg({ ...cfg, maintenanceMode: e.target.checked })}
           />
         </label>
+
+        {/* Cloudflare R2 Worker & Configurable Upload Limits */}
+        <div className="mt-4 space-y-3 rounded-2xl border border-sky-200 bg-sky-50/50 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h4 className="font-bold text-[#142A43]">تخزين Cloudflare R2 وحدود الرفع القابلة للتعديل</h4>
+              <p className="text-xs text-slate-500">
+                لا تُحفظ أي مفاتيح R2 في المتصفح أو التطبيق؛ يتم الرفع والبث عبر Cloudflare Worker محمي بالتحقق من المشرف.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void handleTestR2Connection()}
+              disabled={testingR2}
+              className="rounded-xl border border-sky-300 bg-white px-3 py-1.5 text-xs font-bold text-sky-800 hover:bg-sky-50 disabled:opacity-50"
+            >
+              {testingR2 ? 'جاري الفحص...' : 'اختبار اتصال R2 Worker'}
+            </button>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-slate-600">رابط Cloudflare R2 Worker (HTTPS) *</label>
+            <input
+              type="url"
+              dir="ltr"
+              value={cfg.r2WorkerBaseUrl || ''}
+              onChange={(e) => setCfg({ ...cfg, r2WorkerBaseUrl: e.target.value })}
+              placeholder="https://midad-r2-worker.your-subdomain.workers.dev"
+              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-sm"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-600">الحد الأقصى للفيديو (MB)</label>
+              <input
+                type="number"
+                min={1}
+                max={2048}
+                dir="ltr"
+                value={cfg.maxVideoSizeMb ?? 200}
+                onChange={(e) => setCfg({ ...cfg, maxVideoSizeMb: Number(e.target.value) })}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-sm"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-600">الحد الأقصى لـ PDF (MB)</label>
+              <input
+                type="number"
+                min={1}
+                max={1024}
+                dir="ltr"
+                value={cfg.maxPdfSizeMb ?? 100}
+                onChange={(e) => setCfg({ ...cfg, maxPdfSizeMb: Number(e.target.value) })}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-sm"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-600">الحد الأقصى للصور (MB)</label>
+              <input
+                type="number"
+                min={1}
+                max={256}
+                dir="ltr"
+                value={cfg.maxImageSizeMb ?? 20}
+                onChange={(e) => setCfg({ ...cfg, maxImageSizeMb: Number(e.target.value) })}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-sm"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-600">الحصة الإجمالية (GB)</label>
+              <input
+                type="number"
+                min={1}
+                max={1000}
+                dir="ltr"
+                value={cfg.totalStorageLimitGb ?? 25}
+                onChange={(e) => setCfg({ ...cfg, totalStorageLimitGb: Number(e.target.value) })}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-sm"
+              />
+            </div>
+          </div>
+
+          {r2HealthMsg && (
+            <p className="rounded-xl bg-white px-3 py-2 text-xs font-bold text-[#142A43] ring-1 ring-slate-200">
+              {r2HealthMsg}
+            </p>
+          )}
+        </div>
+
         <button
           type="button"
           onClick={saveToggles}
           className="inline-flex items-center gap-1.5 rounded-xl bg-[#142A43] px-5 py-2.5 text-xs font-bold text-white"
         >
           <Check className="h-4 w-4" />
-          حفظ الإعدادات العامة
+          حفظ الإعدادات العامة وحدود التخزين
         </button>
       </div>
 
       {/* Over-the-Top In-App Android Release Publisher */}
       <form onSubmit={handlePublishAndroidRelease} className="space-y-4 rounded-2xl border border-teal-200 bg-white p-5">
-        <div className="flex items-center gap-2.5">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-teal-50 text-[#167D83]">
-            <Smartphone className="h-5 w-5" />
+        <div className="flex flex-wrap items-center justify-between gap-2.5">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-teal-50 text-[#167D83]">
+              <Smartphone className="h-5 w-5" />
+            </div>
+            <div>
+              <h3 className="font-bold text-[#142A43]">نشر تحديث تطبيق مداد (Android In-App Update)</h3>
+              <p className="text-xs text-slate-500">
+                يُحفظ في <code className="rounded bg-slate-100 px-1">appConfig/android_release</code> مع التحقق من HTTPS وبصمة SHA-256 للحفاظ على بيانات الطلاب دون حذف التطبيق.
+              </p>
+            </div>
           </div>
-          <div>
-            <h3 className="font-bold text-[#142A43]">نشر تحديث تطبيق مداد (Android In-App Update)</h3>
-            <p className="text-xs text-slate-500">
-              يُحفظ في <code className="rounded bg-slate-100 px-1">appConfig/android_release</code> مع التحقق من HTTPS وبصمة SHA-256 للحفاظ على بيانات الطلاب دون حذف التطبيق.
-            </p>
-          </div>
+          <button
+            type="button"
+            onClick={() => setRelease({ ...release, apkUrl: PERMANENT_MIDAD_APK_URL })}
+            className="rounded-xl border border-teal-200 bg-teal-50 px-3 py-1.5 text-xs font-bold text-teal-800 hover:bg-teal-100"
+          >
+            تعبئة رابط Midad.apk الدائم
+          </button>
         </div>
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
@@ -785,7 +924,7 @@ export function PlatformSettingsSection({
               dir="ltr"
               value={release.versionName}
               onChange={(e) => setRelease({ ...release, versionName: e.target.value })}
-              placeholder="1.1.0"
+              placeholder="1.1.1"
               className="w-full rounded-xl border border-slate-200 px-3 py-2 text-left text-sm"
             />
           </div>
@@ -802,14 +941,14 @@ export function PlatformSettingsSection({
           </div>
 
           <div className="md:col-span-2">
-            <label className="mb-1 block text-xs font-semibold text-slate-600">رابط تحميل APK (HTTPS فقط) *</label>
+            <label className="mb-1 block text-xs font-semibold text-slate-600">رابط تحميل APK الدائم (HTTPS فقط) *</label>
             <input
               type="url"
               required
               dir="ltr"
               value={release.apkUrl}
               onChange={(e) => setRelease({ ...release, apkUrl: e.target.value })}
-              placeholder="https://github.com/org/repo/releases/download/v1.1.0/midad-release.apk"
+              placeholder={PERMANENT_MIDAD_APK_URL}
               className="w-full rounded-xl border border-slate-200 px-3 py-2 text-left text-sm"
             />
           </div>

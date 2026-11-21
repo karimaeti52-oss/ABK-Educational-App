@@ -14,12 +14,14 @@ import {
   commitSortOrderBatch,
   hardDeleteEntity,
   normalizeStatusFlags,
+  registerUploadedMediaAsset,
   restoreEntity,
   softDeleteEntity,
   updateEntityStatus,
   upsertEntity,
   type CmsStore,
 } from '../services/firestoreCms';
+import type { R2UploadResult } from '../utils/r2Upload';
 import type {
   ContentBlock,
   ContentBlockType,
@@ -197,6 +199,7 @@ export function TeachersSection({
             onChange={(url) => setPhotoUrl(url)}
             folderPath="teachers/avatars"
             imageOnly
+            platformConfig={store.platformConfig}
             onToast={onToast}
           />
 
@@ -342,6 +345,9 @@ export function ExplanationsAndBlocksSection({
   const [blockMediaUrl, setBlockMediaUrl] = useState('');
   const [blockDuration, setBlockDuration] = useState('');
   const [blockFileSize, setBlockFileSize] = useState('');
+  const [blockR2Key, setBlockR2Key] = useState('');
+  const [blockSizeBytes, setBlockSizeBytes] = useState<number | undefined>(undefined);
+  const [lastUploadedMeta, setLastUploadedMeta] = useState<R2UploadResult | null>(null);
   const [qaItems, setQaItems] = useState<QaItem[]>([]);
   const [quizQuestions, setQuizQuestions] = useState<QuizQuestion[]>([]);
   const [blockSort, setBlockSort] = useState(1);
@@ -437,6 +443,9 @@ export function ExplanationsAndBlocksSection({
     setBlockMediaUrl('');
     setBlockDuration('');
     setBlockFileSize('');
+    setBlockR2Key('');
+    setBlockSizeBytes(undefined);
+    setLastUploadedMeta(null);
     setQaItems([{ question: '', answer: '' }]);
     setQuizQuestions([
       { id: `q_${Date.now()}`, prompt: '', options: ['', '', '', ''], correctIndex: 0, explanation: '', questionType: 'MCQ' },
@@ -456,6 +465,9 @@ export function ExplanationsAndBlocksSection({
     setBlockMediaUrl(b.mediaUrl || '');
     setBlockDuration(b.durationLabel || '');
     setBlockFileSize(b.fileSizeLabel || '');
+    setBlockR2Key(b.r2ObjectKey || '');
+    setBlockSizeBytes(b.sizeBytes);
+    setLastUploadedMeta(null);
     setQaItems(b.qaItems?.length ? b.qaItems : [{ question: '', answer: '' }]);
     setQuizQuestions(
       b.quizQuestions?.length
@@ -474,6 +486,7 @@ export function ExplanationsAndBlocksSection({
     const isQuiz = blockType === 'QUIZ_MCQ' || blockType === 'QUIZ_TRUE_FALSE' || blockType === 'INTERACTIVE_EXAM';
 
     try {
+      const effectiveStatus = staff.role === 'TEACHER' ? 'DRAFT' : blockStatus;
       await upsertEntity(
         'contentBlocks',
         editingBlock?.id,
@@ -491,15 +504,35 @@ export function ExplanationsAndBlocksSection({
           mediaUrl: blockMediaUrl.trim() || undefined,
           durationLabel: blockDuration.trim() || undefined,
           fileSizeLabel: blockFileSize.trim() || undefined,
+          r2ObjectKey: blockR2Key.trim() || undefined,
+          sizeBytes: blockSizeBytes ? Math.round(blockSizeBytes) : undefined,
           qaItems: isQa ? qaItems.filter((q) => q.question.trim() && q.answer.trim()) : undefined,
           quizQuestions: isQuiz ? quizQuestions.filter((q) => q.prompt.trim()) : undefined,
           sortOrder: Number(blockSort) || 1,
-          ...normalizeStatusFlags(staff.role === 'TEACHER' ? 'DRAFT' : blockStatus),
+          ...normalizeStatusFlags(effectiveStatus),
         },
         staff,
         blockTitle.trim()
       );
+      if (lastUploadedMeta && staff.role !== 'TEACHER') {
+        try {
+          await registerUploadedMediaAsset(
+            lastUploadedMeta,
+            {
+              title: blockTitle.trim(),
+              durationLabel: blockDuration.trim() || undefined,
+              subjectId: currentExplanation.subjectId,
+              lessonId: currentExplanation.lessonId,
+              published: effectiveStatus === 'PUBLISHED',
+            },
+            staff
+          );
+        } catch {
+          // Best-effort catalog indexing
+        }
+      }
       setOpenBlockForm(false);
+      setLastUploadedMeta(null);
       onToast('تم حفظ كتلة المحتوى بنجاح');
     } catch (err) {
       onToast(err instanceof Error ? err.message : 'فشل حفظ الكتلة', true);
@@ -755,20 +788,38 @@ export function ExplanationsAndBlocksSection({
                   <AssetUrlOrUploadInput
                     label={
                       blockType === 'YOUTUBE_VIDEO'
-                        ? 'رابط YouTube'
-                        : blockType === 'EXTERNAL_LINK'
-                          ? 'الرابط الخارجي'
-                          : blockType === 'ASSIGNMENT'
-                            ? 'مرفق الواجب / رابط الملف (اختياري)'
-                            : 'رابط الملف / أو ارفعه مباشرة'
+                        ? 'رابط YouTube أو رفع فيديو MP4 بديل'
+                        : blockType === 'EXTERNAL_VIDEO'
+                          ? 'فيديو الدرس (ارفع MP4 إلى Cloudflare R2 أو الصق رابطاً مباشراً)'
+                          : blockType === 'EXTERNAL_LINK'
+                            ? 'الرابط الخارجي'
+                            : blockType === 'ASSIGNMENT'
+                              ? 'مرفق الواجب / رابط الملف (اختياري)'
+                              : 'رابط الملف / أو ارفعه مباشرة إلى Cloudflare R2'
                     }
                     value={blockMediaUrl}
                     onChange={(url, size) => {
                       setBlockMediaUrl(url);
                       if (size) setBlockFileSize(size);
+                      if (!url.trim()) {
+                        setBlockR2Key('');
+                        setBlockSizeBytes(undefined);
+                        setLastUploadedMeta(null);
+                      }
+                    }}
+                    onUploadedMeta={(meta) => {
+                      setBlockR2Key(meta.objectKey);
+                      setBlockSizeBytes(meta.sizeBytes);
+                      setLastUploadedMeta(meta);
+                      if (meta.mediaKind === 'VIDEO' && blockType === 'YOUTUBE_VIDEO') {
+                        setBlockType('EXTERNAL_VIDEO');
+                      }
                     }}
                     folderPath={`lessons/${currentExplanation.lessonId}`}
                     imageOnly={blockType === 'IMAGE'}
+                    videoOnly={blockType === 'EXTERNAL_VIDEO'}
+                    accept={blockType === 'PDF_FILE' ? '.pdf,application/pdf' : undefined}
+                    platformConfig={store.platformConfig}
                     onToast={onToast}
                   />
                 )}
@@ -779,9 +830,14 @@ export function ExplanationsAndBlocksSection({
                       <label className="mb-1 block text-xs font-semibold text-slate-600">المدة (مثال 14:30)</label>
                       <input value={blockDuration} onChange={(e) => setBlockDuration(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" />
                     </div>
-                    {blockType === 'YOUTUBE_VIDEO' && blockMediaUrl.trim() && isYouTubeUrl(blockMediaUrl) && (
+                    {blockMediaUrl.trim() && isYouTubeUrl(blockMediaUrl) && (
                       <div className="rounded-2xl border border-slate-200 bg-white p-3">
                         <YouTubeVideoPlayer url={blockMediaUrl} title={blockTitle || 'معاينة الفيديو'} />
+                      </div>
+                    )}
+                    {blockType === 'EXTERNAL_VIDEO' && blockMediaUrl.trim() && !isYouTubeUrl(blockMediaUrl) && (
+                      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-black">
+                        <video src={blockMediaUrl} controls playsInline preload="metadata" className="aspect-video w-full" />
                       </div>
                     )}
                   </div>
@@ -985,7 +1041,12 @@ export function ExplanationsAndBlocksSection({
                         onEdit={() => startEditBlock(blk)}
                         onSoftDelete={() => softDeleteEntity('contentBlocks', blk.id, staff, blk.title)}
                         onRestore={() => restoreEntity('contentBlocks', blk.id, staff, blk.title)}
-                        onHardDelete={() => hardDeleteEntity('contentBlocks', blk.id, staff, blk.title)}
+                        onHardDelete={() =>
+                          hardDeleteEntity('contentBlocks', blk.id, staff, blk.title, {
+                            r2ObjectKey: blk.r2ObjectKey,
+                            platformConfig: store.platformConfig,
+                          })
+                        }
                       />
                     </div>
                   </div>

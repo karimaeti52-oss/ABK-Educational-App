@@ -142,9 +142,10 @@ class AppUpdateManager(
                     totalBytes = manifest.fileSizeBytes.coerceAtLeast(0L)
                 )
 
+                val resolvedUrl = resolveEffectiveApkUrl(manifest.apkUrl)
                 val downloadedFile = withContext(Dispatchers.IO) {
                     val request = Request.Builder()
-                        .url(manifest.apkUrl.trim())
+                        .url(resolvedUrl)
                         .header("User-Agent", "Midad-Android/$currentVersionName")
                         .build()
 
@@ -355,14 +356,21 @@ class AppUpdateManager(
     }
 
     companion object {
+        const val DEFAULT_PERMANENT_APK_URL =
+            "https://github.com/karimaeti52-oss/ABK-Educational-App/releases/latest/download/Midad.apk"
+
         private val sha256HexRegex = Regex("^[a-fA-F0-9]{64}$")
+
+        fun resolveEffectiveApkUrl(rawUrl: String?): String =
+            rawUrl?.trim()?.takeIf { it.isNotEmpty() } ?: DEFAULT_PERMANENT_APK_URL
 
         fun isValidSha256Hex(raw: String?): Boolean =
             !raw.isNullOrBlank() && sha256HexRegex.matches(raw.trim())
 
         fun isUpdateAvailable(manifest: AppReleaseManifest, currentVersionCode: Int): Boolean {
+            val effectiveUrl = resolveEffectiveApkUrl(manifest.apkUrl)
             return manifest.versionCode > currentVersionCode.toLong() &&
-                UrlUtils.isSafeHttpsUrl(manifest.apkUrl) &&
+                UrlUtils.isSafeHttpsUrl(effectiveUrl) &&
                 isValidSha256Hex(manifest.sha256)
         }
 

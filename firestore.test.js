@@ -931,4 +931,120 @@ test("appConfig/android_release enforces admin HTTPS+SHA256 validation and activ
   await assertFails(aliceDb.collection("appConfig").doc("android_release").get());
 });
 
+test("platformConfig R2 storage limits and mediaAssets RBAC enforce strict access control", async () => {
+  const admDb = adminContext().firestore();
+  const aliceDb = testEnv.authenticatedContext(STUDENT_ALICE, { email: "alice@example.com", email_verified: true }).firestore();
+  const now = new Date(Date.now() - 2000);
+
+  // Admin writes platformConfig with R2 Worker URL and editable size/quota limits
+  await assertSucceeds(
+    admDb.collection("platformConfig").doc("main").set({
+      platformName: "مداد التعليمية",
+      platformTagline: "طريقك نحو التفوّق",
+      homeHeadline: "ماذا تدرس اليوم؟",
+      primaryColorHex: "#142A43",
+      secondaryColorHex: "#167D83",
+      accentColorHex: "#C7A15A",
+      r2WorkerBaseUrl: "https://midad-r2-worker.example.workers.dev",
+      maxVideoSizeMb: 200,
+      maxPdfSizeMb: 100,
+      maxImageSizeMb: 20,
+      totalStorageLimitGb: 25,
+      updatedBy: ADMIN_UID,
+      updatedAt: now,
+    })
+  );
+
+  // Reject out-of-range video limit (> 2048 MB)
+  await assertFails(
+    admDb.collection("platformConfig").doc("main").set({
+      platformName: "مداد التعليمية",
+      homeHeadline: "ماذا تدرس اليوم؟",
+      primaryColorHex: "#142A43",
+      secondaryColorHex: "#167D83",
+      maxVideoSizeMb: 5000,
+      updatedBy: ADMIN_UID,
+      updatedAt: now,
+    })
+  );
+
+  // Student cannot write mediaAssets
+  await assertFails(
+    aliceDb.collection("mediaAssets").doc("asset_video_1").set({
+      title: "شرح الجبر",
+      fileName: "algebra.mp4",
+      objectKey: "videos/1700_algebra.mp4",
+      fileUrl: "https://midad-r2-worker.example.workers.dev/files/videos/1700_algebra.mp4",
+      contentType: "video/mp4",
+      mediaKind: "VIDEO",
+      sizeBytes: 42000000,
+      published: true,
+      status: "PUBLISHED",
+      createdBy: STUDENT_ALICE,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Admin creates published + draft mediaAssets; insecure http:// rejected
+  await assertFails(
+    admDb.collection("mediaAssets").doc("asset_http").set({
+      title: "غير آمن",
+      fileName: "x.mp4",
+      objectKey: "videos/x.mp4",
+      fileUrl: "http://insecure.example.com/x.mp4",
+      contentType: "video/mp4",
+      mediaKind: "VIDEO",
+      sizeBytes: 1024,
+      published: true,
+      status: "PUBLISHED",
+      createdBy: ADMIN_UID,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  await assertSucceeds(
+    admDb.collection("mediaAssets").doc("asset_video_pub").set({
+      title: "درس الدوال الحقيقية",
+      fileName: "functions.mp4",
+      objectKey: "videos/1700_functions.mp4",
+      fileUrl: "https://midad-r2-worker.example.workers.dev/files/videos/1700_functions.mp4",
+      contentType: "video/mp4",
+      mediaKind: "VIDEO",
+      sizeBytes: 52428800,
+      nodeIds: ["stage_sec"],
+      subjectId: "subj_math",
+      published: true,
+      status: "PUBLISHED",
+      createdBy: ADMIN_UID,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  await assertSucceeds(
+    admDb.collection("mediaAssets").doc("asset_pdf_draft").set({
+      title: "مسودة كتاب",
+      fileName: "book.pdf",
+      objectKey: "materials/1700_book.pdf",
+      fileUrl: "https://midad-r2-worker.example.workers.dev/files/materials/1700_book.pdf",
+      contentType: "application/pdf",
+      mediaKind: "PDF",
+      sizeBytes: 15728640,
+      published: false,
+      status: "DRAFT",
+      createdBy: ADMIN_UID,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Active student reads published asset, denied reading draft or deleting
+  await assertSucceeds(aliceDb.collection("mediaAssets").doc("asset_video_pub").get());
+  await assertFails(aliceDb.collection("mediaAssets").doc("asset_pdf_draft").get());
+  await assertFails(aliceDb.collection("mediaAssets").doc("asset_video_pub").delete());
+  await assertSucceeds(admDb.collection("mediaAssets").doc("asset_pdf_draft").delete());
+});
+
 

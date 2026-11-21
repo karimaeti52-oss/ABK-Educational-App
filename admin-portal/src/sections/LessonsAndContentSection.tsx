@@ -1,6 +1,15 @@
-import React, { useMemo, useState } from 'react';
-import { ArrowDown, ArrowUp, Copy, ExternalLink, Play, Plus } from 'lucide-react';
-import { getDownloadURL, listAll, ref } from 'firebase/storage';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  Copy,
+  ExternalLink,
+  HardDrive,
+  Play,
+  Plus,
+  RefreshCw,
+} from 'lucide-react';
 import {
   AssetUrlOrUploadInput,
   EmptyBox,
@@ -10,12 +19,14 @@ import {
   StatusSelector,
 } from '../components/CommonUi';
 import { VideoPreviewModal, YouTubeVideoPlayer } from '../components/YouTubePlayer';
-import { checkStorageBucketAvailability, firebaseStorage, mapStorageErrorToArabic } from '../firebase';
+import { fetchR2QuotaStatus, resolveActiveR2WorkerUrl } from '../services/r2UploadClient';
+import { formatBytesReadable, resolveR2StorageLimits, type R2UploadResult } from '../utils/r2Upload';
 import { getYouTubeThumbnailUrl, getYouTubeWatchUrl, isYouTubeUrl } from '../utils/youtube';
 import {
   commitSortOrderBatch,
   hardDeleteEntity,
   normalizeStatusFlags,
+  registerUploadedMediaAsset,
   restoreEntity,
   softDeleteEntity,
   updateEntityStatus,
@@ -25,8 +36,11 @@ import {
 import type {
   Lesson,
   MaterialType,
+  MediaAsset,
+  MediaKind,
   NavSectionId,
   PublishStatus,
+  R2QuotaStatus,
   StaffSession,
   StudyMaterial,
   VideoSourceType,
@@ -63,7 +77,10 @@ export function LessonsSection({
   const [teacherName, setTeacherName] = useState('');
   const [durationLabel, setDurationLabel] = useState('');
   const [videoUrl, setVideoUrl] = useState('');
-  const [videoSourceType, setVideoSourceType] = useState<VideoSourceType>('YOUTUBE');
+  const [videoSourceType, setVideoSourceType] = useState<VideoSourceType>('MP4');
+  const [r2ObjectKey, setR2ObjectKey] = useState('');
+  const [sizeBytes, setSizeBytes] = useState<number | undefined>(undefined);
+  const [uploadedVideoMeta, setUploadedVideoMeta] = useState<R2UploadResult | null>(null);
   const [thumbnailUrl, setThumbnailUrl] = useState('');
   const [status, setStatus] = useState<PublishStatus>('PUBLISHED');
   const [previewVideo, setPreviewVideo] = useState<{ title: string; url: string } | null>(null);
@@ -89,7 +106,10 @@ export function LessonsSection({
     setTeacherName('');
     setDurationLabel('');
     setVideoUrl('');
-    setVideoSourceType('YOUTUBE');
+    setVideoSourceType('MP4');
+    setR2ObjectKey('');
+    setSizeBytes(undefined);
+    setUploadedVideoMeta(null);
     setThumbnailUrl('');
     setStatus('PUBLISHED');
     setShowInlinePreview(false);
@@ -108,7 +128,10 @@ export function LessonsSection({
     setTeacherName(l.teacherName || '');
     setDurationLabel(l.durationLabel || '');
     setVideoUrl(l.videoUrl);
-    setVideoSourceType(l.videoSourceType || 'YOUTUBE');
+    setVideoSourceType(l.videoSourceType || 'MP4');
+    setR2ObjectKey(l.r2ObjectKey || '');
+    setSizeBytes(l.sizeBytes);
+    setUploadedVideoMeta(null);
     setThumbnailUrl(l.thumbnailUrl || '');
     setStatus(l.status || (l.published ? 'PUBLISHED' : 'DRAFT'));
     setShowInlinePreview(false);
@@ -120,7 +143,7 @@ export function LessonsSection({
     const subj = activeSubjects.find((s) => s.id === subjectId);
     if (!subj || !title.trim()) return;
     try {
-      await upsertEntity(
+      const lessonId = await upsertEntity(
         'lessons',
         editing?.id,
         {
@@ -137,12 +160,34 @@ export function LessonsSection({
           thumbnailUrl: thumbnailUrl.trim() || undefined,
           videoUrl: videoUrl.trim(),
           videoSourceType,
+          r2ObjectKey: r2ObjectKey.trim() || undefined,
+          sizeBytes: sizeBytes ? Math.round(sizeBytes) : undefined,
           ...normalizeStatusFlags(status),
         },
         staff,
         title.trim()
       );
+      if (uploadedVideoMeta) {
+        try {
+          await registerUploadedMediaAsset(
+            uploadedVideoMeta,
+            {
+              title: title.trim(),
+              durationLabel: durationLabel.trim() || undefined,
+              nodeIds: subj.nodeIds,
+              subjectId: subj.id,
+              unitId: unitId || undefined,
+              lessonId,
+              published: status === 'PUBLISHED',
+            },
+            staff
+          );
+        } catch {
+          // Best-effort catalog indexing
+        }
+      }
       setOpenForm(false);
+      setUploadedVideoMeta(null);
       onToast('تم حفظ الدرس بنجاح');
     } catch (err) {
       onToast(err instanceof Error ? err.message : 'فشل الحفظ', true);
@@ -162,8 +207,8 @@ export function LessonsSection({
   return (
     <div>
       <SectionHeader
-        title="إدارة الدروس"
-        subtitle="أضف دروساً جديدة واربطها بالمادة والوحدة، ثم أضف عدة أساتذة وشروحات لكل درس."
+        title="إدارة الدروس والفيديوهات"
+        subtitle="ارفع فيديوهات MP4 (H.264/AAC) مباشرة إلى Cloudflare R2 أو اربط روابط خارجية، ونظّم الدروس حسب المواد والوحدات."
         showDeleted={showDeleted}
         onToggleDeleted={() => setShowDeleted((v) => !v)}
         action={
@@ -247,28 +292,12 @@ export function LessonsSection({
                 <input type="number" min={1} value={lessonOrder} onChange={(e) => setLessonOrder(Number(e.target.value))} className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm" />
               </div>
             </div>
-            <div>
-              <label className="mb-1 block text-xs font-semibold text-slate-600">رابط الفيديو الأساسي (اختياري عند استخدام شروحات الأساتذة)</label>
-              <input dir="ltr" value={videoUrl} onChange={(e) => setVideoUrl(e.target.value)} placeholder="https://youtube.com/watch?v=... أو https://youtu.be/..." className="w-full rounded-xl border border-slate-200 px-3 py-2 text-left text-sm" />
-              {isYouTubeUrl(videoUrl) && (
-                <div className="mt-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowInlinePreview((v) => !v)}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1 text-xs font-bold text-sky-700 hover:bg-sky-100"
-                  >
-                    <Play className="h-3.5 w-3.5" />
-                    {showInlinePreview ? 'إخفاء معاينة الفيديو' : 'معاينة تشغيل الفيديو'}
-                  </button>
-                </div>
-              )}
-            </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="mb-1 block text-xs font-semibold text-slate-600">مصدر الفيديو</label>
                 <select value={videoSourceType} onChange={(e) => setVideoSourceType(e.target.value as VideoSourceType)} className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm">
-                  <option value="YOUTUBE">YouTube</option>
-                  <option value="MP4">ملف MP4</option>
+                  <option value="MP4">ملف MP4 / Cloudflare R2</option>
+                  <option value="YOUTUBE">YouTube (اختياري)</option>
                   <option value="EXTERNAL">رابط خارجي</option>
                 </select>
               </div>
@@ -289,18 +318,66 @@ export function LessonsSection({
           </div>
 
           <AssetUrlOrUploadInput
+            label="فيديو الدرس (ارفع MP4/WebM إلى Cloudflare R2 أو الصق رابطاً مباشراً / YouTube)"
+            value={videoUrl}
+            onChange={(url) => {
+              setVideoUrl(url);
+              if (isYouTubeUrl(url)) {
+                setVideoSourceType('YOUTUBE');
+              } else if (/\.mp4|\.webm|\.m3u8|\/files\//i.test(url)) {
+                setVideoSourceType('MP4');
+              }
+              if (!url.trim()) {
+                setR2ObjectKey('');
+                setSizeBytes(undefined);
+                setUploadedVideoMeta(null);
+              }
+            }}
+            onUploadedMeta={(meta) => {
+              setVideoSourceType('MP4');
+              setR2ObjectKey(meta.objectKey);
+              setSizeBytes(meta.sizeBytes);
+              setUploadedVideoMeta(meta);
+            }}
+            folderPath={`videos/${subjectId || 'general'}`}
+            videoOnly
+            platformConfig={store.platformConfig}
+            onToast={onToast}
+          />
+
+          {videoUrl.trim() && (
+            <div>
+              <button
+                type="button"
+                onClick={() => setShowInlinePreview((v) => !v)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1 text-xs font-bold text-sky-700 hover:bg-sky-100"
+              >
+                <Play className="h-3.5 w-3.5" />
+                {showInlinePreview ? 'إخفاء معاينة الفيديو' : 'معاينة تشغيل الفيديو'}
+              </button>
+            </div>
+          )}
+
+          <AssetUrlOrUploadInput
             label="الصورة المصغرة للدرس"
             value={thumbnailUrl}
             onChange={(url) => setThumbnailUrl(url)}
             folderPath="lessons/thumbnails"
             imageOnly
+            platformConfig={store.platformConfig}
             onToast={onToast}
           />
 
-          {showInlinePreview && isYouTubeUrl(videoUrl) && (
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
-              <YouTubeVideoPlayer url={videoUrl} title={title || 'معاينة فيديو الدرس'} />
-            </div>
+          {showInlinePreview && videoUrl.trim() && (
+            isYouTubeUrl(videoUrl) ? (
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                <YouTubeVideoPlayer url={videoUrl} title={title || 'معاينة فيديو الدرس'} />
+              </div>
+            ) : (
+              <div className="overflow-hidden rounded-2xl border border-slate-200 bg-black">
+                <video src={videoUrl} controls playsInline preload="metadata" className="aspect-video w-full" />
+              </div>
+            )
           )}
 
           <div className="flex justify-end gap-2">
@@ -322,6 +399,11 @@ export function LessonsSection({
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="rounded-md bg-sky-50 px-2 py-0.5 text-xs font-bold text-sky-700">{l.subjectName}</span>
                     <span className="font-bold text-[#0F294A]">{l.lessonOrder}. {l.title}</span>
+                    {l.sizeBytes ? (
+                      <span className="rounded-md bg-teal-50 px-2 py-0.5 text-[11px] font-semibold text-teal-800">
+                        {formatBytesReadable(l.sizeBytes)}
+                      </span>
+                    ) : null}
                     <StatusBadge status={l.status} published={l.published} deletedAt={l.deletedAt} />
                   </div>
                   <p className="mt-1 text-xs text-slate-500">
@@ -377,7 +459,12 @@ export function LessonsSection({
                     onEdit={() => startEdit(l)}
                     onSoftDelete={() => softDeleteEntity('lessons', l.id, staff, l.title)}
                     onRestore={() => restoreEntity('lessons', l.id, staff, l.title)}
-                    onHardDelete={() => hardDeleteEntity('lessons', l.id, staff, l.title)}
+                    onHardDelete={() =>
+                      hardDeleteEntity('lessons', l.id, staff, l.title, {
+                        r2ObjectKey: l.r2ObjectKey,
+                        platformConfig: store.platformConfig,
+                      })
+                    }
                   />
                 </div>
               </div>
@@ -415,24 +502,35 @@ export function MaterialsSection({
 
   const [subjectId, setSubjectId] = useState('');
   const [lessonId, setLessonId] = useState('');
+  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   const [materialType, setMaterialType] = useState<MaterialType>('STUDY_NOTE');
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [fileUrl, setFileUrl] = useState('');
+  const [r2ObjectKey, setR2ObjectKey] = useState('');
+  const [sizeBytes, setSizeBytes] = useState<number | undefined>(undefined);
+  const [uploadedPdfMeta, setUploadedPdfMeta] = useState<R2UploadResult | null>(null);
   const [coverUrl, setCoverUrl] = useState('');
   const [status, setStatus] = useState<PublishStatus>('PUBLISHED');
 
   const activeSubjects = store.subjects.filter((s) => !s.deletedAt);
+  const activeNodes = store.nodes.filter((n) => !n.deletedAt);
+  const subjectLessons = store.lessons.filter((l) => !l.deletedAt && (!subjectId || l.subjectId === subjectId));
   const materials = store.materials.filter((m) => (showDeleted ? true : !m.deletedAt));
 
   function startCreate() {
+    const firstSubj = activeSubjects[0];
     setEditing(null);
-    setSubjectId(activeSubjects[0]?.id || '');
+    setSubjectId(firstSubj?.id || '');
     setLessonId('');
+    setSelectedNodeIds(firstSubj?.nodeIds || []);
     setMaterialType('STUDY_NOTE');
     setTitle('');
     setDescription('');
     setFileUrl('');
+    setR2ObjectKey('');
+    setSizeBytes(undefined);
+    setUploadedPdfMeta(null);
     setCoverUrl('');
     setStatus('PUBLISHED');
     setOpenForm(true);
@@ -442,10 +540,14 @@ export function MaterialsSection({
     setEditing(m);
     setSubjectId(m.subjectId);
     setLessonId(m.lessonId || '');
+    setSelectedNodeIds(m.nodeIds || []);
     setMaterialType(m.materialType);
     setTitle(m.title);
     setDescription(m.description);
     setFileUrl(m.fileUrl);
+    setR2ObjectKey(m.r2ObjectKey || '');
+    setSizeBytes(m.sizeBytes);
+    setUploadedPdfMeta(null);
     setCoverUrl(m.coverUrl || '');
     setStatus(m.status || (m.published ? 'PUBLISHED' : 'DRAFT'));
     setOpenForm(true);
@@ -465,18 +567,40 @@ export function MaterialsSection({
           subjectName: subj.title,
           lessonId: lesson?.id || undefined,
           lessonTitle: lesson?.title || undefined,
+          nodeIds: selectedNodeIds.length ? selectedNodeIds : undefined,
           materialType,
           title: title.trim(),
           description: description.trim(),
           coverUrl: coverUrl.trim() || undefined,
           fileUrl: fileUrl.trim(),
+          r2ObjectKey: r2ObjectKey.trim() || undefined,
+          sizeBytes: sizeBytes ? Math.round(sizeBytes) : undefined,
           ...normalizeStatusFlags(status),
         },
         staff,
         title.trim()
       );
+      if (uploadedPdfMeta) {
+        try {
+          await registerUploadedMediaAsset(
+            uploadedPdfMeta,
+            {
+              title: title.trim(),
+              description: description.trim() || undefined,
+              nodeIds: selectedNodeIds.length ? selectedNodeIds : subj.nodeIds,
+              subjectId: subj.id,
+              lessonId: lesson?.id || undefined,
+              published: status === 'PUBLISHED',
+            },
+            staff
+          );
+        } catch {
+          // Best-effort catalog indexing
+        }
+      }
       setOpenForm(false);
-      onToast('تم حفظ ملف PDF بنجاح');
+      setUploadedPdfMeta(null);
+      onToast('تم حفظ الملف التعليمي بنجاح');
     } catch (err) {
       onToast(err instanceof Error ? err.message : 'فشل الحفظ', true);
     }
@@ -486,14 +610,14 @@ export function MaterialsSection({
     <div>
       <SectionHeader
         title="إدارة ملفات PDF والنوطات والكتب"
-        subtitle="ارفع الملفات مباشرة إلى Firebase Storage أو أضف روابط مباشرة أو روابط Google Drive."
+        subtitle="ارفع الكتب والنوطات والملخصات مباشرة إلى Cloudflare R2 (حتى 100 MB افتراضياً مع دعم استئناف الرفع)، وصنّفها حسب المرحلة والمادة والدرس."
         showDeleted={showDeleted}
         onToggleDeleted={() => setShowDeleted((v) => !v)}
         action={
           canEdit && (
             <button type="button" onClick={startCreate} disabled={activeSubjects.length === 0} className="inline-flex items-center gap-1.5 rounded-xl bg-[#0F294A] px-4 py-2 text-xs font-bold text-white disabled:opacity-40">
               <Plus className="h-4 w-4" />
-              إضافة ملف PDF
+              إضافة ملف PDF / نوطة
             </button>
           )
         }
@@ -504,8 +628,30 @@ export function MaterialsSection({
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             <div>
               <label className="mb-1 block text-xs font-semibold text-slate-600">المادة *</label>
-              <select required value={subjectId} onChange={(e) => setSubjectId(e.target.value)} className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm">
+              <select
+                required
+                value={subjectId}
+                onChange={(e) => {
+                  const nextSubjId = e.target.value;
+                  setSubjectId(nextSubjId);
+                  setLessonId('');
+                  const subj = activeSubjects.find((s) => s.id === nextSubjId);
+                  if (subj?.nodeIds?.length && selectedNodeIds.length === 0) {
+                    setSelectedNodeIds(subj.nodeIds);
+                  }
+                }}
+                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+              >
                 {activeSubjects.map((s) => <option key={s.id} value={s.id}>{s.title}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-600">ربط بدرس محدد (اختياري)</label>
+              <select value={lessonId} onChange={(e) => setLessonId(e.target.value)} className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm">
+                <option value="">ملف عام للمادة</option>
+                {subjectLessons.map((l) => (
+                  <option key={l.id} value={l.id}>{l.unitTitle} — {l.title}</option>
+                ))}
               </select>
             </div>
             <div>
@@ -520,22 +666,61 @@ export function MaterialsSection({
                 <option value="ASSIGNMENT">واجب / تكليف</option>
               </select>
             </div>
-            <div>
+            <StatusSelector value={status} onChange={setStatus} />
+            <div className="md:col-span-2">
               <label className="mb-1 block text-xs font-semibold text-slate-600">عنوان الملف *</label>
               <input required value={title} onChange={(e) => setTitle(e.target.value)} className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm" />
             </div>
-            <StatusSelector value={status} onChange={setStatus} />
             <div className="md:col-span-2">
               <label className="mb-1 block text-xs font-semibold text-slate-600">الوصف</label>
               <textarea rows={2} value={description} onChange={(e) => setDescription(e.target.value)} className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm" />
             </div>
           </div>
 
+          {activeNodes.length > 0 && (
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold text-slate-600">تصنيف المرحلة / الصف / الفرع</label>
+              <div className="flex flex-wrap gap-2">
+                {activeNodes.map((n) => {
+                  const selected = selectedNodeIds.includes(n.id);
+                  return (
+                    <button
+                      key={n.id}
+                      type="button"
+                      onClick={() =>
+                        setSelectedNodeIds(selected ? selectedNodeIds.filter((x) => x !== n.id) : [...selectedNodeIds, n.id])
+                      }
+                      className={`rounded-full border px-3 py-1 text-xs font-semibold ${
+                        selected ? 'border-sky-600 bg-sky-600 text-white' : 'border-slate-200 bg-slate-50 text-slate-700'
+                      }`}
+                    >
+                      {n.title}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           <AssetUrlOrUploadInput
-            label="ملف PDF (رابط أو رفع مباشر إلى Storage) *"
+            label="ملف PDF / المرفق (ارفع مباشرة إلى Cloudflare R2 أو الصق رابط HTTPS) *"
             value={fileUrl}
-            onChange={(url) => setFileUrl(url)}
+            onChange={(url) => {
+              setFileUrl(url);
+              if (!url.trim()) {
+                setR2ObjectKey('');
+                setSizeBytes(undefined);
+                setUploadedPdfMeta(null);
+              }
+            }}
+            onUploadedMeta={(meta) => {
+              setR2ObjectKey(meta.objectKey);
+              setSizeBytes(meta.sizeBytes);
+              setUploadedPdfMeta(meta);
+            }}
             folderPath={`materials/${subjectId || 'general'}`}
+            accept=".pdf,application/pdf,.doc,.docx,.ppt,.pptx,.zip"
+            platformConfig={store.platformConfig}
             onToast={onToast}
           />
 
@@ -545,6 +730,7 @@ export function MaterialsSection({
             onChange={(url) => setCoverUrl(url)}
             folderPath="materials/covers"
             imageOnly
+            platformConfig={store.platformConfig}
             onToast={onToast}
           />
 
@@ -564,7 +750,15 @@ export function MaterialsSection({
               <div>
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="rounded-md bg-purple-50 px-2 py-0.5 text-xs font-bold text-purple-700">{m.subjectName}</span>
+                  {m.lessonTitle && (
+                    <span className="rounded-md bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">{m.lessonTitle}</span>
+                  )}
                   <span className="font-bold text-[#0F294A]">{m.title}</span>
+                  {m.sizeBytes ? (
+                    <span className="rounded-md bg-teal-50 px-2 py-0.5 text-[11px] font-semibold text-teal-800">
+                      {formatBytesReadable(m.sizeBytes)}
+                    </span>
+                  ) : null}
                   <StatusBadge status={m.status} published={m.published} deletedAt={m.deletedAt} />
                 </div>
                 <p dir="ltr" className="mt-1 max-w-md truncate text-left text-xs text-slate-500">{m.fileUrl}</p>
@@ -578,7 +772,12 @@ export function MaterialsSection({
                 onEdit={() => startEdit(m)}
                 onSoftDelete={() => softDeleteEntity('materials', m.id, staff, m.title)}
                 onRestore={() => restoreEntity('materials', m.id, staff, m.title)}
-                onHardDelete={() => hardDeleteEntity('materials', m.id, staff, m.title)}
+                onHardDelete={() =>
+                  hardDeleteEntity('materials', m.id, staff, m.title, {
+                    r2ObjectKey: m.r2ObjectKey,
+                    platformConfig: store.platformConfig,
+                  })
+                }
               />
             </div>
           ))}
@@ -606,7 +805,7 @@ export function VideosOverviewSection({
     <div className="space-y-4">
       <SectionHeader
         title="إدارة الفيديوهات التعليمية"
-        subtitle="استعراض موحد لجميع فيديوهات الشروحات المتعددة مع مشغل YouTube متجاوب 16:9."
+        subtitle="استعراض ومعاينة موحدة لفيديوهات Cloudflare R2 (MP4/WebM) وروابط YouTube داخل الشروحات والدروس."
         action={
           <button
             type="button"
@@ -619,12 +818,13 @@ export function VideosOverviewSection({
       />
 
       {videoBlocks.length === 0 && legacyVideos.length === 0 ? (
-        <EmptyBox title="لا توجد فيديوهات بعد" subtitle="أضف فيديوهات داخل الدروس أو داخل شروحات الأساتذة." />
+        <EmptyBox title="لا توجد فيديوهات بعد" subtitle="ارفع فيديو MP4 من قسم الدروس أو من داخل شروحات الأساتذة." />
       ) : (
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
           {videoBlocks.map((vb) => {
             const exp = store.explanations.find((e) => e.id === vb.explanationId);
-            const thumb = vb.mediaUrl ? getYouTubeThumbnailUrl(vb.mediaUrl) : null;
+            const isYt = vb.mediaUrl ? isYouTubeUrl(vb.mediaUrl) : false;
+            const thumb = vb.thumbnailUrl || (vb.mediaUrl && isYt ? getYouTubeThumbnailUrl(vb.mediaUrl) : null);
             return (
               <div key={vb.id} className="flex flex-col justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-2xs">
                 <div className="flex items-start gap-3">
@@ -640,6 +840,11 @@ export function VideosOverviewSection({
                       <span className="rounded-md bg-sky-50 px-2 py-0.5 text-xs font-bold text-sky-700">
                         {BLOCK_TYPE_LABELS[vb.blockType]}
                       </span>
+                      {vb.sizeBytes ? (
+                        <span className="rounded-md bg-teal-50 px-2 py-0.5 text-[11px] font-semibold text-teal-800">
+                          {formatBytesReadable(vb.sizeBytes)}
+                        </span>
+                      ) : null}
                       <StatusBadge status={vb.status} published={vb.published} />
                     </div>
                     <h4 className="mt-1 font-bold text-[#0F294A]">{vb.title}</h4>
@@ -657,16 +862,16 @@ export function VideosOverviewSection({
                       className="inline-flex items-center gap-1.5 rounded-xl bg-[#0F294A] px-3.5 py-2 text-xs font-bold text-white hover:bg-[#163A66]"
                     >
                       <Play className="h-3.5 w-3.5" />
-                      مشاهدة الفيديو
+                      تشغيل الفيديو
                     </button>
                     <a
-                      href={getYouTubeWatchUrl(vb.mediaUrl)}
+                      href={isYt ? getYouTubeWatchUrl(vb.mediaUrl) : vb.mediaUrl}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="inline-flex items-center gap-1 rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
                     >
                       <ExternalLink className="h-3.5 w-3.5" />
-                      معاينة على YouTube (تشخيص الإدارة)
+                      {isYt ? 'معاينة على YouTube' : 'فتح الرابط المباشر'}
                     </a>
                   </div>
                 )}
@@ -675,7 +880,8 @@ export function VideosOverviewSection({
           })}
 
           {legacyVideos.map((lv) => {
-            const thumb = lv.thumbnailUrl || getYouTubeThumbnailUrl(lv.videoUrl);
+            const isYt = isYouTubeUrl(lv.videoUrl);
+            const thumb = lv.thumbnailUrl || (isYt ? getYouTubeThumbnailUrl(lv.videoUrl) : null);
             return (
               <div key={lv.id} className="flex flex-col justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-2xs">
                 <div className="flex items-start gap-3">
@@ -688,7 +894,14 @@ export function VideosOverviewSection({
                   )}
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="rounded-md bg-slate-100 px-2 py-0.5 text-xs font-bold text-slate-700">درس أساسي</span>
+                      <span className="rounded-md bg-slate-100 px-2 py-0.5 text-xs font-bold text-slate-700">
+                        {lv.videoSourceType === 'MP4' ? 'فيديو MP4 / R2' : 'درس أساسي'}
+                      </span>
+                      {lv.sizeBytes ? (
+                        <span className="rounded-md bg-teal-50 px-2 py-0.5 text-[11px] font-semibold text-teal-800">
+                          {formatBytesReadable(lv.sizeBytes)}
+                        </span>
+                      ) : null}
                       <StatusBadge status={lv.status} published={lv.published} />
                     </div>
                     <h4 className="mt-1 font-bold text-[#0F294A]">{lv.title}</h4>
@@ -702,16 +915,16 @@ export function VideosOverviewSection({
                     className="inline-flex items-center gap-1.5 rounded-xl bg-[#0F294A] px-3.5 py-2 text-xs font-bold text-white hover:bg-[#163A66]"
                   >
                     <Play className="h-3.5 w-3.5" />
-                    مشاهدة الفيديو
+                    تشغيل الفيديو
                   </button>
                   <a
-                    href={getYouTubeWatchUrl(lv.videoUrl)}
+                    href={isYt ? getYouTubeWatchUrl(lv.videoUrl) : lv.videoUrl}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="inline-flex items-center gap-1 rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
                   >
                     <ExternalLink className="h-3.5 w-3.5" />
-                    معاينة على YouTube (تشخيص الإدارة)
+                    {isYt ? 'معاينة على YouTube' : 'فتح الرابط المباشر'}
                   </a>
                 </div>
               </div>
@@ -794,105 +1007,386 @@ export function QuizzesOverviewSection({
   );
 }
 
+const MEDIA_KIND_LABELS: Record<MediaKind, string> = {
+  VIDEO: 'فيديو تعليمي',
+  PDF: 'ملف PDF / كتاب',
+  IMAGE: 'صورة / غلاف',
+  ATTACHMENT: 'مرفق / ملف',
+};
+
 export function MediaLibrarySection({
+  store,
+  staff,
+  canEdit,
+  canHardDelete,
   onToast,
 }: {
+  store: CmsStore;
+  staff: StaffSession;
+  canEdit: boolean;
+  canHardDelete: boolean;
   onToast: (msg: string, isError?: boolean) => void;
 }) {
-  const [folder, setFolder] = useState('branding');
+  const [folder, setFolder] = useState('videos');
+  const [uploadTitle, setUploadTitle] = useState('');
+  const [uploadDesc, setUploadDesc] = useState('');
   const [uploadUrl, setUploadUrl] = useState('');
-  const [files, setFiles] = useState<Array<{ name: string; url: string }>>([]);
-  const [loading, setLoading] = useState(false);
+  const [uploadMeta, setUploadMeta] = useState<R2UploadResult | null>(null);
+  const [selectedSubjectId, setSelectedSubjectId] = useState('');
+  const [selectedUnitId, setSelectedUnitId] = useState('');
+  const [selectedLessonId, setSelectedLessonId] = useState('');
+  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
+  const [filterKind, setFilterKind] = useState<'ALL' | MediaKind>('ALL');
+  const [filterSubjectId, setFilterSubjectId] = useState('');
+  const [quota, setQuota] = useState<R2QuotaStatus | null>(null);
+  const [loadingQuota, setLoadingQuota] = useState(false);
+  const [previewVideo, setPreviewVideo] = useState<{ title: string; url: string } | null>(null);
 
-  async function loadFolder(targetFolder: string) {
-    setLoading(true);
+  const workerUrl = resolveActiveR2WorkerUrl(store.platformConfig);
+  const limits = resolveR2StorageLimits(store.platformConfig);
+  const activeSubjects = store.subjects.filter((s) => !s.deletedAt);
+  const activeNodes = store.nodes.filter((n) => !n.deletedAt);
+  const unitsForSubject = store.units.filter((u) => !u.deletedAt && u.subjectId === selectedSubjectId);
+  const lessonsForSubject = store.lessons.filter((l) => !l.deletedAt && l.subjectId === selectedSubjectId);
+
+  const refreshQuota = useCallback(async () => {
+    if (!workerUrl) {
+      setQuota(null);
+      return;
+    }
+    setLoadingQuota(true);
     try {
-      const check = await checkStorageBucketAvailability();
-      if (!check.available) {
-        onToast(
-          'خدمة Firebase Storage غير مفعّلة في خطة Spark الحالية (404). يمكنك استخدام الروابط المباشرة المجانية في الحقول بدلاً منها.',
-          true
-        );
-        setFiles([]);
-        return;
-      }
-      const res = await listAll(ref(firebaseStorage, targetFolder));
-      const items = await Promise.all(
-        res.items.map(async (itemRef) => ({
-          name: itemRef.name,
-          url: await getDownloadURL(itemRef),
-        }))
-      );
-      setFiles(items);
+      const q = await fetchR2QuotaStatus(store.platformConfig);
+      setQuota(q);
     } catch (err) {
-      onToast(mapStorageErrorToArabic(err).message, true);
-      setFiles([]);
+      onToast(err instanceof Error ? err.message : 'تعذر جلب إحصائيات مساحة R2', true);
     } finally {
-      setLoading(false);
+      setLoadingQuota(false);
+    }
+  }, [workerUrl, store.platformConfig, onToast]);
+
+  useEffect(() => {
+    void refreshQuota();
+  }, [refreshQuota]);
+
+  const activeAssets = useMemo(() => {
+    return store.mediaAssets
+      .filter((a) => !a.deletedAt)
+      .filter((a) => (filterKind === 'ALL' ? true : a.mediaKind === filterKind))
+      .filter((a) => (!filterSubjectId ? true : a.subjectId === filterSubjectId));
+  }, [store.mediaAssets, filterKind, filterSubjectId]);
+
+  const fallbackUsedBytes = useMemo(
+    () => store.mediaAssets.filter((a) => !a.deletedAt).reduce((sum, a) => sum + (a.sizeBytes || 0), 0),
+    [store.mediaAssets]
+  );
+
+  const totalLimitBytes = quota?.totalLimitBytes ?? limits.totalStorageLimitGb * 1024 * 1024 * 1024;
+  const usedBytes = quota?.usedBytes ?? fallbackUsedBytes;
+  const remainingBytes = Math.max(0, totalLimitBytes - usedBytes);
+  const usedPercent = Math.min(100, Number(((usedBytes / Math.max(1, totalLimitBytes)) * 100).toFixed(1)));
+  const nearCapacity = usedPercent >= 85;
+
+  async function handleRegisterManualOrUploaded(e: React.FormEvent) {
+    e.preventDefault();
+    if (!uploadMeta || !uploadUrl.trim()) {
+      onToast('يرجى رفع ملف إلى Cloudflare R2 أولاً قبل التسجيل في المكتبة.', true);
+      return;
+    }
+    try {
+      await registerUploadedMediaAsset(
+        uploadMeta,
+        {
+          title: uploadTitle.trim() || uploadMeta.fileName,
+          description: uploadDesc.trim() || undefined,
+          nodeIds: selectedNodeIds,
+          subjectId: selectedSubjectId || undefined,
+          unitId: selectedUnitId || undefined,
+          lessonId: selectedLessonId || undefined,
+          published: true,
+        },
+        staff
+      );
+      setUploadTitle('');
+      setUploadDesc('');
+      setUploadUrl('');
+      setUploadMeta(null);
+      void refreshQuota();
+      onToast('تم حفظ الملف وتصنيفه في مكتبة Cloudflare R2');
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : 'فشل تسجيل الملف في المكتبة', true);
     }
   }
 
   return (
     <div className="space-y-5">
       <SectionHeader
-        title="مكتبة الصور والملفات (Firebase Storage)"
-        subtitle="ارفع الصور والملفات مع التحقق التلقائي من الصيغة والحجم، وانسخ روابطها مباشرة."
+        title="مكتبة الوسائط والحصة التخزينية (Cloudflare R2)"
+        subtitle={`رفع مباشر ومجزأ قابل للاستئناف (فيديو حتى ${limits.maxVideoSizeMb} MB • PDF حتى ${limits.maxPdfSizeMb} MB • صور حتى ${limits.maxImageSizeMb} MB) من أصل حصة إجمالية ${limits.totalStorageLimitGb} GB.`}
       />
 
-      <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5">
-        <div className="flex flex-wrap items-center gap-3">
-          <select
-            value={folder}
-            onChange={(e) => setFolder(e.target.value)}
-            className="rounded-xl border border-slate-200 px-3 py-2 text-sm"
-          >
-            <option value="branding">الهوية والشعارات (branding/)</option>
-            <option value="catalog">المراحل والفروع (catalog/)</option>
-            <option value="subjects/covers">أغلفة المواد (subjects/covers/)</option>
-            <option value="teachers/avatars">صور الأساتذة (teachers/avatars/)</option>
-            <option value="materials/general">الكتب والنوطات (materials/general/)</option>
-          </select>
+      {/* Storage Quota Monitor */}
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-50 text-sky-700">
+              <HardDrive className="h-5 w-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-extrabold text-[#0F294A]">حصة التخزين المستخدمة والمتبقية</h3>
+              <p className="text-xs text-slate-500">
+                {workerUrl
+                  ? 'بيانات حية من Cloudflare R2 Worker'
+                  : 'أضف رابط Worker في «إعدادات المنصة» لقراءة السعة الفعلية من R2'}
+              </p>
+            </div>
+          </div>
+
           <button
             type="button"
-            onClick={() => loadFolder(folder)}
-            className="rounded-xl bg-[#0F294A] px-4 py-2 text-xs font-bold text-white"
+            onClick={() => void refreshQuota()}
+            disabled={!workerUrl || loadingQuota}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-bold text-[#0F294A] hover:bg-slate-50 disabled:opacity-40"
           >
-            {loading ? 'جاري الجلب...' : 'تحديث محتويات المجلد'}
+            <RefreshCw className={`h-3.5 w-3.5 ${loadingQuota ? 'animate-spin' : ''}`} />
+            تحديث السعة
           </button>
         </div>
 
-        <AssetUrlOrUploadInput
-          label={`رفع ملف جديد إلى مجلد ${folder}`}
-          value={uploadUrl}
-          onChange={(u) => {
-            setUploadUrl(u);
-            if (u) loadFolder(folder);
-          }}
-          folderPath={folder}
-          onToast={onToast}
-        />
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 text-xs">
+          <div className="rounded-xl bg-slate-50 p-3">
+            <p className="text-slate-500">المساحة المستخدمة</p>
+            <p className="mt-1 text-base font-extrabold text-[#0F294A]">{formatBytesReadable(usedBytes)} ({usedPercent}%)</p>
+          </div>
+          <div className="rounded-xl bg-slate-50 p-3">
+            <p className="text-slate-500">المساحة المتبقية</p>
+            <p className="mt-1 text-base font-extrabold text-emerald-700">{formatBytesReadable(remainingBytes)}</p>
+          </div>
+          <div className="rounded-xl bg-slate-50 p-3">
+            <p className="text-slate-500">إجمالي الملفات</p>
+            <p className="mt-1 text-base font-extrabold text-sky-700">{quota?.fileCount ?? activeAssets.length} ملف</p>
+          </div>
+        </div>
 
-        {files.length > 0 && (
-          <div className="grid grid-cols-1 gap-3 pt-2 sm:grid-cols-2 lg:grid-cols-3">
-            {files.map((f) => (
-              <div key={f.name} className="flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs">
-                <span className="truncate font-semibold text-slate-700">{f.name}</span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    navigator.clipboard.writeText(f.url);
-                    onToast('تم نسخ الرابط');
-                  }}
-                  className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-white px-2.5 py-1.5 font-bold text-sky-700 shadow-2xs"
-                >
-                  <Copy className="h-3.5 w-3.5" />
-                  نسخ
-                </button>
-              </div>
-            ))}
+        <div className="h-3 w-full overflow-hidden rounded-full bg-slate-100">
+          <div
+            className={`h-full rounded-full transition-all ${nearCapacity ? 'bg-amber-500' : 'bg-[#167D83]'}`}
+            style={{ width: `${Math.max(2, usedPercent)}%` }}
+          />
+        </div>
+
+        {nearCapacity && (
+          <div className="flex items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-900">
+            <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600" />
+            <span>تنبيه: اقتربت المساحة التخزينية من الحد الأقصى ({usedPercent}%). يُرجى تنظيف الملفات غير المستخدمة أو توسيع الحصة.</span>
           </div>
         )}
       </div>
+
+      {/* Upload & Classification Form */}
+      {canEdit && (
+        <form onSubmit={handleRegisterManualOrUploaded} className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5">
+          <h3 className="text-sm font-extrabold text-[#0F294A]">رفع وتصنيف ملف جديد على Cloudflare R2</h3>
+
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-600">مجلد التخزين</label>
+              <select value={folder} onChange={(e) => setFolder(e.target.value)} className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm">
+                <option value="videos">الفيديوهات التعليمية (videos/)</option>
+                <option value="materials">الكتب والنوطات PDF (materials/)</option>
+                <option value="branding">الهوية والشعارات (branding/)</option>
+                <option value="catalog">صور المراحل والفروع (catalog/)</option>
+                <option value="subjects/covers">أغلفة المواد (subjects/covers/)</option>
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-600">المادة</label>
+              <select
+                value={selectedSubjectId}
+                onChange={(e) => {
+                  setSelectedSubjectId(e.target.value);
+                  setSelectedUnitId('');
+                  setSelectedLessonId('');
+                }}
+                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+              >
+                <option value="">عام / بدون مادة</option>
+                {activeSubjects.map((s) => <option key={s.id} value={s.id}>{s.title}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-600">الدرس المرتبط</label>
+              <select value={selectedLessonId} onChange={(e) => setSelectedLessonId(e.target.value)} className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm">
+                <option value="">بدون تحديد درس</option>
+                {lessonsForSubject.map((l) => <option key={l.id} value={l.id}>{l.unitTitle} — {l.title}</option>)}
+              </select>
+            </div>
+            {unitsForSubject.length > 0 && (
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-slate-600">الوحدة</label>
+                <select value={selectedUnitId} onChange={(e) => setSelectedUnitId(e.target.value)} className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm">
+                  <option value="">بدون تحديد وحدة</option>
+                  {unitsForSubject.map((u) => <option key={u.id} value={u.id}>{u.title}</option>)}
+                </select>
+              </div>
+            )}
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-600">عنوان وصفي للملف</label>
+              <input value={uploadTitle} onChange={(e) => setUploadTitle(e.target.value)} placeholder="يُملأ تلقائياً باسم الملف إذا تُرك فارغاً" className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm" />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-600">ملاحظات (اختياري)</label>
+              <input value={uploadDesc} onChange={(e) => setUploadDesc(e.target.value)} className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm" />
+            </div>
+          </div>
+
+          {activeNodes.length > 0 && (
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold text-slate-600">المرحلة / الصف الدراسي</label>
+              <div className="flex flex-wrap gap-2">
+                {activeNodes.map((n) => {
+                  const selected = selectedNodeIds.includes(n.id);
+                  return (
+                    <button
+                      key={n.id}
+                      type="button"
+                      onClick={() =>
+                        setSelectedNodeIds(selected ? selectedNodeIds.filter((x) => x !== n.id) : [...selectedNodeIds, n.id])
+                      }
+                      className={`rounded-full border px-3 py-1 text-xs font-semibold ${
+                        selected ? 'border-sky-600 bg-sky-600 text-white' : 'border-slate-200 bg-slate-50 text-slate-700'
+                      }`}
+                    >
+                      {n.title}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          <AssetUrlOrUploadInput
+            label={`اختيار ورفع ملف إلى ${folder}/`}
+            value={uploadUrl}
+            onChange={(u) => setUploadUrl(u)}
+            onUploadedMeta={(meta) => {
+              setUploadMeta(meta);
+              if (!uploadTitle.trim()) setUploadTitle(meta.fileName);
+            }}
+            folderPath={folder}
+            platformConfig={store.platformConfig}
+            quotaStatus={quota}
+            onToast={onToast}
+          />
+
+          <div className="flex justify-end">
+            <button
+              type="submit"
+              disabled={!uploadMeta}
+              className="rounded-xl bg-[#0F294A] px-5 py-2 text-xs font-bold text-white disabled:opacity-40"
+            >
+              حفظ وتصنيف الملف في المكتبة
+            </button>
+          </div>
+        </form>
+      )}
+
+      {/* Filter & Registered Media Table */}
+      <div className="space-y-3 rounded-2xl border border-slate-200 bg-white p-5">
+        <div className="flex flex-wrap items-center gap-3">
+          <select value={filterKind} onChange={(e) => setFilterKind(e.target.value as 'ALL' | MediaKind)} className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold">
+            <option value="ALL">جميع الأنواع ({store.mediaAssets.filter((a) => !a.deletedAt).length})</option>
+            <option value="VIDEO">فيديو</option>
+            <option value="PDF">PDF</option>
+            <option value="IMAGE">صور</option>
+            <option value="ATTACHMENT">مرفقات</option>
+          </select>
+          <select value={filterSubjectId} onChange={(e) => setFilterSubjectId(e.target.value)} className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold">
+            <option value="">كل المواد</option>
+            {activeSubjects.map((s) => <option key={s.id} value={s.id}>{s.title}</option>)}
+          </select>
+        </div>
+
+        {activeAssets.length === 0 ? (
+          <EmptyBox title="لا توجد ملفات مسجلة في مكتبة R2" subtitle="ارفع ملف فيديو MP4 أو PDF أو صورة من النموذج أعلاه أو من شاشات الدروس والمواد." />
+        ) : (
+          <div className="space-y-2.5">
+            {activeAssets.map((asset: MediaAsset) => {
+              const subj = store.subjects.find((s) => s.id === asset.subjectId);
+              const lesson = store.lessons.find((l) => l.id === asset.lessonId);
+              return (
+                <div key={asset.id} className="flex flex-col justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 sm:flex-row sm:items-center">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="rounded-md bg-sky-50 px-2 py-0.5 text-[11px] font-bold text-sky-800">
+                        {MEDIA_KIND_LABELS[asset.mediaKind]}
+                      </span>
+                      <span className="rounded-md bg-teal-50 px-2 py-0.5 text-[11px] font-bold text-teal-800">
+                        {formatBytesReadable(asset.sizeBytes)}
+                      </span>
+                      <span className="font-bold text-[#0F294A]">{asset.title}</span>
+                      <StatusBadge status={asset.status} published={asset.published} deletedAt={asset.deletedAt} />
+                    </div>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {subj ? subj.title : 'عام'}
+                      {lesson ? ` • ${lesson.title}` : ''}
+                      {' • '}
+                      <span dir="ltr" className="font-mono text-[11px]">{asset.objectKey}</span>
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    {asset.mediaKind === 'VIDEO' && (
+                      <button
+                        type="button"
+                        onClick={() => setPreviewVideo({ title: asset.title, url: asset.fileUrl })}
+                        className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-700"
+                      >
+                        <Play className="h-3.5 w-3.5" />
+                        معاينة
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText(asset.fileUrl);
+                        onToast('تم نسخ رابط الملف');
+                      }}
+                      className="inline-flex items-center gap-1 rounded-lg bg-white px-2.5 py-1.5 text-xs font-bold text-sky-700 ring-1 ring-slate-200"
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                      نسخ الرابط
+                    </button>
+                    <RowActionButtons
+                      published={asset.published}
+                      deletedAt={asset.deletedAt}
+                      canEdit={canEdit}
+                      canHardDelete={canHardDelete}
+                      onTogglePublish={() =>
+                        updateEntityStatus('mediaAssets', asset.id, asset.published ? 'DRAFT' : 'PUBLISHED', staff, asset.title)
+                      }
+                      onHardDelete={async () => {
+                        await hardDeleteEntity('mediaAssets', asset.id, staff, asset.title, {
+                          r2ObjectKey: asset.objectKey,
+                          platformConfig: store.platformConfig,
+                        });
+                        void refreshQuota();
+                      }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <VideoPreviewModal
+        open={Boolean(previewVideo)}
+        title={previewVideo?.title || 'معاينة الفيديو'}
+        url={previewVideo?.url || ''}
+        onClose={() => setPreviewVideo(null)}
+      />
     </div>
   );
 }

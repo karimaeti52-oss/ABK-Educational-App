@@ -260,6 +260,8 @@ data class Lesson(
     val thumbnailUrl: String? = null,
     val videoUrl: String = "",
     val videoSourceType: String = VideoSourceType.YOUTUBE.name,
+    val r2ObjectKey: String? = null,
+    val sizeBytes: Long? = null,
     val published: Boolean = true,
     val status: String = PublishStatus.PUBLISHED.name,
     val deletedAt: Timestamp? = null,
@@ -329,6 +331,8 @@ data class ContentBlock(
     val thumbnailUrl: String? = null,
     val durationLabel: String? = null,
     val fileSizeLabel: String? = null,
+    val r2ObjectKey: String? = null,
+    val sizeBytes: Long? = null,
     val qaItems: List<QaItem> = emptyList(),
     val quizQuestions: List<QuizQuestion> = emptyList(),
     val sortOrder: Long = 0L,
@@ -383,6 +387,11 @@ data class PlatformConfig(
     val showAnnouncements: Boolean = true,
     val showContinueWatching: Boolean = true,
     val maintenanceMode: Boolean = false,
+    val r2WorkerBaseUrl: String = "",
+    val maxVideoSizeMb: Int = 200,
+    val maxPdfSizeMb: Int = 100,
+    val maxImageSizeMb: Int = 20,
+    val totalStorageLimitGb: Int = 25,
     val updatedBy: String = ""
 )
 
@@ -415,6 +424,8 @@ data class StudyMaterial(
     val description: String = "",
     val coverUrl: String? = null,
     val fileUrl: String = "",
+    val r2ObjectKey: String? = null,
+    val sizeBytes: Long? = null,
     val published: Boolean = true,
     val status: String = PublishStatus.PUBLISHED.name,
     val deletedAt: Timestamp? = null,

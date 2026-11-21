@@ -6,19 +6,26 @@ import {
   Eye,
   EyeOff,
   Loader2,
+  Pause,
+  Play,
   RotateCcw,
   Trash2,
   Upload,
   X,
 } from 'lucide-react';
 import {
-  AbkUploadError,
-  formatFileSizeLabel,
-  startAbkAssetUpload,
-  type ActiveUploadHandle,
-  type UploadProgressInfo,
-} from '../firebase';
-import type { PublishStatus } from '../types';
+  resolveActiveR2WorkerUrl,
+  startR2ResumableUpload,
+  type ActiveR2UploadController,
+} from '../services/r2UploadClient';
+import {
+  formatBytesReadable,
+  R2UploadError,
+  resolveR2StorageLimits,
+  type R2UploadProgress,
+  type R2UploadResult,
+} from '../utils/r2Upload';
+import type { PlatformConfig, PublishStatus, R2QuotaStatus } from '../types';
 
 export function StatusBadge({
   status,
@@ -81,7 +88,7 @@ export function StatusSelector({
   );
 }
 
-type UploadPhase = 'idle' | 'checking' | 'uploading' | 'success' | 'error' | 'canceled';
+type UploadPhase = 'idle' | 'checking' | 'uploading' | 'completing' | 'paused' | 'success' | 'error' | 'canceled';
 
 export function AssetUrlOrUploadInput({
   label,
@@ -89,8 +96,12 @@ export function AssetUrlOrUploadInput({
   onChange,
   folderPath,
   imageOnly = false,
+  videoOnly = false,
   accept,
   placeholder = 'https://...',
+  platformConfig,
+  quotaStatus,
+  onUploadedMeta,
   onToast,
 }: {
   label: string;
@@ -98,67 +109,115 @@ export function AssetUrlOrUploadInput({
   onChange: (url: string, sizeLabel?: string) => void;
   folderPath: string;
   imageOnly?: boolean;
+  videoOnly?: boolean;
   accept?: string;
   placeholder?: string;
+  platformConfig?: Partial<PlatformConfig> | null;
+  quotaStatus?: R2QuotaStatus | null;
+  onUploadedMeta?: (meta: R2UploadResult) => void;
   onToast: (msg: string, isError?: boolean) => void;
 }) {
   const [phase, setPhase] = useState<UploadPhase>('idle');
-  const [progress, setProgress] = useState<UploadProgressInfo>({
+  const [progress, setProgress] = useState<R2UploadProgress>({
     bytesTransferred: 0,
     totalBytes: 0,
     percent: 0,
+    speedBytesPerSec: 0,
+    currentPart: 0,
+    totalParts: 1,
+    phase: 'checking',
   });
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [canRetry, setCanRetry] = useState(false);
 
-  const activeUploadRef = useRef<ActiveUploadHandle | null>(null);
+  const activeUploadRef = useRef<ActiveR2UploadController | null>(null);
   const lastFileRef = useRef<File | null>(null);
 
-  const isBusy = phase === 'checking' || phase === 'uploading';
+  const isBusy = phase === 'checking' || phase === 'uploading' || phase === 'completing';
+  const limits = resolveR2StorageLimits(platformConfig);
+  const workerConfigured = Boolean(resolveActiveR2WorkerUrl(platformConfig));
+  const maxMbHint = imageOnly
+    ? limits.maxImageSizeMb
+    : videoOnly
+      ? limits.maxVideoSizeMb
+      : accept?.includes('pdf')
+        ? limits.maxPdfSizeMb
+        : limits.maxVideoSizeMb;
 
   async function runUpload(file: File) {
     lastFileRef.current = file;
     setPhase('checking');
-    setProgress({ bytesTransferred: 0, totalBytes: file.size, percent: 0 });
-    setStatusMessage('جاري التحقق من جاهزية خدمة التخزين...');
+    setProgress({
+      bytesTransferred: 0,
+      totalBytes: file.size,
+      percent: 0,
+      speedBytesPerSec: 0,
+      currentPart: 0,
+      totalParts: 1,
+      phase: 'checking',
+    });
+    setStatusMessage(`جاري فحص الحد المسموح وحالة التخزين (${file.name})...`);
     setCanRetry(false);
 
-    const handle = startAbkAssetUpload(file, folderPath, {
+    const controller = startR2ResumableUpload(file, folderPath, {
+      platformConfig,
+      quotaStatus,
       imageOnly,
-      onPhaseChange: (nextPhase) => {
-        setPhase(nextPhase);
-        if (nextPhase === 'uploading') {
-          setStatusMessage(`جاري رفع ${file.name}...`);
-        }
-      },
+      videoOnly,
       onProgress: (info) => {
         setProgress(info);
+        if (info.phase === 'uploading') {
+          setPhase('uploading');
+          setStatusMessage(
+            info.totalParts > 1
+              ? `جاري رفع ${file.name} — جزء ${info.currentPart} من ${info.totalParts}`
+              : `جاري رفع ${file.name} إلى Cloudflare R2...`
+          );
+        } else if (info.phase === 'completing') {
+          setPhase('completing');
+          setStatusMessage('جاري تثبيت الملف والتحقق من الجاهزية...');
+        } else if (info.phase === 'paused') {
+          setPhase('paused');
+        }
       },
     });
-    activeUploadRef.current = handle;
+    activeUploadRef.current = controller;
 
     try {
-      const uploaded = await handle.promise;
+      const uploaded = await controller.promise;
       activeUploadRef.current = null;
       setPhase('success');
-      setProgress({ bytesTransferred: file.size, totalBytes: file.size, percent: 100 });
-      setStatusMessage(`تم الرفع بنجاح (${uploaded.sizeLabel}) وتم توليد رابط التنزيل.`);
+      setProgress((prev) => ({
+        ...prev,
+        bytesTransferred: uploaded.sizeBytes,
+        totalBytes: uploaded.sizeBytes,
+        percent: 100,
+        phase: 'completing',
+      }));
+      setStatusMessage(`تم الرفع إلى Cloudflare R2 بنجاح (${uploaded.sizeLabel}).`);
       setCanRetry(false);
       onChange(uploaded.url, uploaded.sizeLabel);
-      onToast(`تم رفع الملف بنجاح (${uploaded.sizeLabel})`);
+      onUploadedMeta?.(uploaded);
+      onToast(`تم رفع ${uploaded.fileName} بنجاح (${uploaded.sizeLabel})`);
     } catch (err) {
       activeUploadRef.current = null;
-      const uploadErr = err instanceof AbkUploadError ? err : null;
+      const uploadErr = err instanceof R2UploadError ? err : null;
+      if (uploadErr?.code === 'PAUSED') {
+        setPhase('paused');
+        setStatusMessage('تم إيقاف الرفع مؤقتاً. اضغط «استئناف» للمتابعة من نفس الجزء بدون فقدان التقدم.');
+        setCanRetry(true);
+        return;
+      }
       if (uploadErr?.code === 'CANCELED') {
         setPhase('canceled');
-        setStatusMessage('تم إلغاء الرفع. يمكنك اختيار ملف آخر أو لصق رابط مباشر.');
+        setStatusMessage('تم إلغاء الرفع وتنظيف الأجزاء المؤقتة.');
         setCanRetry(true);
         return;
       }
       const msg =
         err instanceof Error
           ? err.message
-          : 'تعذر رفع الملف. يمكنك لصق رابط HTTPS مباشر مجاناً.';
+          : 'تعذر رفع الملف إلى Cloudflare R2. تحقق من رابط Worker والاتصال ثم أعد المحاولة.';
       setPhase('error');
       setStatusMessage(msg);
       setCanRetry(uploadErr ? uploadErr.retryable : true);
@@ -173,15 +232,22 @@ export function AssetUrlOrUploadInput({
     void runUpload(file);
   }
 
-  function handleCancelUpload() {
-    activeUploadRef.current?.cancel();
+  function handlePauseUpload() {
+    activeUploadRef.current?.pause();
+    setPhase('paused');
+    setStatusMessage('جاري إيقاف الرفع مؤقتاً بعد اكتمال الجزء الحالي...');
+    setCanRetry(true);
+  }
+
+  async function handleCancelUpload() {
+    await activeUploadRef.current?.cancel();
     activeUploadRef.current = null;
     setPhase('canceled');
     setStatusMessage('تم إلغاء عملية الرفع.');
     setCanRetry(Boolean(lastFileRef.current));
   }
 
-  function handleRetryUpload() {
+  function handleResumeOrRetry() {
     if (!lastFileRef.current || isBusy) return;
     void runUpload(lastFileRef.current);
   }
@@ -190,11 +256,19 @@ export function AssetUrlOrUploadInput({
     accept ||
     (imageOnly
       ? 'image/png,image/jpeg,image/webp'
-      : '.pdf,image/*,video/mp4,video/webm,.doc,.docx,.ppt,.pptx,.zip');
+      : videoOnly
+        ? 'video/mp4,video/webm,.mp4,.m4v,.webm'
+        : '.pdf,image/*,video/mp4,video/webm,.doc,.docx,.ppt,.pptx,.zip');
 
   return (
     <div className="space-y-2">
-      <label className="block text-xs font-semibold text-slate-600">{label}</label>
+      <div className="flex items-center justify-between gap-2">
+        <label className="block text-xs font-semibold text-slate-600">{label}</label>
+        <span className="text-[11px] font-medium text-slate-500">
+          الحد الأقصى: {maxMbHint} MB {workerConfigured ? '• R2 مفعّل' : '• بانتظار رابط R2 Worker'}
+        </span>
+      </div>
+
       <div className="flex flex-col gap-2 sm:flex-row">
         <input
           type="url"
@@ -217,12 +291,16 @@ export function AssetUrlOrUploadInput({
           {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
           <span>
             {phase === 'checking'
-              ? 'فحص التخزين…'
+              ? 'فحص R2…'
               : phase === 'uploading'
                 ? `جارٍ الرفع (${progress.percent}%)`
-                : imageOnly
-                  ? 'رفع صورة'
-                  : 'رفع ملف'}
+                : phase === 'completing'
+                  ? 'تثبيت الملف…'
+                  : imageOnly
+                    ? 'رفع صورة إلى R2'
+                    : videoOnly
+                      ? 'رفع فيديو إلى R2'
+                      : 'رفع ملف إلى R2'}
           </span>
           <input
             type="file"
@@ -233,32 +311,44 @@ export function AssetUrlOrUploadInput({
           />
         </label>
 
+        {isBusy && progress.totalParts > 1 && (
+          <button
+            type="button"
+            onClick={handlePauseUpload}
+            className="inline-flex items-center justify-center gap-1 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800 hover:bg-amber-100"
+          >
+            <Pause className="h-3.5 w-3.5" />
+            إيقاف مؤقت
+          </button>
+        )}
+
         {isBusy && (
           <button
             type="button"
-            onClick={handleCancelUpload}
+            onClick={() => void handleCancelUpload()}
             className="inline-flex items-center justify-center gap-1 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100"
           >
             <X className="h-3.5 w-3.5" />
-            إلغاء الرفع
+            إلغاء
           </button>
         )}
       </div>
 
-      {/* Live progress bar */}
+      {/* Live progress bar with speed & chunk tracking */}
       {isBusy && (
         <div className="space-y-1.5 rounded-xl border border-sky-200 bg-sky-50/70 p-3">
-          <div className="flex items-center justify-between text-[11px] font-bold text-sky-900">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-bold text-sky-900">
             <span className="truncate">{statusMessage}</span>
             <span dir="ltr">
-              {progress.percent}% ({formatFileSizeLabel(progress.bytesTransferred)} /{' '}
-              {formatFileSizeLabel(progress.totalBytes || 1)})
+              {progress.percent}% ({formatBytesReadable(progress.bytesTransferred)} /{' '}
+              {formatBytesReadable(progress.totalBytes || 1)})
+              {progress.speedBytesPerSec > 0 ? ` • ${formatBytesReadable(progress.speedBytesPerSec)}/s` : ''}
             </span>
           </div>
-          <div className="h-2 w-full overflow-hidden rounded-full bg-sky-100">
+          <div className="h-2.5 w-full overflow-hidden rounded-full bg-sky-100">
             <div
               className="h-full rounded-full bg-sky-600 transition-all duration-200"
-              style={{ width: `${Math.max(phase === 'checking' ? 8 : 2, progress.percent)}%` }}
+              style={{ width: `${Math.max(phase === 'checking' ? 8 : 3, progress.percent)}%` }}
             />
           </div>
         </div>
@@ -272,8 +362,8 @@ export function AssetUrlOrUploadInput({
         </div>
       )}
 
-      {/* Upload failed or canceled */}
-      {(phase === 'error' || phase === 'canceled') && statusMessage && (
+      {/* Paused / Failed / Canceled */}
+      {(phase === 'paused' || phase === 'error' || phase === 'canceled') && statusMessage && (
         <div
           className={`flex flex-col gap-2 rounded-xl border px-3 py-2.5 text-xs sm:flex-row sm:items-center sm:justify-between ${
             phase === 'error'
@@ -288,18 +378,20 @@ export function AssetUrlOrUploadInput({
           {canRetry && lastFileRef.current && (
             <button
               type="button"
-              onClick={handleRetryUpload}
+              onClick={handleResumeOrRetry}
               className="inline-flex shrink-0 items-center gap-1 self-end rounded-lg bg-white px-3 py-1.5 font-bold text-[#0F294A] shadow-2xs ring-1 ring-slate-200 hover:bg-slate-50 sm:self-center"
             >
-              <RotateCcw className="h-3.5 w-3.5" />
-              إعادة المحاولة
+              {phase === 'paused' ? <Play className="h-3.5 w-3.5" /> : <RotateCcw className="h-3.5 w-3.5" />}
+              {phase === 'paused' ? 'استئناف الرفع' : 'إعادة المحاولة / استئناف'}
             </button>
           )}
         </div>
       )}
 
       <p className="text-[11px] text-slate-400">
-        مجاني 100%: الصق رابط HTTPS مباشر (Google Drive / Cloudflare R2 / YouTube / GitHub)، أو ارفع مباشرة عند توفر Firebase Storage.
+        {workerConfigured
+          ? `يدعم الرفع المجزأ القابل للاستئناف مباشرة إلى Cloudflare R2 (فيديو حتى ${limits.maxVideoSizeMb} MB، PDF حتى ${limits.maxPdfSizeMb} MB، صور حتى ${limits.maxImageSizeMb} MB) أو لصق رابط HTTPS مباشر.`
+          : 'يمكنك لصق رابط HTTPS مباشر الآن، أو إضافة رابط Cloudflare R2 Worker في «إعدادات المنصة» لتفعيل الرفع المباشر للملفات والفيديو.'}
       </p>
 
       {imageOnly && value && (

@@ -85,14 +85,67 @@ object UrlUtils {
         return "https://img.youtube.com/vi/$id/hqdefault.jpg"
     }
 
-    fun detectVideoSourceType(url: String): VideoSourceType {
-        val lower = url.trim().lowercase(Locale.ROOT)
+    fun detectVideoSourceType(
+        url: String,
+        declaredType: VideoSourceType? = null
+    ): VideoSourceType {
+        val trimmed = url.trim()
+        val lower = trimmed.lowercase(Locale.ROOT)
+        if (extractYouTubeVideoId(trimmed) != null) {
+            return VideoSourceType.YOUTUBE
+        }
+        val pathOnly = runCatching {
+            java.net.URI(trimmed).path?.lowercase(Locale.ROOT).orEmpty()
+        }.getOrDefault(lower.substringBefore('?').substringBefore('#'))
+
+        val hasDirectStreamExtension = listOf(
+            ".mp4", ".m4v", ".webm", ".m3u8", ".mov", ".mkv", ".mpd"
+        ).any { ext -> pathOnly.endsWith(ext) }
+
+        val isKnownMediaCdn = pathOnly.contains("/files/") &&
+            (lower.contains("workers.dev") || lower.contains("r2.dev") || declaredType == VideoSourceType.MP4)
+
+        val isFirebaseOrR2Direct = (lower.contains(".r2.dev/") ||
+            lower.contains(".workers.dev/files/") ||
+            lower.contains("firebasestorage.googleapis.com/") ||
+            lower.contains("storage.googleapis.com/")) &&
+            !pathOnly.endsWith(".html") &&
+            !pathOnly.endsWith(".htm")
+
         return when {
-            extractYouTubeVideoId(url) != null -> VideoSourceType.YOUTUBE
-            lower.endsWith(".mp4") || lower.endsWith(".m3u8") || lower.endsWith(".webm") ||
-                lower.contains(".mp4?") || lower.contains(".m3u8?") -> VideoSourceType.MP4
+            hasDirectStreamExtension || isKnownMediaCdn || isFirebaseOrR2Direct -> VideoSourceType.MP4
+            declaredType == VideoSourceType.MP4 && trimmed.startsWith("https://", ignoreCase = true) -> VideoSourceType.MP4
             else -> VideoSourceType.EXTERNAL
         }
+    }
+
+    fun isSameOriginAsBaseUrl(targetUrl: String?, baseUrl: String?): Boolean {
+        val targetRaw = targetUrl?.trim().orEmpty()
+        val baseRaw = baseUrl?.trim().orEmpty()
+        if (targetRaw.isEmpty() || baseRaw.isEmpty()) return false
+        return runCatching {
+            val t = java.net.URI(targetRaw)
+            val b = java.net.URI(baseRaw)
+            val tScheme = t.scheme?.lowercase(Locale.ROOT) ?: return@runCatching false
+            val bScheme = b.scheme?.lowercase(Locale.ROOT) ?: return@runCatching false
+            val tHost = t.host?.lowercase(Locale.ROOT) ?: return@runCatching false
+            val bHost = b.host?.lowercase(Locale.ROOT) ?: return@runCatching false
+            val tPort = if (t.port != -1) t.port else if (tScheme == "https") 443 else 80
+            val bPort = if (b.port != -1) b.port else if (bScheme == "https") 443 else 80
+            tScheme == bScheme && tHost == bHost && tPort == bPort
+        }.getOrDefault(false)
+    }
+
+    fun sanitizeUrlForLog(rawUrl: String?): String {
+        val trimmed = rawUrl?.trim().orEmpty()
+        if (trimmed.isEmpty()) return "<empty>"
+        return runCatching {
+            val uri = java.net.URI(trimmed)
+            val scheme = uri.scheme ?: "unknown"
+            val host = uri.host ?: "nohost"
+            val path = uri.path?.take(80).orEmpty()
+            "$scheme://$host$path"
+        }.getOrDefault("<invalid-url>")
     }
 
     fun normalizePdfDownloadUrl(rawUrl: String): String {

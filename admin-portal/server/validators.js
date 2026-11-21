@@ -41,6 +41,7 @@ export const BACKUP_COLLECTIONS = [
   'customSectionTypes',
   'materials',
   'announcements',
+  'mediaAssets',
 ];
 
 export const BackupPayloadSchema = z.object({

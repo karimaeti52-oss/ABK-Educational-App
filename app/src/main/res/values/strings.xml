@@ -28,7 +28,7 @@
     <string name="theme_light">فاتح</string>
     <string name="theme_dark">داكن</string>
     <string name="check_for_updates">التحقق من وجود تحديث</string>
-    <string name="update_available_title">يتوفر تحديث جديد للتطبيق</string>
+    <string name="update_available_title">يتوفر تحديث جديد لمداد التعليمية</string>
     <string name="update_mandatory_title">تحديث إلزامي للاستمرار</string>
     <string name="update_latest_version">أنت تستخدم أحدث إصدار من مداد التعليمية</string>
 </resources>

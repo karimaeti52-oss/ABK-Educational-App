@@ -67,7 +67,9 @@ object PdfCacheManager {
         context: Context,
         materialId: String,
         rawUrl: String,
-        forceRefresh: Boolean = false
+        forceRefresh: Boolean = false,
+        r2WorkerBaseUrl: String = "",
+        authTokenProvider: (suspend () -> String?)? = null
     ): Result<File> = withContext(Dispatchers.IO) {
         val safeId = materialId.replace(Regex("[^a-zA-Z0-9_-]"), "_")
         val existingFile = getCachedPdfFile(context, materialId)
@@ -82,10 +84,16 @@ object PdfCacheManager {
         }
         val targetFile = File(getOfflineDir(context), "$safeId.pdf")
         try {
-            val request = Request.Builder()
+            val reqBuilder = Request.Builder()
                 .url(normalizedUrl)
-                .header("User-Agent", "Midad-Android/1.1")
-                .build()
+                .header("User-Agent", "Midad-Android/1.1.1")
+            if (authTokenProvider != null && UrlUtils.isSameOriginAsBaseUrl(normalizedUrl, r2WorkerBaseUrl)) {
+                val token = runCatching { authTokenProvider() }.getOrNull()
+                if (!token.isNullOrBlank()) {
+                    reqBuilder.header("Authorization", "Bearer $token")
+                }
+            }
+            val request = reqBuilder.build()
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
                     return@withContext Result.failure(
@@ -123,9 +131,17 @@ object PdfCacheManager {
         context: Context,
         materialId: String,
         title: String,
-        rawUrl: String
+        rawUrl: String,
+        r2WorkerBaseUrl: String = "",
+        authTokenProvider: (suspend () -> String?)? = null
     ): Result<String> = withContext(Dispatchers.IO) {
-        val fileResult = getOrDownloadPdf(context, materialId, rawUrl)
+        val fileResult = getOrDownloadPdf(
+            context = context,
+            materialId = materialId,
+            rawUrl = rawUrl,
+            r2WorkerBaseUrl = r2WorkerBaseUrl,
+            authTokenProvider = authTokenProvider
+        )
         val sourceFile = fileResult.getOrElse { return@withContext Result.failure(it) }
         val cleanName = title.replace(Regex("[^\\p{L}\\p{N}_\\- ]"), "_")
             .trim()

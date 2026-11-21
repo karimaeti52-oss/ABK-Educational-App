@@ -57,6 +57,7 @@ import type {
   CustomSectionType,
   Lesson,
   LessonExplanation,
+  MediaAsset,
   NavSectionId,
   PlatformConfig,
   StaffRole,
@@ -80,6 +81,7 @@ const EMPTY_STORE: CmsStore = {
   blocks: [],
   customTypes: [],
   materials: [],
+  mediaAssets: [],
   announcements: [],
   users: [],
   admins: [],
@@ -250,6 +252,9 @@ export default function App() {
       ),
       subscribeCollection<StudyMaterial>('materials', (materials) =>
         setStore((prev) => ({ ...prev, materials }))
+      ),
+      subscribeCollection<MediaAsset>('mediaAssets', (mediaAssets) =>
+        setStore((prev) => ({ ...prev, mediaAssets }))
       ),
       subscribeCollection<Announcement>('announcements', (announcements) =>
         setStore((prev) => ({ ...prev, announcements }))
@@ -504,7 +509,15 @@ export default function App() {
       case 'quizzes':
         return <QuizzesOverviewSection store={store} onNavigate={setActiveSection} />;
       case 'media':
-        return <MediaLibrarySection onToast={showToast} />;
+        return (
+          <MediaLibrarySection
+            store={store}
+            staff={staff!}
+            canEdit={canEditLessonsAndContent}
+            canHardDelete={canHardDelete}
+            onToast={showToast}
+          />
+        );
       case 'students':
         return (
           <StudentsSection

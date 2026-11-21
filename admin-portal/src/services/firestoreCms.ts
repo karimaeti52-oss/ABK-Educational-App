@@ -24,6 +24,7 @@ import type {
   CustomSectionType,
   Lesson,
   LessonExplanation,
+  MediaAsset,
   PlatformConfig,
   PublishStatus,
   StaffSession,
@@ -33,6 +34,8 @@ import type {
   UnitItem,
   UserProfile,
 } from '../types';
+import { deleteR2ObjectIfConfigured } from './r2UploadClient';
+import { DEFAULT_R2_LIMITS, PERMANENT_MIDAD_APK_URL, type R2UploadResult } from '../utils/r2Upload';
 
 function cleanPayload<T extends Record<string, unknown>>(obj: T): Record<string, unknown> {
   const result: Record<string, unknown> = {};
@@ -73,6 +76,9 @@ export function subscribePlatformConfig(
   });
 }
 
+const cmsEnv: Record<string, string | undefined> =
+  (import.meta as { env?: Record<string, string | undefined> }).env ?? {};
+
 export const DEFAULT_PLATFORM_CONFIG: PlatformConfig = {
   platformName: 'مداد التعليمية',
   platformTagline: 'طريقك نحو التفوق',
@@ -93,14 +99,19 @@ export const DEFAULT_PLATFORM_CONFIG: PlatformConfig = {
   showAnnouncements: true,
   showContinueWatching: true,
   maintenanceMode: false,
+  r2WorkerBaseUrl: cmsEnv.VITE_R2_WORKER_URL || '',
+  maxVideoSizeMb: DEFAULT_R2_LIMITS.maxVideoSizeMb,
+  maxPdfSizeMb: DEFAULT_R2_LIMITS.maxPdfSizeMb,
+  maxImageSizeMb: DEFAULT_R2_LIMITS.maxImageSizeMb,
+  totalStorageLimitGb: DEFAULT_R2_LIMITS.totalStorageLimitGb,
   updatedBy: 'system',
 };
 
 export const DEFAULT_ANDROID_RELEASE: AndroidReleaseManifest = {
-  versionCode: 2,
-  versionName: '1.1.0',
+  versionCode: 3,
+  versionName: '1.1.1',
   minSupportedVersionCode: 1,
-  apkUrl: '',
+  apkUrl: PERMANENT_MIDAD_APK_URL,
   sha256: '',
   fileSizeBytes: 0,
   releaseNotes: '',
@@ -213,10 +224,58 @@ export async function hardDeleteEntity(
   collectionName: string,
   id: string,
   staff: StaffSession | null,
-  label: string
+  label: string,
+  options?: { r2ObjectKey?: string; platformConfig?: Partial<PlatformConfig> }
 ) {
+  if (options?.r2ObjectKey) {
+    try {
+      await deleteR2ObjectIfConfigured(options.r2ObjectKey, options.platformConfig);
+    } catch (e) {
+      console.warn('R2 object cleanup skipped:', e);
+    }
+  }
   await deleteDoc(doc(firestoreDb, collectionName, id));
   await recordAudit(staff, 'HARD_DELETE', collectionName, id, `حذف نهائي: ${label}`);
+}
+
+export async function registerUploadedMediaAsset(
+  meta: R2UploadResult,
+  details: {
+    title: string;
+    description?: string;
+    durationLabel?: string;
+    nodeIds?: string[];
+    subjectId?: string;
+    unitId?: string;
+    lessonId?: string;
+    published?: boolean;
+  },
+  staff: StaffSession | null
+): Promise<string> {
+  const published = details.published ?? true;
+  return await upsertEntity(
+    'mediaAssets',
+    undefined,
+    {
+      title: (details.title || meta.fileName).trim().slice(0, 160),
+      description: details.description?.trim() || undefined,
+      fileName: meta.fileName,
+      objectKey: meta.objectKey,
+      fileUrl: meta.url,
+      contentType: meta.contentType,
+      mediaKind: meta.mediaKind,
+      sizeBytes: Math.max(1, Math.round(meta.sizeBytes)),
+      durationLabel: details.durationLabel?.trim() || undefined,
+      nodeIds: details.nodeIds?.length ? details.nodeIds : undefined,
+      subjectId: details.subjectId || undefined,
+      unitId: details.unitId || undefined,
+      lessonId: details.lessonId || undefined,
+      published,
+      status: published ? 'PUBLISHED' : 'DRAFT',
+    },
+    staff,
+    details.title || meta.fileName
+  );
 }
 
 export async function updateEntityStatus(
@@ -334,6 +393,7 @@ export async function exportClientSnapshotJson(): Promise<Record<string, unknown
     'contentBlocks',
     'customSectionTypes',
     'materials',
+    'mediaAssets',
     'announcements',
   ];
   const out: Record<string, Array<{ id: string; data: Record<string, unknown> }>> = {};
@@ -359,6 +419,7 @@ export type CmsStore = {
   blocks: ContentBlock[];
   customTypes: CustomSectionType[];
   materials: StudyMaterial[];
+  mediaAssets: MediaAsset[];
   announcements: Announcement[];
   users: UserProfile[];
   admins: AdminEntry[];

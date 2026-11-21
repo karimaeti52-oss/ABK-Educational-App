@@ -145,6 +145,8 @@
         "thumbnailUrl": { "type": "string" },
         "videoUrl": { "type": "string" },
         "videoSourceType": { "type": "string", "enum": ["YOUTUBE", "MP4", "EXTERNAL"] },
+        "r2ObjectKey": { "type": "string" },
+        "sizeBytes": { "type": "integer" },
         "published": { "type": "boolean" },
         "status": { "type": "string", "enum": ["DRAFT", "PUBLISHED", "ARCHIVED"] },
         "deletedAt": { "type": "string", "format": "date-time" },
@@ -216,6 +218,8 @@
         "thumbnailUrl": { "type": "string" },
         "durationLabel": { "type": "string" },
         "fileSizeLabel": { "type": "string" },
+        "r2ObjectKey": { "type": "string" },
+        "sizeBytes": { "type": "integer" },
         "qaItems": { "type": "array", "items": { "type": "object" } },
         "quizQuestions": { "type": "array", "items": { "type": "object" } },
         "sortOrder": { "type": "integer" },
@@ -265,6 +269,11 @@
         "showAnnouncements": { "type": "boolean" },
         "showContinueWatching": { "type": "boolean" },
         "maintenanceMode": { "type": "boolean" },
+        "r2WorkerBaseUrl": { "type": "string" },
+        "maxVideoSizeMb": { "type": "integer" },
+        "maxPdfSizeMb": { "type": "integer" },
+        "maxImageSizeMb": { "type": "integer" },
+        "totalStorageLimitGb": { "type": "integer" },
         "updatedBy": { "type": "string" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -310,11 +319,14 @@
         "lessonTitle": { "type": "string" },
         "teacherId": { "type": "string" },
         "teacherUid": { "type": "string" },
+        "nodeIds": { "type": "array", "items": { "type": "string" } },
         "materialType": { "type": "string", "enum": ["TEXTBOOK", "STUDY_NOTE", "SUMMARY", "IMPORTANT_QUESTIONS", "WORKSHEET", "PRACTICE_EXAM", "ASSIGNMENT"] },
         "title": { "type": "string" },
         "description": { "type": "string" },
         "coverUrl": { "type": "string" },
         "fileUrl": { "type": "string" },
+        "r2ObjectKey": { "type": "string" },
+        "sizeBytes": { "type": "integer" },
         "published": { "type": "boolean" },
         "status": { "type": "string", "enum": ["DRAFT", "PUBLISHED", "ARCHIVED"] },
         "deletedAt": { "type": "string", "format": "date-time" },
@@ -323,6 +335,33 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["subjectId", "subjectName", "materialType", "title", "description", "fileUrl", "published", "createdBy", "createdAt", "updatedAt"]
+    },
+    "MediaAsset": {
+      "title": "MediaAsset",
+      "description": "Metadata index for files stored in Cloudflare R2 via Worker",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "fileName": { "type": "string" },
+        "objectKey": { "type": "string" },
+        "fileUrl": { "type": "string" },
+        "contentType": { "type": "string" },
+        "mediaKind": { "type": "string", "enum": ["VIDEO", "PDF", "IMAGE", "ATTACHMENT"] },
+        "sizeBytes": { "type": "integer" },
+        "durationLabel": { "type": "string" },
+        "nodeIds": { "type": "array", "items": { "type": "string" } },
+        "subjectId": { "type": "string" },
+        "unitId": { "type": "string" },
+        "lessonId": { "type": "string" },
+        "published": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["DRAFT", "PUBLISHED", "ARCHIVED"] },
+        "deletedAt": { "type": "string", "format": "date-time" },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "fileName", "objectKey", "fileUrl", "contentType", "mediaKind", "sizeBytes", "published", "createdBy", "createdAt", "updatedAt"]
     },
     "Announcement": {
       "title": "Announcement",
@@ -446,6 +485,10 @@
     "/materials/{materialId}": {
       "schema": { "$ref": "#/entities/StudyMaterial" },
       "description": "PDF library materials"
+    },
+    "/mediaAssets/{assetId}": {
+      "schema": { "$ref": "#/entities/MediaAsset" },
+      "description": "Cloudflare R2 media metadata index"
     },
     "/announcements/{announcementId}": {
       "schema": { "$ref": "#/entities/Announcement" },

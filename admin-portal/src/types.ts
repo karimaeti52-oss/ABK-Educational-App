@@ -8,6 +8,7 @@ export type StaffRole =
 export type PublishStatus = 'DRAFT' | 'PUBLISHED' | 'ARCHIVED';
 export type CatalogNodeType = 'STAGE' | 'GRADE' | 'BRANCH' | 'COURSE' | 'CUSTOM';
 export type VideoSourceType = 'YOUTUBE' | 'MP4' | 'EXTERNAL';
+export type MediaKind = 'VIDEO' | 'PDF' | 'IMAGE' | 'ATTACHMENT';
 export type MaterialType =
   | 'TEXTBOOK'
   | 'STUDY_NOTE'
@@ -168,6 +169,8 @@ export interface Lesson {
   thumbnailUrl?: string;
   videoUrl: string;
   videoSourceType: VideoSourceType;
+  r2ObjectKey?: string;
+  sizeBytes?: number;
   published: boolean;
   status?: PublishStatus;
   deletedAt?: unknown;
@@ -213,6 +216,8 @@ export interface ContentBlock {
   thumbnailUrl?: string;
   durationLabel?: string;
   fileSizeLabel?: string;
+  r2ObjectKey?: string;
+  sizeBytes?: number;
   qaItems?: QaItem[];
   quizQuestions?: QuizQuestion[];
   sortOrder: number;
@@ -259,6 +264,11 @@ export interface PlatformConfig {
   showAnnouncements?: boolean;
   showContinueWatching?: boolean;
   maintenanceMode?: boolean;
+  r2WorkerBaseUrl?: string;
+  maxVideoSizeMb?: number;
+  maxPdfSizeMb?: number;
+  maxImageSizeMb?: number;
+  totalStorageLimitGb?: number;
   updatedBy: string;
   updatedAt?: unknown;
 }
@@ -285,17 +295,60 @@ export interface StudyMaterial {
   lessonTitle?: string;
   teacherId?: string;
   teacherUid?: string;
+  nodeIds?: string[];
   materialType: MaterialType;
   title: string;
   description: string;
   coverUrl?: string;
   fileUrl: string;
+  r2ObjectKey?: string;
+  sizeBytes?: number;
   published: boolean;
   status?: PublishStatus;
   deletedAt?: unknown;
   createdBy: string;
   createdAt?: unknown;
   updatedAt?: unknown;
+}
+
+export interface MediaAsset {
+  id: string;
+  title: string;
+  description?: string;
+  fileName: string;
+  objectKey: string;
+  fileUrl: string;
+  contentType: string;
+  mediaKind: MediaKind;
+  sizeBytes: number;
+  durationLabel?: string;
+  nodeIds?: string[];
+  subjectId?: string;
+  unitId?: string;
+  lessonId?: string;
+  published: boolean;
+  status?: PublishStatus;
+  deletedAt?: unknown;
+  createdBy: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export interface R2StorageLimits {
+  maxVideoSizeMb: number;
+  maxPdfSizeMb: number;
+  maxImageSizeMb: number;
+  totalStorageLimitGb: number;
+}
+
+export interface R2QuotaStatus {
+  usedBytes: number;
+  totalLimitBytes: number;
+  remainingBytes: number;
+  fileCount: number;
+  usedPercent: number;
+  nearLimit: boolean;
+  limits: R2StorageLimits;
 }
 
 export interface Announcement {

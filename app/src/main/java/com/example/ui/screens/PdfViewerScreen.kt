@@ -77,6 +77,8 @@ import java.io.File
 fun PdfViewerScreen(
     material: StudyMaterial?,
     isFavorite: Boolean,
+    r2WorkerBaseUrl: String = "",
+    authTokenProvider: (suspend () -> String?)? = null,
     onBack: () -> Unit,
     onDownloadClick: () -> Unit,
     onShareClick: () -> Unit,
@@ -117,7 +119,9 @@ fun PdfViewerScreen(
             context = context,
             materialId = material.id,
             rawUrl = material.fileUrl,
-            forceRefresh = reloadKey > 0
+            forceRefresh = reloadKey > 0,
+            r2WorkerBaseUrl = r2WorkerBaseUrl,
+            authTokenProvider = authTokenProvider
         )
         result.onSuccess { file ->
             pdfFile = file

@@ -85,7 +85,7 @@ fun UpdateDialog(
         title = {
             Text(
                 text = when (updateState) {
-                    is AppUpdateState.Available -> if (updateState.isMandatory) "تحديث إلزامي متاح" else "يتوفر تحديث جديد للتطبيق"
+                    is AppUpdateState.Available -> if (updateState.isMandatory) "تحديث إلزامي لمداد التعليمية" else "يتوفر تحديث جديد لمداد التعليمية"
                     is AppUpdateState.Downloading -> "جارٍ تنزيل التحديث…"
                     is AppUpdateState.Verifying -> "جارٍ التحقق من سلامة الحزمة…"
                     is AppUpdateState.PermissionRequired -> "مطلوب إذن التثبيت"

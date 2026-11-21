@@ -3,7 +3,9 @@ package com.example
 import com.example.data.model.VideoSourceType
 import com.example.util.UrlUtils
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class UrlUtilsTest {
@@ -30,6 +32,22 @@ class UrlUtilsTest {
         assertEquals(VideoSourceType.YOUTUBE, UrlUtils.detectVideoSourceType("https://youtu.be/dQw4w9WgXcQ"))
         assertEquals(VideoSourceType.MP4, UrlUtils.detectVideoSourceType("https://cdn.example.com/algebra.mp4"))
         assertEquals(VideoSourceType.MP4, UrlUtils.detectVideoSourceType("https://cdn.example.com/stream.m3u8?token=abc"))
+        assertEquals(
+            VideoSourceType.MP4,
+            UrlUtils.detectVideoSourceType("https://midad-media.example.workers.dev/files/lessons/vid123.mp4")
+        )
+        assertEquals(
+            VideoSourceType.MP4,
+            UrlUtils.detectVideoSourceType("https://midad-media.example.workers.dev/files/lessons/stream-no-ext")
+        )
+        assertEquals(
+            VideoSourceType.MP4,
+            UrlUtils.detectVideoSourceType("https://pub-abc123.r2.dev/videos/calculus.mp4")
+        )
+        assertEquals(
+            VideoSourceType.MP4,
+            UrlUtils.detectVideoSourceType("https://media.midad.edu/stream/42", VideoSourceType.MP4)
+        )
         assertEquals(VideoSourceType.EXTERNAL, UrlUtils.detectVideoSourceType("https://vimeo.com/123456"))
     }
 
@@ -53,14 +71,34 @@ class UrlUtilsTest {
 
     @Test
     fun validatesSafeHttpsUrlsOnly() {
-        org.junit.Assert.assertTrue(UrlUtils.isSafeHttpsUrl("https://github.com/org/repo/releases/download/v1.1.0/midad.apk"))
-        org.junit.Assert.assertTrue(UrlUtils.isSafeHttpsUrl("  HTTPS://cdn.midad.edu/file.pdf "))
-        org.junit.Assert.assertFalse(UrlUtils.isSafeHttpsUrl("http://example.com/file.apk"))
-        org.junit.Assert.assertFalse(UrlUtils.isSafeHttpsUrl("javascript:alert(1)"))
-        org.junit.Assert.assertFalse(UrlUtils.isSafeHttpsUrl("intent://scan/#Intent;end"))
-        org.junit.Assert.assertFalse(UrlUtils.isSafeHttpsUrl("file:///data/local/tmp/x.apk"))
-        org.junit.Assert.assertFalse(UrlUtils.isSafeHttpsUrl("data:text/html,<script>alert(1)</script>"))
-        org.junit.Assert.assertFalse(UrlUtils.isSafeHttpsUrl(""))
-        org.junit.Assert.assertFalse(UrlUtils.isSafeHttpsUrl(null))
+        assertTrue(UrlUtils.isSafeHttpsUrl("https://github.com/org/repo/releases/download/v1.1.0/midad.apk"))
+        assertTrue(UrlUtils.isSafeHttpsUrl("  HTTPS://cdn.midad.edu/file.pdf "))
+        assertFalse(UrlUtils.isSafeHttpsUrl("http://example.com/file.apk"))
+        assertFalse(UrlUtils.isSafeHttpsUrl("javascript:alert(1)"))
+        assertFalse(UrlUtils.isSafeHttpsUrl("intent://scan/#Intent;end"))
+        assertFalse(UrlUtils.isSafeHttpsUrl("file:///data/local/tmp/x.apk"))
+        assertFalse(UrlUtils.isSafeHttpsUrl("data:text/html,<script>alert(1)</script>"))
+        assertFalse(UrlUtils.isSafeHttpsUrl(""))
+        assertFalse(UrlUtils.isSafeHttpsUrl(null))
+    }
+
+    @Test
+    fun checksSameOriginAndSanitizesUrlsForLogs() {
+        assertTrue(
+            UrlUtils.isSameOriginAsBaseUrl(
+                "https://midad-r2.workers.dev/files/lessons/v1.mp4",
+                "https://midad-r2.workers.dev"
+            )
+        )
+        assertFalse(
+            UrlUtils.isSameOriginAsBaseUrl(
+                "https://evil.example.com/files/lessons/v1.mp4",
+                "https://midad-r2.workers.dev"
+            )
+        )
+        assertEquals(
+            "https://cdn.midad.edu/files/lesson1.mp4",
+            UrlUtils.sanitizeUrlForLog("https://cdn.midad.edu/files/lesson1.mp4?token=secret123#frag")
+        )
     }
 }
