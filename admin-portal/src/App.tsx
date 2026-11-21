@@ -170,7 +170,7 @@ export default function App() {
     return {
       uid: user.uid,
       email: user.email || '',
-      name: user.displayName || user.email || 'مشرف ABK',
+      name: user.displayName || user.email || 'مشرف مداد',
       role: resolvedRole,
       permissions: adminPermissions,
       teacherId: teacherId || (tokenResult.claims.teacherId as string | undefined) || null,
@@ -348,15 +348,15 @@ export default function App() {
 
   if (!firebaseUser || !staff) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-[#0F294A] via-[#133863] to-sky-700 p-4">
+      <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-[#142A43] via-[#173A59] to-[#167D83] p-4">
         <div className="w-full max-w-md rounded-3xl bg-white p-7 shadow-2xl">
           <div className="mb-6 flex items-center gap-3">
-            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#0F294A] text-lg font-extrabold text-white shadow-sm">
-              ABK
+            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#142A43] text-sm font-extrabold text-[#F4EBDD] shadow-sm">
+              مداد
             </div>
             <div>
-              <h1 className="text-xl font-extrabold text-[#0F294A]">لوحة تحكم منصة ABK</h1>
-              <p className="text-xs text-slate-500">بوابة الإدارة المستقلة — دخول المشرفين والأساتذة المخوّلين فقط</p>
+              <h1 className="text-xl font-extrabold text-[#142A43]">لوحة تحكم منصة مداد التعليمية</h1>
+              <p className="text-xs text-slate-500">طريقك نحو التفوق — دخول المشرفين والأساتذة المخوّلين فقط</p>
             </div>
           </div>
 

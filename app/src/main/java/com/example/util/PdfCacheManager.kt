@@ -24,14 +24,21 @@ object PdfCacheManager {
     }
 
     private fun getOfflineDir(context: Context): File {
-        val dir = File(context.filesDir, "abk_pdfs")
+        val dir = File(context.filesDir, "midad_pdfs")
         if (!dir.exists()) dir.mkdirs()
         return dir
     }
 
+    private fun getLegacyOfflineDir(context: Context): File = File(context.filesDir, "abk_pdfs")
+
     fun getCachedPdfFile(context: Context, materialId: String): File {
         val safeId = materialId.replace(Regex("[^a-zA-Z0-9_-]"), "_")
-        return File(getOfflineDir(context), "$safeId.pdf")
+        val primary = File(getOfflineDir(context), "$safeId.pdf")
+        if (primary.exists() && primary.length() > 100L) {
+            return primary
+        }
+        val legacy = File(getLegacyOfflineDir(context), "$safeId.pdf")
+        return if (legacy.exists() && legacy.length() > 100L) legacy else primary
     }
 
     fun isPdfCachedOffline(context: Context, materialId: String): Boolean {
@@ -40,12 +47,20 @@ object PdfCacheManager {
     }
 
     fun listCachedMaterialIds(context: Context): Set<String> {
-        val dir = getOfflineDir(context)
-        return dir.listFiles()
+        val primaryIds = getOfflineDir(context).listFiles()
             ?.filter { it.isFile && it.name.endsWith(".pdf") && it.length() > 100L }
             ?.map { it.name.removeSuffix(".pdf") }
-            ?.toSet()
-            ?: emptySet()
+            .orEmpty()
+        val legacyDir = getLegacyOfflineDir(context)
+        val legacyIds = if (legacyDir.exists()) {
+            legacyDir.listFiles()
+                ?.filter { it.isFile && it.name.endsWith(".pdf") && it.length() > 100L }
+                ?.map { it.name.removeSuffix(".pdf") }
+                .orEmpty()
+        } else {
+            emptyList()
+        }
+        return (primaryIds + legacyIds).toSet()
     }
 
     suspend fun getOrDownloadPdf(
@@ -54,15 +69,22 @@ object PdfCacheManager {
         rawUrl: String,
         forceRefresh: Boolean = false
     ): Result<File> = withContext(Dispatchers.IO) {
-        val targetFile = getCachedPdfFile(context, materialId)
-        if (!forceRefresh && targetFile.exists() && targetFile.length() > 100L) {
-            return@withContext Result.success(targetFile)
+        val safeId = materialId.replace(Regex("[^a-zA-Z0-9_-]"), "_")
+        val existingFile = getCachedPdfFile(context, materialId)
+        if (!forceRefresh && existingFile.exists() && existingFile.length() > 100L) {
+            return@withContext Result.success(existingFile)
         }
         val normalizedUrl = UrlUtils.normalizePdfDownloadUrl(rawUrl)
+        if (!UrlUtils.isSafeHttpsUrl(normalizedUrl)) {
+            return@withContext Result.failure(
+                IllegalArgumentException("رابط الملف غير آمن أو لا يستخدم بروتوكول HTTPS الموثوق.")
+            )
+        }
+        val targetFile = File(getOfflineDir(context), "$safeId.pdf")
         try {
             val request = Request.Builder()
                 .url(normalizedUrl)
-                .header("User-Agent", "ABK-Android/1.0")
+                .header("User-Agent", "Midad-Android/1.1")
                 .build()
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
@@ -79,7 +101,6 @@ object PdfCacheManager {
                         input.copyTo(output)
                     }
                 }
-                // Basic PDF magic header verification
                 val header = ByteArray(5)
                 tempFile.inputStream().use { it.read(header) }
                 val headerText = String(header, Charsets.US_ASCII)
@@ -108,14 +129,14 @@ object PdfCacheManager {
         val sourceFile = fileResult.getOrElse { return@withContext Result.failure(it) }
         val cleanName = title.replace(Regex("[^\\p{L}\\p{N}_\\- ]"), "_")
             .trim()
-            .ifBlank { "ABK_Document" } + ".pdf"
+            .ifBlank { "Midad_Document" } + ".pdf"
 
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val values = ContentValues().apply {
                     put(MediaStore.Downloads.DISPLAY_NAME, cleanName)
                     put(MediaStore.Downloads.MIME_TYPE, "application/pdf")
-                    put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/ABK")
+                    put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/Midad")
                 }
                 val resolver = context.contentResolver
                 val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
@@ -123,17 +144,17 @@ object PdfCacheManager {
                 resolver.openOutputStream(uri)?.use { out ->
                     sourceFile.inputStream().use { input -> input.copyTo(out) }
                 } ?: return@withContext Result.failure(IllegalStateException("تعذر الكتابة إلى التنزيلات"))
-                Result.success("تم حفظ الملف في التنزيلات/ABK")
+                Result.success("تم حفظ الملف في التنزيلات/Midad")
             } else {
                 @Suppress("DEPRECATION")
                 val downloadsDir = File(
                     Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-                    "ABK"
+                    "Midad"
                 )
                 if (!downloadsDir.exists()) downloadsDir.mkdirs()
                 val dest = File(downloadsDir, cleanName)
                 sourceFile.copyTo(dest, overwrite = true)
-                Result.success("تم حفظ الملف في التنزيلات/ABK")
+                Result.success("تم حفظ الملف في التنزيلات/Midad")
             }
         } catch (e: Exception) {
             Result.failure(e)

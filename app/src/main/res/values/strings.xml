@@ -1,7 +1,7 @@
 <resources>
-    <string name="app_name">ABK</string>
-    <string name="platform_full_name">منصة ABK التعليمية</string>
-    <string name="platform_tagline">طريقك للتفوق الدراسي في مكان واحد</string>
+    <string name="app_name">مداد التعليمية</string>
+    <string name="platform_full_name">مداد التعليمية</string>
+    <string name="platform_tagline">طريقك نحو التفوق</string>
     <string name="sign_in_with_google">تسجيل الدخول بحساب Google</string>
     <string name="signing_in">جاري تسجيل الدخول…</string>
     <string name="offline_banner">لا يوجد اتصال بالإنترنت — يتم عرض البيانات المحفوظة مؤقتاً</string>
@@ -19,7 +19,16 @@
     <string name="favorites_section">المفضلة</string>
     <string name="admin_panel_title">لوحة تحكم المدير</string>
     <string name="account_suspended_title">تم تعطيل الحساب مؤقتاً</string>
-    <string name="account_suspended_desc">تم إيقاف هذا الحساب من قبل إدارة منصة ABK. يرجى التواصل مع الإدارة للمراجعة.</string>
+    <string name="account_suspended_desc">تم إيقاف هذا الحساب من قبل إدارة منصة مداد التعليمية. يرجى التواصل مع الإدارة للمراجعة.</string>
     <string name="account_banned_title">تم حظر الحساب من الإدارة</string>
-    <string name="account_banned_desc">تم حظر هذا الحساب نهائياً من استخدام منصة ABK لعدم الالتزام بشروط الاستخدام.</string>
+    <string name="account_banned_desc">تم حظر هذا الحساب نهائياً من استخدام منصة مداد التعليمية لعدم الالتزام بشروط الاستخدام.</string>
+    <string name="student_default_name">طالب مداد</string>
+    <string name="theme_preference_title">مظهر التطبيق</string>
+    <string name="theme_system">تلقائي (حسب النظام)</string>
+    <string name="theme_light">فاتح</string>
+    <string name="theme_dark">داكن</string>
+    <string name="check_for_updates">التحقق من وجود تحديث</string>
+    <string name="update_available_title">يتوفر تحديث جديد للتطبيق</string>
+    <string name="update_mandatory_title">تحديث إلزامي للاستمرار</string>
+    <string name="update_latest_version">أنت تستخدم أحدث إصدار من مداد التعليمية</string>
 </resources>

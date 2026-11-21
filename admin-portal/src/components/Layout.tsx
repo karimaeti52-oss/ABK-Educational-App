@@ -129,8 +129,8 @@ export function AdminLayout({
               className="h-9 w-9 rounded-xl bg-white object-cover"
             />
           ) : (
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-sky-500 text-sm font-extrabold text-white">
-              ABK
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#167D83] text-xs font-extrabold text-white">
+              مداد
             </div>
           )}
           <div>
@@ -245,7 +245,7 @@ export function AdminLayout({
                 {ADMIN_NAV_ITEMS.find((n) => n.id === activeSection)?.label || 'لوحة التحكم'}
               </h1>
               <p className="text-xs text-slate-500">
-                قاعدة البيانات: ABK المشتركة • {staff.email}
+                منصة مداد التعليمية • {staff.email}
               </p>
             </div>
           </div>

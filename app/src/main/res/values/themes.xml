@@ -1,5 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <style name="Theme.Midad" parent="android:Theme.DeviceDefault.NoActionBar" />
 
-    <style name="Theme.MyApplication" parent="android:Theme.DeviceDefault.NoActionBar" />
+    <style name="Theme.Midad.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">#142E47</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/midad_app_icon</item>
+        <item name="postSplashScreenTheme">@style/Theme.Midad</item>
+    </style>
+
+    <style name="Theme.MyApplication" parent="Theme.Midad" />
 </resources>

@@ -75,9 +75,9 @@ import com.example.data.model.UserRole
 import com.example.ui.components.AbkEmptyState
 import com.example.ui.components.AbkSearchBar
 import com.example.ui.components.InfoPill
-import com.example.ui.theme.AbkNavyDeep
-import com.example.ui.theme.AbkSkyPrimary
-import com.example.ui.theme.AbkSuccess
+import com.example.ui.theme.MidadNavyDeep
+import com.example.ui.theme.MidadSuccess
+import com.example.ui.theme.MidadTurquoise
 import com.example.viewmodel.AdminViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -128,7 +128,7 @@ fun AdminDashboardScreen(
             TopAppBar(
                 title = {
                     Column {
-                        Text("لوحة تحكم المدير — ABK", style = MaterialTheme.typography.titleLarge)
+                        Text("لوحة تحكم المدير — مداد التعليمية", style = MaterialTheme.typography.titleLarge)
                         Text(
                             "إدارة كاملة وآمنة للمنصة بدون كود",
                             style = MaterialTheme.typography.labelSmall,
@@ -142,7 +142,7 @@ fun AdminDashboardScreen(
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = AbkNavyDeep,
+                    containerColor = MidadNavyDeep,
                     titleContentColor = Color.White
                 )
             )
@@ -170,7 +170,7 @@ fun AdminDashboardScreen(
                             3 -> { editingAnnouncement = null; showAnnouncementDialog = true }
                         }
                     },
-                    containerColor = AbkSkyPrimary,
+                    containerColor = MidadTurquoise,
                     contentColor = Color.White,
                     modifier = Modifier.testTag("admin_add_fab")
                 ) {
@@ -280,7 +280,7 @@ fun AdminDashboardScreen(
                                             Icon(
                                                 imageVector = if (lesson.published) Icons.Filled.Visibility else Icons.Filled.VisibilityOff,
                                                 contentDescription = "نشر أو إخفاء",
-                                                tint = AbkSkyPrimary
+                                                tint = MidadTurquoise
                                             )
                                         }
                                     },
@@ -416,13 +416,13 @@ fun AdminDashboardScreen(
                                                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                                     InfoPill(
                                                         text = if (isUserAdmin) "مدير" else "طالب",
-                                                        containerColor = if (isUserAdmin) AbkNavyDeep else MaterialTheme.colorScheme.primaryContainer,
+                                                        containerColor = if (isUserAdmin) MidadNavyDeep else MaterialTheme.colorScheme.primaryContainer,
                                                         contentColor = if (isUserAdmin) Color.White else MaterialTheme.colorScheme.onPrimaryContainer
                                                     )
                                                     InfoPill(
                                                         text = parsedStatus.labelAr,
                                                         containerColor = if (isBlocked) MaterialTheme.colorScheme.errorContainer else Color(0xFFD1FAE5),
-                                                        contentColor = if (isBlocked) MaterialTheme.colorScheme.error else AbkSuccess
+                                                        contentColor = if (isBlocked) MaterialTheme.colorScheme.error else MidadSuccess
                                                     )
                                                 }
                                             }
@@ -432,7 +432,7 @@ fun AdminDashboardScreen(
                                                         onClick = { adminViewModel.toggleUserSuspension(user) },
                                                         shape = RoundedCornerShape(10.dp),
                                                         colors = ButtonDefaults.outlinedButtonColors(
-                                                            contentColor = if (isBlocked) AbkSuccess else MaterialTheme.colorScheme.error
+                                                            contentColor = if (isBlocked) MidadSuccess else MaterialTheme.colorScheme.error
                                                         )
                                                     ) {
                                                         Icon(
@@ -550,7 +550,7 @@ private fun KpiPill(label: String, value: String) {
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(value, style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold), color = AbkNavyDeep)
+            Text(value, style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold), color = MaterialTheme.colorScheme.primary)
             Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
@@ -582,7 +582,7 @@ private fun AdminItemCard(
                     InfoPill(
                         text = badge,
                         containerColor = if (badgeSuccess) Color(0xFFD1FAE5) else MaterialTheme.colorScheme.surfaceVariant,
-                        contentColor = if (badgeSuccess) AbkSuccess else MaterialTheme.colorScheme.onSurfaceVariant
+                        contentColor = if (badgeSuccess) MidadSuccess else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
                 Text(title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -598,7 +598,7 @@ private fun AdminItemCard(
             }
             extraAction?.invoke()
             IconButton(onClick = onEdit) {
-                Icon(Icons.Filled.Edit, contentDescription = "تعديل", tint = AbkNavyDeep)
+                Icon(Icons.Filled.Edit, contentDescription = "تعديل", tint = MaterialTheme.colorScheme.primary)
             }
             IconButton(onClick = onDelete) {
                 Icon(Icons.Filled.Delete, contentDescription = "حذف", tint = MaterialTheme.colorScheme.error)

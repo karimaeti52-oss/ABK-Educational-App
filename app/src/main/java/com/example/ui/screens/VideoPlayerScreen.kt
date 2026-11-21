@@ -261,7 +261,7 @@ fun VideoPlayerScreen(
                     .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(10.dp))
                     .testTag("exit_fullscreen_button")
             ) {
-                Icon(Icons.Filled.FullscreenExit, contentDescription = "العودة إلى ABK", tint = Color.White)
+                Icon(Icons.Filled.FullscreenExit, contentDescription = "العودة إلى مداد التعليمية", tint = Color.White)
             }
         }
         return
@@ -495,6 +495,10 @@ private fun ExoVideoPlayerView(
         }
     }
 
+    var lastPersistedPosMs by remember(videoUrl) { mutableLongStateOf(startPositionMs) }
+    var lastPersistTimeMs by remember(videoUrl) { mutableLongStateOf(0L) }
+    var lastPersistedDone by remember(videoUrl) { mutableStateOf(false) }
+
     LaunchedEffect(player) {
         while (true) {
             delay(3500L)
@@ -503,7 +507,16 @@ private fun ExoVideoPlayerView(
             val isCompleted = dur > 0L && pos >= (dur * 0.9f).toLong()
             onPositionUpdate(pos, dur, isCompleted)
             if (player.isPlaying) {
-                onPersistProgress(pos, dur, isCompleted)
+                val now = android.os.SystemClock.elapsedRealtime()
+                val elapsed = now - lastPersistTimeMs
+                val seekJumped = kotlin.math.abs(pos - lastPersistedPosMs) >= 15_000L
+                val newlyCompleted = isCompleted && !lastPersistedDone
+                if (elapsed >= 20_000L || seekJumped || newlyCompleted) {
+                    lastPersistedPosMs = pos
+                    lastPersistTimeMs = now
+                    if (isCompleted) lastPersistedDone = true
+                    onPersistProgress(pos, dur, isCompleted)
+                }
             }
         }
     }
@@ -513,6 +526,9 @@ private fun ExoVideoPlayerView(
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_ENDED) {
                     val dur = player.duration.coerceAtLeast(0L)
+                    lastPersistedPosMs = dur
+                    lastPersistTimeMs = android.os.SystemClock.elapsedRealtime()
+                    lastPersistedDone = true
                     onPositionUpdate(dur, dur, true)
                     onPersistProgress(dur, dur, true)
                 }
@@ -523,7 +539,9 @@ private fun ExoVideoPlayerView(
             val pos = player.currentPosition.coerceAtLeast(0L)
             val dur = player.duration.coerceAtLeast(0L)
             val isCompleted = dur > 0L && pos >= (dur * 0.9f).toLong()
-            onPersistProgress(pos, dur, isCompleted)
+            if (pos > 0L || isCompleted) {
+                onPersistProgress(pos, dur, isCompleted)
+            }
             player.removeListener(listener)
             player.release()
         }
@@ -566,6 +584,9 @@ private fun YouTubeInAppPlayerView(
     var latestPos by remember { mutableLongStateOf(startPositionMs) }
     var latestDur by remember { mutableLongStateOf(0L) }
     var latestDone by remember { mutableStateOf(false) }
+    var lastSavedPos by remember(videoId) { mutableLongStateOf(startPositionMs) }
+    var lastSaveElapsedMs by remember(videoId) { mutableLongStateOf(0L) }
+    var lastSavedDone by remember(videoId) { mutableStateOf(false) }
     var playerErrorCode by remember(videoId) { mutableStateOf<Int?>(null) }
     var reloadNonce by remember(videoId) { mutableIntStateOf(0) }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
@@ -687,7 +708,9 @@ private fun YouTubeInAppPlayerView(
     DisposableEffect(videoId) {
         onDispose {
             onHideCustomFullscreen()
-            onPersistProgress(latestPos, latestDur, latestDone)
+            if (latestPos > 0L || latestDone) {
+                onPersistProgress(latestPos, latestDur, latestDone)
+            }
         }
     }
 
@@ -696,6 +719,10 @@ private fun YouTubeInAppPlayerView(
             WebView(ctx).apply {
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
+                settings.allowFileAccess = false
+                settings.allowContentAccess = false
+                @Suppress("DEPRECATION")
+                settings.setGeolocationEnabled(false)
                 settings.mediaPlaybackRequiresUserGesture = true
                 settings.loadWithOverviewMode = true
                 settings.useWideViewPort = true
@@ -718,7 +745,6 @@ private fun YouTubeInAppPlayerView(
                         isUserGesture: Boolean,
                         resultMsg: Message?
                     ): Boolean {
-                        // Never open external browser/YouTube popups from inside ABK
                         return false
                     }
                 }
@@ -726,9 +752,9 @@ private fun YouTubeInAppPlayerView(
                     override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                         val urlStr = request?.url?.toString().orEmpty()
                         val host = request?.url?.host?.lowercase().orEmpty()
-                        val isEmbedFrame = (host.contains("youtube.com") || host.contains("youtube-nocookie.com")) &&
+                        val isEmbedFrame = urlStr.startsWith("https://", ignoreCase = true) &&
+                            (host.contains("youtube.com") || host.contains("youtube-nocookie.com")) &&
                             (urlStr.contains("/embed/") || urlStr.contains("/iframe_api"))
-                        // Block navigating away from the embedded player to YouTube app/website
                         return !isEmbedFrame
                     }
                 }
@@ -740,8 +766,17 @@ private fun YouTubeInAppPlayerView(
                             latestDur = durMs
                             if (completed) latestDone = true
                             onPositionUpdate(posMs, durMs, completed)
-                            if (posMs > 0L) {
-                                onPersistProgress(posMs, durMs, completed)
+                            if (posMs > 0L || completed) {
+                                val now = android.os.SystemClock.elapsedRealtime()
+                                val elapsed = now - lastSaveElapsedMs
+                                val seekJumped = kotlin.math.abs(posMs - lastSavedPos) >= 15_000L
+                                val newlyCompleted = completed && !lastSavedDone
+                                if (elapsed >= 20_000L || seekJumped || newlyCompleted) {
+                                    lastSavedPos = posMs
+                                    lastSaveElapsedMs = now
+                                    if (completed) lastSavedDone = true
+                                    onPersistProgress(posMs, durMs, completed)
+                                }
                             }
                         }
                     }
@@ -774,6 +809,32 @@ private fun ExternalVideoWebView(
     videoUrl: String,
     onMarkStarted: () -> Unit
 ) {
+    if (!UrlUtils.isSafeHttpsUrl(videoUrl)) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color(0xFF0F172A))
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Icon(
+                imageVector = Icons.Filled.ErrorOutline,
+                contentDescription = null,
+                tint = Color(0xFFFBBF24),
+                modifier = Modifier.size(36.dp)
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "رابط الفيديو غير صالح أو لا يستخدم بروتوكول HTTPS الآمن.",
+                color = Color.White,
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center
+            )
+        }
+        return
+    }
+
     LaunchedEffect(videoUrl) {
         onMarkStarted()
     }
@@ -782,10 +843,14 @@ private fun ExternalVideoWebView(
             WebView(ctx).apply {
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
+                settings.allowFileAccess = false
+                settings.allowContentAccess = false
+                @Suppress("DEPRECATION")
+                settings.setGeolocationEnabled(false)
                 settings.mediaPlaybackRequiresUserGesture = true
                 settings.setSupportMultipleWindows(true)
                 settings.javaScriptCanOpenWindowsAutomatically = false
-                settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
                 webChromeClient = object : WebChromeClient() {
                     override fun onCreateWindow(
                         view: WebView?,
@@ -797,11 +862,10 @@ private fun ExternalVideoWebView(
                 webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                         val scheme = request?.url?.scheme?.lowercase().orEmpty()
-                        // Strictly block launching external apps (youtube://, vnd.youtube:, intent://, market://)
-                        return scheme != "http" && scheme != "https"
+                        return scheme != "https"
                     }
                 }
-                loadUrl(videoUrl)
+                loadUrl(videoUrl.trim())
             }
         },
         modifier = Modifier.fillMaxSize()

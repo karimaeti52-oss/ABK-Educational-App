@@ -79,6 +79,7 @@ test("Unauthenticated user cannot read or write any collection", async () => {
   await assertFails(unauthDb.collection("materials").where("published", "==", true).get());
   await assertFails(unauthDb.collection("announcements").where("published", "==", true).get());
   await assertFails(unauthDb.collection("platformConfig").doc("main").get());
+  await assertFails(unauthDb.collection("appConfig").doc("android_release").get());
   await assertFails(unauthDb.collection("users").doc(STUDENT_ALICE).get());
 });
 
@@ -847,4 +848,87 @@ test("BANNED and SUSPENDED users are blocked from reading content or writing stu
     })
   );
 });
+
+test("appConfig/android_release enforces admin HTTPS+SHA256 validation and active student read-only access", async () => {
+  const admDb = adminContext().firestore();
+  const aliceDb = testEnv.authenticatedContext(STUDENT_ALICE, { email: "alice@example.com", email_verified: true }).firestore();
+  const now = new Date(Date.now() - 2000);
+  const validSha256 = "a".repeat(64);
+
+  // Student cannot write release manifest
+  await assertFails(
+    aliceDb.collection("appConfig").doc("android_release").set({
+      versionCode: 2,
+      versionName: "1.1.0",
+      apkUrl: "https://github.com/org/repo/releases/download/v1.1.0/midad.apk",
+      sha256: validSha256,
+      mandatory: false,
+      updatedBy: STUDENT_ALICE,
+      updatedAt: now,
+    })
+  );
+
+  // Admin cannot publish insecure HTTP URL
+  await assertFails(
+    admDb.collection("appConfig").doc("android_release").set({
+      versionCode: 2,
+      versionName: "1.1.0",
+      apkUrl: "http://example.com/midad.apk",
+      sha256: validSha256,
+      mandatory: false,
+      updatedBy: ADMIN_UID,
+      updatedAt: now,
+    })
+  );
+
+  // Admin cannot publish invalid SHA-256 checksum
+  await assertFails(
+    admDb.collection("appConfig").doc("android_release").set({
+      versionCode: 2,
+      versionName: "1.1.0",
+      apkUrl: "https://github.com/org/repo/releases/download/v1.1.0/midad.apk",
+      sha256: "abc123",
+      mandatory: false,
+      updatedBy: ADMIN_UID,
+      updatedAt: now,
+    })
+  );
+
+  // Admin publishes valid HTTPS + SHA-256 release manifest
+  await assertSucceeds(
+    admDb.collection("appConfig").doc("android_release").set({
+      versionCode: 3,
+      versionName: "1.2.0",
+      minSupportedVersionCode: 1,
+      apkUrl: "https://github.com/org/repo/releases/download/v1.2.0/midad-1.2.0.apk",
+      sha256: validSha256,
+      fileSizeBytes: 24500000,
+      releaseNotes: "تحديث مداد التعليمية مع تحسينات الأداء والأمان",
+      mandatory: true,
+      publishedAtMillis: Date.now() - 2000,
+      updatedBy: ADMIN_UID,
+      updatedAt: now,
+    })
+  );
+
+  // Active student reads android_release, cannot delete it
+  await assertSucceeds(aliceDb.collection("appConfig").doc("android_release").get());
+  await assertFails(aliceDb.collection("appConfig").doc("android_release").delete());
+  await assertFails(admDb.collection("appConfig").doc("android_release").delete());
+
+  // Banned student is denied reading android_release
+  await assertSucceeds(
+    admDb.collection("users").doc(STUDENT_ALICE).set({
+      userId: STUDENT_ALICE,
+      displayName: "Alice",
+      email: "alice@example.com",
+      role: "STUDENT",
+      accountStatus: "BANNED",
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+  await assertFails(aliceDb.collection("appConfig").doc("android_release").get());
+});
+
 

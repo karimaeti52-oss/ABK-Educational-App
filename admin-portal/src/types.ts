@@ -263,6 +263,20 @@ export interface PlatformConfig {
   updatedAt?: unknown;
 }
 
+export interface AndroidReleaseManifest {
+  versionCode: number;
+  versionName: string;
+  minSupportedVersionCode?: number;
+  apkUrl: string;
+  sha256: string;
+  fileSizeBytes?: number;
+  releaseNotes: string;
+  mandatory: boolean;
+  publishedAtMillis?: number;
+  updatedBy?: string;
+  updatedAt?: unknown;
+}
+
 export interface StudyMaterial {
   id: string;
   subjectId: string;

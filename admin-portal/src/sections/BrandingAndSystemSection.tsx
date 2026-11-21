@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Check,
   Download,
@@ -6,6 +6,7 @@ import {
   Plus,
   RotateCcw,
   Save,
+  Smartphone,
   Upload,
 } from 'lucide-react';
 import {
@@ -22,18 +23,22 @@ import {
   StatusSelector,
 } from '../components/CommonUi';
 import {
+  DEFAULT_ANDROID_RELEASE,
   DEFAULT_PLATFORM_CONFIG,
   exportClientSnapshotJson,
   hardDeleteEntity,
   normalizeStatusFlags,
   restoreEntity,
+  saveAndroidRelease,
   savePlatformConfig,
   softDeleteEntity,
+  subscribeAndroidRelease,
   updateEntityStatus,
   upsertEntity,
   type CmsStore,
 } from '../services/firestoreCms';
 import type {
+  AndroidReleaseManifest,
   Announcement,
   AnnouncementCategory,
   BottomNavConfigItem,
@@ -174,13 +179,13 @@ export function BrandingSection({
               <div className="flex items-center gap-2">
                 <input
                   type="color"
-                  value={draft.accentColorHex || '#38BDF8'}
+                  value={draft.accentColorHex || '#C7A15A'}
                   onChange={(e) => setDraft({ ...draft, accentColorHex: e.target.value })}
                   className="h-10 w-12 cursor-pointer rounded-lg border border-slate-200"
                 />
                 <input
                   dir="ltr"
-                  value={draft.accentColorHex || '#38BDF8'}
+                  value={draft.accentColorHex || '#C7A15A'}
                   onChange={(e) => setDraft({ ...draft, accentColorHex: e.target.value })}
                   className="w-full rounded-xl border border-slate-200 px-2.5 py-2 text-left text-xs"
                 />
@@ -258,10 +263,10 @@ export function BrandingSection({
                   <img src={draft.logoUrl} alt="Logo" className="h-8 w-8 rounded-lg object-cover" />
                 ) : (
                   <div
-                    className="flex h-8 w-8 items-center justify-center rounded-lg text-xs font-bold text-white"
+                    className="flex h-8 w-8 items-center justify-center rounded-lg text-[10px] font-bold text-white"
                     style={{ backgroundColor: draft.primaryColorHex }}
                   >
-                    ABK
+                    مداد
                   </div>
                 )}
                 <div>
@@ -541,7 +546,7 @@ export function BackupsSection({
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `abk-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      a.download = `midad-backup-${new Date().toISOString().slice(0, 10)}.json`;
       a.click();
       URL.revokeObjectURL(url);
       onToast('تم تصدير النسخة الاحتياطية الكاملة بنجاح');
@@ -645,10 +650,32 @@ export function PlatformSettingsSection({
   const [customKey, setCustomKey] = useState('');
   const [customLabel, setCustomLabel] = useState('');
   const [customDesc, setCustomDesc] = useState('');
+  const [release, setRelease] = useState<AndroidReleaseManifest>(DEFAULT_ANDROID_RELEASE);
+  const [publishingRelease, setPublishingRelease] = useState(false);
+
+  useEffect(() => {
+    const unsub = subscribeAndroidRelease((manifest) => {
+      setRelease(manifest);
+    });
+    return () => unsub();
+  }, []);
 
   async function saveToggles() {
     await savePlatformConfig(cfg, staff);
     onToast('تم حفظ إعدادات المنصة العامة');
+  }
+
+  async function handlePublishAndroidRelease(e: React.FormEvent) {
+    e.preventDefault();
+    setPublishingRelease(true);
+    try {
+      await saveAndroidRelease(release, staff);
+      onToast(`تم نشر بيانات تحديث تطبيق مداد v${release.versionName} (${release.versionCode}) بنجاح`);
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : 'فشل نشر تحديث التطبيق', true);
+    } finally {
+      setPublishingRelease(false);
+    }
   }
 
   async function addCustomSectionType(e: React.FormEvent) {
@@ -677,8 +704,8 @@ export function PlatformSettingsSection({
   return (
     <div className="space-y-6">
       <SectionHeader
-        title="إعدادات المنصة العامة والأقسام المخصصة"
-        subtitle="التحكم في خصائص تطبيق الطلاب، وضع الصيانة، وتعريف أقسام محتوى مخصصة للأساتذة."
+        title="إعدادات المنصة العامة وتحديثات تطبيق Android"
+        subtitle="التحكم في خصائص تطبيق الطلاب، نشر التحديثات داخل التطبيق بأمان، وتعريف أقسام محتوى مخصصة."
       />
 
       <div className="space-y-3 rounded-2xl border border-slate-200 bg-white p-5 text-sm">
@@ -717,15 +744,134 @@ export function PlatformSettingsSection({
         <button
           type="button"
           onClick={saveToggles}
-          className="inline-flex items-center gap-1.5 rounded-xl bg-[#0F294A] px-5 py-2.5 text-xs font-bold text-white"
+          className="inline-flex items-center gap-1.5 rounded-xl bg-[#142A43] px-5 py-2.5 text-xs font-bold text-white"
         >
           <Check className="h-4 w-4" />
           حفظ الإعدادات العامة
         </button>
       </div>
 
+      {/* Over-the-Top In-App Android Release Publisher */}
+      <form onSubmit={handlePublishAndroidRelease} className="space-y-4 rounded-2xl border border-teal-200 bg-white p-5">
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-teal-50 text-[#167D83]">
+            <Smartphone className="h-5 w-5" />
+          </div>
+          <div>
+            <h3 className="font-bold text-[#142A43]">نشر تحديث تطبيق مداد (Android In-App Update)</h3>
+            <p className="text-xs text-slate-500">
+              يُحفظ في <code className="rounded bg-slate-100 px-1">appConfig/android_release</code> مع التحقق من HTTPS وبصمة SHA-256 للحفاظ على بيانات الطلاب دون حذف التطبيق.
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-slate-600">رقم البناء (versionCode) *</label>
+            <input
+              type="number"
+              min={1}
+              required
+              dir="ltr"
+              value={release.versionCode}
+              onChange={(e) => setRelease({ ...release, versionCode: Number(e.target.value) })}
+              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-left text-sm"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-slate-600">اسم الإصدار (versionName) *</label>
+            <input
+              required
+              dir="ltr"
+              value={release.versionName}
+              onChange={(e) => setRelease({ ...release, versionName: e.target.value })}
+              placeholder="1.1.0"
+              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-left text-sm"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-slate-600">أقل إصدار مدعوم (إلزامي تحته)</label>
+            <input
+              type="number"
+              min={0}
+              dir="ltr"
+              value={release.minSupportedVersionCode ?? 0}
+              onChange={(e) => setRelease({ ...release, minSupportedVersionCode: Number(e.target.value) })}
+              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-left text-sm"
+            />
+          </div>
+
+          <div className="md:col-span-2">
+            <label className="mb-1 block text-xs font-semibold text-slate-600">رابط تحميل APK (HTTPS فقط) *</label>
+            <input
+              type="url"
+              required
+              dir="ltr"
+              value={release.apkUrl}
+              onChange={(e) => setRelease({ ...release, apkUrl: e.target.value })}
+              placeholder="https://github.com/org/repo/releases/download/v1.1.0/midad-release.apk"
+              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-left text-sm"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-slate-600">حجم الملف بالبايت (اختياري)</label>
+            <input
+              type="number"
+              min={0}
+              dir="ltr"
+              value={release.fileSizeBytes ?? 0}
+              onChange={(e) => setRelease({ ...release, fileSizeBytes: Number(e.target.value) })}
+              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-left text-sm"
+            />
+          </div>
+
+          <div className="md:col-span-3">
+            <label className="mb-1 block text-xs font-semibold text-slate-600">بصمة SHA-256 لملف APK (64 خانة hex) *</label>
+            <input
+              required
+              dir="ltr"
+              pattern="[a-fA-F0-9]{64}"
+              value={release.sha256}
+              onChange={(e) => setRelease({ ...release, sha256: e.target.value })}
+              placeholder="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-left font-mono text-xs"
+            />
+          </div>
+
+          <div className="md:col-span-3">
+            <label className="mb-1 block text-xs font-semibold text-slate-600">ملاحظات الإصدار للطلاب</label>
+            <textarea
+              rows={3}
+              value={release.releaseNotes}
+              onChange={(e) => setRelease({ ...release, releaseNotes: e.target.value })}
+              placeholder="تحسين الأداء، دعم الوضع الليلي، وإصلاحات..."
+              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+            />
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <label className="inline-flex items-center gap-2 text-xs font-bold text-amber-900">
+            <input
+              type="checkbox"
+              checked={release.mandatory}
+              onChange={(e) => setRelease({ ...release, mandatory: e.target.checked })}
+            />
+            تحديث إجباري لجميع الطلاب على هذا الإصدار
+          </label>
+          <button
+            type="submit"
+            disabled={publishingRelease}
+            className="inline-flex items-center gap-1.5 rounded-xl bg-[#167D83] px-5 py-2.5 text-xs font-bold text-white"
+          >
+            <Save className="h-4 w-4" />
+            {publishingRelease ? 'جاري النشر...' : 'نشر إشعار التحديث للتطبيق'}
+          </button>
+        </div>
+      </form>
+
       <form onSubmit={addCustomSectionType} className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5">
-        <h3 className="font-bold text-[#0F294A]">أنواع الأقسام المخصصة داخل الدروس (Custom Sections)</h3>
+        <h3 className="font-bold text-[#142A43]">أنواع الأقسام المخصصة داخل الدروس (Custom Sections)</h3>
         <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
           <input
             required

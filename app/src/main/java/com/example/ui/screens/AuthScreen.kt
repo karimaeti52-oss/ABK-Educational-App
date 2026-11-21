@@ -3,6 +3,7 @@ package com.example.ui.screens
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -62,10 +63,10 @@ import com.example.R
 import com.example.data.firebase.attemptAutoSignIn
 import com.example.data.firebase.onGoogleSignInClicked
 import com.example.data.model.AccountStatus
-import com.example.ui.theme.AbkNavyDeep
-import com.example.ui.theme.AbkSkyContainer
-import com.example.ui.theme.AbkSkyPrimary
-
+import com.example.ui.components.MidadEmblem
+import com.example.ui.theme.MidadGold
+import com.example.ui.theme.MidadNavyDeep
+import com.example.ui.theme.MidadSuccess
 import com.google.firebase.auth.FirebaseUser
 
 @Composable
@@ -107,14 +108,18 @@ fun AuthScreen(
         )
     }
 
+    val backgroundGradient = Brush.verticalGradient(
+        listOf(
+            MaterialTheme.colorScheme.background,
+            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+            MaterialTheme.colorScheme.background
+        )
+    )
+
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    listOf(Color.White, AbkSkyContainer.copy(alpha = 0.55f), Color.White)
-                )
-            )
+            .background(backgroundGradient)
             .safeDrawingPadding()
             .padding(20.dp),
         contentAlignment = Alignment.Center
@@ -130,31 +135,28 @@ fun AuthScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Image(
-                    painter = painterResource(id = R.drawable.abk_app_icon),
-                    contentDescription = "شعار ABK",
+                MidadEmblem(
                     modifier = Modifier
-                        .size(56.dp)
-                        .clip(RoundedCornerShape(16.dp)),
-                    contentScale = ContentScale.Crop
+                        .size(60.dp)
+                        .border(1.5.dp, MidadGold.copy(alpha = 0.55f), RoundedCornerShape(16.dp))
                 )
                 Column {
                     Text(
-                        text = "ABK",
-                        style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Bold),
-                        color = AbkNavyDeep
+                        text = stringResource(R.string.app_name),
+                        style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.primary
                     )
                     Text(
-                        text = stringResource(R.string.platform_full_name),
-                        style = MaterialTheme.typography.titleSmall,
-                        color = AbkSkyPrimary
+                        text = stringResource(R.string.platform_tagline),
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.secondary
                     )
                 }
             }
 
             Image(
-                painter = painterResource(id = R.drawable.img_abk_hero),
-                contentDescription = "منصة ABK التعليمية",
+                painter = painterResource(id = R.drawable.img_midad_hero),
+                contentDescription = stringResource(R.string.app_name),
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(190.dp)
@@ -165,7 +167,7 @@ fun AuthScreen(
             Text(
                 text = "تعلّم بوضوح، وتابع دروسك وملفاتك في أي وقت",
                 style = MaterialTheme.typography.headlineSmall,
-                color = AbkNavyDeep,
+                color = MaterialTheme.colorScheme.onBackground,
                 textAlign = TextAlign.Center
             )
 
@@ -244,7 +246,10 @@ fun AuthScreen(
                     .height(54.dp)
                     .testTag("google_sign_in_button"),
                 shape = RoundedCornerShape(16.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = AbkNavyDeep)
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MidadNavyDeep,
+                    contentColor = Color.White
+                )
             ) {
                 if (isLoading || isAttemptingSilent) {
                     CircularProgressIndicator(
@@ -284,7 +289,7 @@ private fun FeatureRow(icon: ImageVector, text: String) {
         Icon(
             imageVector = icon,
             contentDescription = null,
-            tint = AbkSkyPrimary,
+            tint = MaterialTheme.colorScheme.secondary,
             modifier = Modifier.size(22.dp)
         )
         Text(
@@ -296,7 +301,7 @@ private fun FeatureRow(icon: ImageVector, text: String) {
         Icon(
             imageVector = Icons.Filled.CheckCircle,
             contentDescription = null,
-            tint = Color(0xFF059669),
+            tint = MidadSuccess,
             modifier = Modifier.size(16.dp)
         )
     }

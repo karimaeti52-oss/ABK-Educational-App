@@ -14,63 +14,70 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.example.data.model.PlatformConfig
+import com.example.data.model.resolvedForMidad
 
 private val LightColorScheme = lightColorScheme(
-    primary = AbkNavyDeep,
-    onPrimary = AbkWhite,
-    primaryContainer = AbkSkyContainer,
-    onPrimaryContainer = AbkNavyOnContainer,
-    secondary = AbkSkyPrimary,
-    onSecondary = AbkWhite,
-    secondaryContainer = Color(0xFFBAE6FD),
-    onSecondaryContainer = AbkNavyDeep,
-    tertiary = AbkNavyPrimary,
-    onTertiary = AbkWhite,
-    background = AbkWhite,
-    onBackground = AbkTextPrimaryLight,
-    surface = AbkWhite,
-    onSurface = AbkTextPrimaryLight,
-    surfaceVariant = AbkSurfaceVariantLight,
-    onSurfaceVariant = AbkTextSecondaryLight,
-    outline = AbkBorderLight,
-    outlineVariant = Color(0xFFF1F5F9),
-    error = AbkError,
-    onError = AbkWhite,
-    errorContainer = AbkErrorContainer,
+    primary = MidadNavyDeep,
+    onPrimary = MidadWhite,
+    primaryContainer = MidadTurquoiseContainer,
+    onPrimaryContainer = MidadNavyDeep,
+    secondary = MidadTurquoise,
+    onSecondary = MidadWhite,
+    secondaryContainer = MidadGoldContainer,
+    onSecondaryContainer = MidadGoldOnContainer,
+    tertiary = MidadGold,
+    onTertiary = MidadNavyDeep,
+    tertiaryContainer = MidadIvory,
+    onTertiaryContainer = MidadNavyDeep,
+    background = MidadBackgroundLight,
+    onBackground = MidadTextPrimaryLight,
+    surface = MidadWhite,
+    onSurface = MidadTextPrimaryLight,
+    surfaceVariant = MidadSurfaceVariantLight,
+    onSurfaceVariant = MidadTextSecondaryLight,
+    outline = MidadBorderLight,
+    outlineVariant = MidadIvory,
+    error = MidadError,
+    onError = MidadWhite,
+    errorContainer = MidadErrorContainer,
     onErrorContainer = Color(0xFF7F1D1D)
 )
 
 private val DarkColorScheme = darkColorScheme(
-    primary = AbkSkyLight,
-    onPrimary = AbkNavyDeep,
-    primaryContainer = AbkNavyPrimary,
-    onPrimaryContainer = AbkSkyContainer,
-    secondary = AbkSkyPrimary,
-    onSecondary = AbkNavyDeep,
-    secondaryContainer = AbkSurfaceVariantDark,
-    onSecondaryContainer = AbkSkyLight,
-    tertiary = AbkSkyLight,
-    onTertiary = AbkNavyDeep,
-    background = AbkBackgroundDark,
-    onBackground = AbkTextPrimaryDark,
-    surface = AbkSurfaceDark,
-    onSurface = AbkTextPrimaryDark,
-    surfaceVariant = AbkSurfaceVariantDark,
-    onSurfaceVariant = AbkTextSecondaryDark,
-    outline = Color(0xFF1E3A5F),
-    outlineVariant = Color(0xFF152946),
+    primary = MidadGoldLight,
+    onPrimary = MidadNavyDeep,
+    primaryContainer = MidadNavyPrimary,
+    onPrimaryContainer = MidadIvory,
+    secondary = MidadTurquoiseLight,
+    onSecondary = MidadBackgroundDark,
+    secondaryContainer = MidadSurfaceVariantDark,
+    onSecondaryContainer = MidadTurquoiseContainer,
+    tertiary = MidadGold,
+    onTertiary = MidadNavyDeep,
+    tertiaryContainer = MidadSurfaceVariantDark,
+    onTertiaryContainer = MidadGoldLight,
+    background = MidadBackgroundDark,
+    onBackground = MidadTextPrimaryDark,
+    surface = MidadSurfaceDark,
+    onSurface = MidadTextPrimaryDark,
+    surfaceVariant = MidadSurfaceVariantDark,
+    onSurfaceVariant = MidadTextSecondaryDark,
+    outline = MidadBorderDark,
+    outlineVariant = MidadSurfaceDark,
     error = Color(0xFFF87171),
     onError = Color(0xFF450A0A),
     errorContainer = Color(0xFF7F1D1D),
     onErrorContainer = Color(0xFFFECACA)
 )
 
-val AbkShapes = Shapes(
+val MidadShapes = Shapes(
     small = RoundedCornerShape(10.dp),
     medium = RoundedCornerShape(16.dp),
     large = RoundedCornerShape(22.dp),
     extraLarge = RoundedCornerShape(28.dp)
 )
+
+val AbkShapes = MidadShapes
 
 fun parseSafeHexColor(hex: String?, fallback: Color): Color {
     val clean = hex?.trim().orEmpty()
@@ -81,31 +88,36 @@ fun parseSafeHexColor(hex: String?, fallback: Color): Color {
 }
 
 @Composable
-fun ABKTheme(
+fun MidadTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     platformConfig: PlatformConfig? = null,
     content: @Composable () -> Unit
 ) {
-    val dynamicPrimary = remember(platformConfig?.primaryColorHex) {
-        parseSafeHexColor(platformConfig?.primaryColorHex, AbkNavyDeep)
+    val resolvedConfig = remember(platformConfig) {
+        platformConfig?.resolvedForMidad()
     }
-    val dynamicSecondary = remember(platformConfig?.secondaryColorHex) {
-        parseSafeHexColor(platformConfig?.secondaryColorHex, AbkSkyPrimary)
+    val dynamicPrimary = remember(resolvedConfig?.primaryColorHex) {
+        parseSafeHexColor(resolvedConfig?.primaryColorHex, MidadNavyDeep)
     }
-    val dynamicAccent = remember(platformConfig?.accentColorHex) {
-        parseSafeHexColor(platformConfig?.accentColorHex, AbkSkyLight)
+    val dynamicSecondary = remember(resolvedConfig?.secondaryColorHex) {
+        parseSafeHexColor(resolvedConfig?.secondaryColorHex, MidadTurquoise)
+    }
+    val dynamicAccent = remember(resolvedConfig?.accentColorHex) {
+        parseSafeHexColor(resolvedConfig?.accentColorHex, MidadGold)
     }
 
     val colorScheme = if (darkTheme) {
         DarkColorScheme.copy(
-            primary = dynamicAccent,
-            secondary = dynamicSecondary,
+            primary = MidadTurquoiseLight,
+            secondary = dynamicAccent,
+            tertiary = MidadGoldLight,
             primaryContainer = dynamicPrimary
         )
     } else {
         LightColorScheme.copy(
             primary = dynamicPrimary,
             secondary = dynamicSecondary,
+            tertiary = dynamicAccent,
             onPrimaryContainer = dynamicPrimary
         )
     }
@@ -113,9 +125,20 @@ fun ABKTheme(
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
         MaterialTheme(
             colorScheme = colorScheme,
-            typography = AbkTypography,
-            shapes = AbkShapes,
+            typography = MidadTypography,
+            shapes = MidadShapes,
             content = content
         )
     }
 }
+
+@Composable
+fun ABKTheme(
+    darkTheme: Boolean = isSystemInDarkTheme(),
+    platformConfig: PlatformConfig? = null,
+    content: @Composable () -> Unit
+) = MidadTheme(
+    darkTheme = darkTheme,
+    platformConfig = platformConfig,
+    content = content
+)

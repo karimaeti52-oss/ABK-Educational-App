@@ -118,7 +118,7 @@ fun SubjectsScreen(
                     )
                 } else {
                     LazyVerticalGrid(
-                        columns = GridCells.Adaptive(minSize = 164.dp),
+                        columns = GridCells.Adaptive(minSize = 168.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                         contentPadding = PaddingValues(bottom = 24.dp)
@@ -344,7 +344,7 @@ fun SubjectDetailScreen(
                                 label = { Text("الكل") },
                                 colors = FilterChipDefaults.filterChipColors(
                                     selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                    selectedLabelColor = Color.White
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary
                                 )
                             )
                         }
@@ -357,7 +357,7 @@ fun SubjectDetailScreen(
                                 label = { Text(type.labelAr) },
                                 colors = FilterChipDefaults.filterChipColors(
                                     selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                    selectedLabelColor = Color.White
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary
                                 )
                             )
                         }

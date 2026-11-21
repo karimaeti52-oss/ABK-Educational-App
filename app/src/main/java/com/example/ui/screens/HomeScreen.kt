@@ -62,6 +62,7 @@ import com.example.data.model.StudyMaterial
 import com.example.data.model.Subject
 import com.example.data.model.UiState
 import com.example.data.model.UserProfile
+import com.example.data.model.resolvedForMidad
 import com.example.ui.components.AbkEmptyState
 import com.example.ui.components.AbkLogoMark
 import com.example.ui.components.AbkSearchBar
@@ -72,7 +73,10 @@ import com.example.ui.components.MaterialCard
 import com.example.ui.components.SectionHeader
 import com.example.ui.components.SubjectCard
 import com.example.ui.components.TeacherShowcaseCard
-import com.example.ui.theme.AbkWarning
+import com.example.ui.theme.MidadGoldLight
+import com.example.ui.theme.MidadNavyDeep
+import com.example.ui.theme.MidadTurquoise
+import com.example.ui.theme.MidadWarning
 import com.example.util.PdfCacheManager
 import com.example.util.UrlUtils
 import com.example.viewmodel.SearchResults
@@ -128,6 +132,7 @@ fun HomeScreen(
         ?: progressList.firstOrNull()
     val lastWatchedLesson = lastWatchedProgress?.let { prog -> lessons.firstOrNull { it.id == prog.lessonId } }
 
+    val resolvedConfig = remember(platformConfig) { platformConfig.resolvedForMidad() }
     val primaryColor = MaterialTheme.colorScheme.primary
     val secondaryColor = MaterialTheme.colorScheme.secondary
 
@@ -176,12 +181,12 @@ fun HomeScreen(
         }
 
         // Optional Maintenance Notice Banner controlled from Admin Portal
-        if (platformConfig.maintenanceMode) {
+        if (resolvedConfig.maintenanceMode) {
             item {
                 Surface(
                     shape = RoundedCornerShape(14.dp),
-                    color = AbkWarning.copy(alpha = 0.14f),
-                    border = BorderStroke(1.dp, AbkWarning.copy(alpha = 0.45f)),
+                    color = MidadWarning.copy(alpha = 0.14f),
+                    border = BorderStroke(1.dp, MidadWarning.copy(alpha = 0.45f)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
@@ -189,7 +194,7 @@ fun HomeScreen(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(Icons.Filled.Info, contentDescription = null, tint = AbkWarning)
+                        Icon(Icons.Filled.Info, contentDescription = null, tint = MidadWarning)
                         Text(
                             text = "تنبيه: تجري حالياً أعمال صيانة وتحديث لمحتوى المنصة.",
                             style = MaterialTheme.typography.labelMedium,
@@ -205,28 +210,29 @@ fun HomeScreen(
             val studentName = userProfile?.displayName?.takeIf { it.isNotBlank() } ?: "طالبنا العزيز"
             Card(
                 shape = RoundedCornerShape(22.dp),
-                colors = CardDefaults.cardColors(containerColor = primaryColor),
+                colors = CardDefaults.cardColors(containerColor = MidadNavyDeep),
+                border = BorderStroke(1.dp, MidadGoldLight.copy(alpha = 0.25f)),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Box(modifier = Modifier.fillMaxWidth()) {
-                    if (!platformConfig.heroBannerUrl.isNullOrBlank()) {
+                    if (!resolvedConfig.heroBannerUrl.isNullOrBlank()) {
                         AsyncImage(
-                            model = platformConfig.heroBannerUrl,
+                            model = resolvedConfig.heroBannerUrl,
                             contentDescription = null,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(152.dp),
+                                .height(160.dp),
                             contentScale = ContentScale.Crop,
                             alpha = 0.28f,
-                            error = painterResource(id = R.drawable.img_abk_hero)
+                            error = painterResource(id = R.drawable.img_midad_hero)
                         )
                     } else {
                         Image(
-                            painter = painterResource(id = R.drawable.img_abk_hero),
+                            painter = painterResource(id = R.drawable.img_midad_hero),
                             contentDescription = null,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(152.dp),
+                                .height(160.dp),
                             contentScale = ContentScale.Crop,
                             alpha = 0.24f
                         )
@@ -234,10 +240,10 @@ fun HomeScreen(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(152.dp)
+                            .height(160.dp)
                             .background(
                                 Brush.horizontalGradient(
-                                    listOf(primaryColor.copy(alpha = 0.94f), secondaryColor.copy(alpha = 0.72f))
+                                    listOf(MidadNavyDeep.copy(alpha = 0.94f), MidadTurquoise.copy(alpha = 0.78f))
                                 )
                             )
                     )
@@ -253,7 +259,7 @@ fun HomeScreen(
                             color = Color.White
                         )
                         Text(
-                            text = platformConfig.welcomeTitle.ifBlank { platformConfig.welcomeSubtitle },
+                            text = resolvedConfig.welcomeTitle.ifBlank { resolvedConfig.welcomeSubtitle },
                             style = MaterialTheme.typography.bodyMedium,
                             color = Color.White.copy(alpha = 0.92f),
                             maxLines = 2,
@@ -449,7 +455,7 @@ fun HomeScreen(
                                         .height(6.dp)
                                         .clip(RoundedCornerShape(3.dp)),
                                     color = secondaryColor,
-                                    trackColor = Color.White
+                                    trackColor = MaterialTheme.colorScheme.surface
                                 )
                             }
                         }
@@ -500,7 +506,7 @@ fun HomeScreen(
                             AbkEmptyState(
                                 title = "لم تتم إضافة مواد دراسية بعد",
                                 subtitle = if (isAdmin) "يمكنك إضافة المراحل والمواد والشروحات من لوحة الإدارة."
-                                else "سيقوم فريق ${platformConfig.platformName} بنشر المواد الدراسية قريباً."
+                                else "سيقوم فريق ${resolvedConfig.platformName} بنشر المواد الدراسية قريباً."
                             )
                         }
                     } else {

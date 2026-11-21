@@ -16,8 +16,8 @@ android {
     applicationId = "com.aistudio.abkedu.kpmzqx"
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+    versionCode = 2
+    versionName = "1.1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -43,7 +43,8 @@ android {
   buildTypes {
     release {
       isCrunchPngs = false
-      isMinifyEnabled = false
+      isMinifyEnabled = true
+      isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       // Do not remove or modify this signingConfig assignment. It is necessary for Android apps in
       // AI Studio.
@@ -93,6 +94,8 @@ dependencies {
   implementation(libs.androidx.compose.ui.graphics)
   implementation(libs.androidx.compose.ui.tooling.preview)
   implementation(libs.androidx.core.ktx)
+  implementation(libs.androidx.core.splashscreen)
+  implementation(libs.androidx.datastore.preferences)
   implementation(libs.androidx.lifecycle.runtime.compose)
   implementation(libs.androidx.lifecycle.runtime.ktx)
   implementation(libs.androidx.lifecycle.viewmodel.compose)
@@ -115,7 +118,6 @@ dependencies {
   // implementation(libs.androidx.camera.core)
   // implementation(libs.androidx.camera.lifecycle)
   // implementation(libs.androidx.camera.view)
-  // implementation(libs.androidx.datastore.preferences)
   // implementation(libs.androidx.room.ktx)
   // implementation(libs.androidx.room.runtime)
   // implementation(libs.converter.moshi)

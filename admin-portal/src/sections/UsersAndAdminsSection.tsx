@@ -120,7 +120,7 @@ export function StudentsSection({
     return store.users.map((u) => ({
       uid: u.userId,
       email: u.email,
-      displayName: u.displayName || 'طالب ABK',
+      displayName: u.displayName || 'طالب مداد',
       photoUrl: u.photoUrl || null,
       disabled: u.accountStatus === 'SUSPENDED' || u.accountStatus === 'BANNED',
       emailVerified: true,

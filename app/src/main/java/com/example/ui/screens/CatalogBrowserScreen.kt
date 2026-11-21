@@ -134,11 +134,11 @@ fun CatalogBrowserScreen(
                             contentDescription = node.title,
                             modifier = Modifier.fillMaxSize(),
                             contentScale = ContentScale.Crop,
-                            error = painterResource(id = R.drawable.img_abk_hero)
+                            error = painterResource(id = R.drawable.img_midad_hero)
                         )
                     } else {
                         Image(
-                            painter = painterResource(id = R.drawable.img_abk_hero),
+                            painter = painterResource(id = R.drawable.img_midad_hero),
                             contentDescription = node.title,
                             modifier = Modifier.fillMaxSize(),
                             contentScale = ContentScale.Crop

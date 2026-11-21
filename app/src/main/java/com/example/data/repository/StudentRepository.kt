@@ -33,6 +33,9 @@ class StudentRepository(
 
     companion object {
         const val BOOTSTRAPPED_ADMIN_EMAIL = "karimaeti07@gmail.com"
+        const val FAVORITES_LIMIT = 200L
+        const val PROGRESS_LIMIT = 200L
+        const val READ_ANNOUNCEMENTS_LIMIT = 100L
     }
 
     private fun requireUserId(): String =
@@ -45,7 +48,7 @@ class StudentRepository(
             check(uid == user.uid) { "Authenticated user mismatch." }
             val userRef = db.collection("users").document(uid)
             val existingSnap = userRef.get().await()
-            val safeName = (user.displayName?.takeIf { it.isNotBlank() } ?: "طالب ABK").take(100)
+            val safeName = (user.displayName?.takeIf { it.isNotBlank() } ?: "طالب مداد").take(100)
             val safeEmail = (user.email ?: "").take(160)
             val safePhoto = user.photoUrl?.toString()?.take(500)
 
@@ -140,6 +143,7 @@ class StudentRepository(
         val path = "users/$userId/favorites"
         emitAll(
             db.collection("users").document(userId).collection("favorites")
+                .limit(FAVORITES_LIMIT)
                 .snapshots()
                 .map { snapshot ->
                     snapshot.toObjects(
@@ -202,6 +206,7 @@ class StudentRepository(
         val path = "users/$userId/progress"
         emitAll(
             db.collection("users").document(userId).collection("progress")
+                .limit(PROGRESS_LIMIT)
                 .snapshots()
                 .map { snapshot ->
                     snapshot.toObjects(
@@ -235,13 +240,22 @@ class StudentRepository(
             val existing = docRef.get().await()
             if (existing.exists()) {
                 val alreadyCompleted = existing.getBoolean("completed") == true
+                val prevPos = existing.getLong("lastPositionMs") ?: 0L
+                val prevDur = existing.getLong("durationMs") ?: 0L
+                val finalCompleted = completed || alreadyCompleted
+                if (alreadyCompleted == finalCompleted &&
+                    kotlin.math.abs(safePos - prevPos) < 2000L &&
+                    safeDur == prevDur
+                ) {
+                    return Result.success(Unit)
+                }
                 val updatePayload = mutableMapOf<String, Any>(
                     "lessonTitle" to lesson.title.ifBlank { "درس" }.take(140),
                     "subjectId" to lesson.subjectId.take(128),
                     "subjectName" to lesson.subjectName.take(80),
                     "lastPositionMs" to safePos,
                     "durationMs" to safeDur,
-                    "completed" to (completed || alreadyCompleted),
+                    "completed" to finalCompleted,
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
                 lesson.thumbnailUrl?.takeIf { it.isNotBlank() }?.let {
@@ -279,6 +293,7 @@ class StudentRepository(
         val path = "users/$userId/readAnnouncements"
         emitAll(
             db.collection("users").document(userId).collection("readAnnouncements")
+                .limit(READ_ANNOUNCEMENTS_LIMIT)
                 .snapshots()
                 .map { snapshot ->
                     snapshot.documents.map { it.id }.toSet()

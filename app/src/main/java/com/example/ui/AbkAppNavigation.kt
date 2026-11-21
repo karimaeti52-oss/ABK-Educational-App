@@ -2,12 +2,17 @@ package com.example.ui
 
 import android.app.Application
 import android.content.Intent
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bookmarks
 import androidx.compose.material.icons.filled.Home
@@ -25,6 +30,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -38,11 +45,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import androidx.credentials.CredentialManager
 import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -56,6 +65,10 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import coil.Coil
+import coil.ImageLoader
+import coil.disk.DiskCache
+import coil.memory.MemoryCache
 import com.example.R
 import com.example.data.firebase.ensureFirebaseInitialized
 import com.example.data.firebase.signOutUser
@@ -71,6 +84,7 @@ import com.example.data.repository.AbkContentRepository
 import com.example.data.repository.AdminRepository
 import com.example.data.repository.StudentRepository
 import com.example.ui.components.OfflineStatusBanner
+import com.example.ui.components.UpdateDialog
 import com.example.ui.screens.AccountScreen
 import com.example.ui.screens.AuthScreen
 import com.example.ui.screens.CatalogBrowserScreen
@@ -85,7 +99,10 @@ import com.example.ui.screens.SubjectsScreen
 import com.example.ui.screens.SuspendedAccountScreen
 import com.example.ui.screens.VideoPlayerScreen
 import com.example.ui.screens.admin.AdminDashboardScreen
-import com.example.ui.theme.ABKTheme
+import com.example.ui.theme.MidadTheme
+import com.example.ui.theme.ThemePreferenceMode
+import com.example.update.AppUpdateManager
+import com.example.update.AppUpdateState
 import com.example.util.NetworkMonitor
 import com.example.util.NotificationHelper
 import com.example.util.PdfCacheManager
@@ -96,7 +113,10 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.firestoreSettings
+import com.google.firebase.firestore.persistentCacheSettings
 import kotlinx.coroutines.launch
+import java.io.File
 
 object NavRoutes {
     const val HOME = "home"
@@ -139,9 +159,47 @@ private val defaultStudentTabs = listOf(
     BottomTab(NavRoutes.ACCOUNT, "حسابي", Icons.Filled.Person, Icons.Outlined.Person)
 )
 
+@Volatile
+private var coilInitialized = false
+
+@Volatile
+private var firestoreConfigured = false
+
+private fun ensureBoundedCoilImageLoader(appContext: android.content.Context) {
+    if (coilInitialized) return
+    synchronized(NavRoutes) {
+        if (coilInitialized) return
+        val imageLoader = ImageLoader.Builder(appContext)
+            .memoryCache {
+                MemoryCache.Builder(appContext)
+                    .maxSizePercent(0.15)
+                    .build()
+            }
+            .diskCache {
+                DiskCache.Builder()
+                    .directory(File(appContext.cacheDir, "midad_image_cache"))
+                    .maxSizeBytes(40L * 1024L * 1024L)
+                    .build()
+            }
+            .crossfade(true)
+            .build()
+        Coil.setImageLoader(imageLoader)
+        coilInitialized = true
+    }
+}
+
 @Composable
-fun AbkAppNavigation(auth: FirebaseAuth? = null) {
+fun AbkAppNavigation(
+    auth: FirebaseAuth? = null,
+    darkTheme: Boolean = isSystemInDarkTheme(),
+    themeMode: ThemePreferenceMode = ThemePreferenceMode.SYSTEM,
+    onThemeModeChange: (ThemePreferenceMode) -> Unit = {}
+) {
     val context = LocalContext.current
+    LaunchedEffect(context) {
+        ensureBoundedCoilImageLoader(context.applicationContext)
+    }
+
     val resolvedAuth = remember(auth, context) {
         auth ?: if (ensureFirebaseInitialized(context)) {
             runCatching { Firebase.auth }.getOrNull()
@@ -182,17 +240,44 @@ fun AbkAppNavigation(auth: FirebaseAuth? = null) {
         )
     } else {
         key(user.uid) {
-            AuthenticatedAbkApp(firebaseUser = user)
+            AuthenticatedAbkApp(
+                firebaseUser = user,
+                darkTheme = darkTheme,
+                themeMode = themeMode,
+                onThemeModeChange = onThemeModeChange
+            )
         }
     }
 }
 
 @Composable
-private fun AuthenticatedAbkApp(firebaseUser: FirebaseUser) {
+private fun AuthenticatedAbkApp(
+    firebaseUser: FirebaseUser,
+    darkTheme: Boolean,
+    themeMode: ThemePreferenceMode,
+    onThemeModeChange: (ThemePreferenceMode) -> Unit
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val credentialManager = remember {
         runCatching { CredentialManager.create(context) }.getOrNull()
+    }
+    val appDb = remember(context) {
+        runCatching { resolveAbkFirestore(context.applicationContext as Application) }.getOrNull()
+    }
+    val updateManager = remember(appDb, context) {
+        AppUpdateManager(context = context, db = appDb, scope = scope)
+    }
+    val updateState by updateManager.state.collectAsStateWithLifecycle()
+
+    LaunchedEffect(updateManager) {
+        updateManager.checkForUpdates(manual = false)
+    }
+
+    DisposableEffect(updateManager) {
+        onDispose {
+            updateManager.dispose()
+        }
     }
 
     val mainViewModel: MainViewModel = viewModel(
@@ -218,8 +303,7 @@ private fun AuthenticatedAbkApp(firebaseUser: FirebaseUser) {
     val platformConfig by mainViewModel.platformConfig.collectAsStateWithLifecycle()
     val isOnline by NetworkMonitor.observeIsOnline(context).collectAsStateWithLifecycle(initialValue = true)
 
-    ABKTheme(platformConfig = platformConfig) {
-        // If account was disabled or banned by admin, lock to Suspended/Banned screen
+    MidadTheme(darkTheme = darkTheme, platformConfig = platformConfig) {
         val currentStatus = userProfile?.parsedStatus()
         if (currentStatus == AccountStatus.SUSPENDED || currentStatus == AccountStatus.BANNED) {
             SuspendedAccountScreen(
@@ -229,7 +313,7 @@ private fun AuthenticatedAbkApp(firebaseUser: FirebaseUser) {
                     signOutUser(credentialManager, scope)
                 }
             )
-            return@ABKTheme
+            return@MidadTheme
         }
 
         val catalogNodesState by mainViewModel.catalogNodesState.collectAsStateWithLifecycle()
@@ -277,7 +361,6 @@ private fun AuthenticatedAbkApp(firebaseUser: FirebaseUser) {
             }
         }
 
-        // Trigger local notification alert for newly arriving unread announcements during active session
         var knownAnnouncementIds by remember { mutableStateOf<Set<String>?>(null) }
         LaunchedEffect(announcements, readIds) {
             val currentIds = announcements.map { it.id }.toSet()
@@ -302,6 +385,13 @@ private fun AuthenticatedAbkApp(firebaseUser: FirebaseUser) {
         LaunchedEffect(Unit) {
             mainViewModel.snackbarEvents.collect { msg ->
                 snackbarHostState.showSnackbar(msg)
+            }
+        }
+
+        LaunchedEffect(updateState) {
+            if (updateState is AppUpdateState.UpToDate) {
+                snackbarHostState.showSnackbar("أنت تستخدم أحدث إصدار من مداد التعليمية")
+                updateManager.clearStatus()
             }
         }
 
@@ -344,7 +434,10 @@ private fun AuthenticatedAbkApp(firebaseUser: FirebaseUser) {
             val sendIntent = Intent(Intent.ACTION_SEND).apply {
                 type = "text/plain"
                 putExtra(Intent.EXTRA_SUBJECT, mat.title)
-                putExtra(Intent.EXTRA_TEXT, "${mat.title} (${mat.subjectName}) - ${platformConfig.platformName}:\n${mat.fileUrl}")
+                putExtra(
+                    Intent.EXTRA_TEXT,
+                    "${mat.title} (${mat.subjectName}) - ${platformConfig.platformName.ifBlank { "مداد التعليمية" }}:\n${mat.fileUrl}"
+                )
             }
             context.startActivity(Intent.createChooser(sendIntent, "مشاركة رابط الملف"))
         }
@@ -371,437 +464,487 @@ private fun AuthenticatedAbkApp(firebaseUser: FirebaseUser) {
             )
         }
 
-        Scaffold(
-            snackbarHost = { SnackbarHost(snackbarHostState) },
-            contentWindowInsets = WindowInsets.safeDrawing,
-            bottomBar = {
-                if (showBottomBar) {
-                    NavigationBar(
-                        containerColor = MaterialTheme.colorScheme.surface
-                    ) {
-                        studentTabs.forEach { tab ->
-                            val selected = currentRoute == tab.route
-                            NavigationBarItem(
-                                selected = selected,
-                                onClick = {
-                                    navController.navigate(tab.route) {
-                                        popUpTo(navController.graph.findStartDestination().id) {
-                                            saveState = true
-                                        }
-                                        launchSingleTop = true
-                                        restoreState = true
-                                    }
-                                },
-                                icon = {
-                                    if (tab.route == NavRoutes.NOTIFICATIONS && unreadCount > 0) {
-                                        BadgedBox(
-                                            badge = {
-                                                Badge {
-                                                    Text(if (unreadCount > 9) "+9" else unreadCount.toString())
-                                                }
-                                            }
-                                        ) {
-                                            Icon(
-                                                imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
-                                                contentDescription = tab.label
-                                            )
-                                        }
-                                    } else {
-                                        Icon(
-                                            imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
-                                            contentDescription = tab.label
+        val navigateToTab: (String) -> Unit = { route ->
+            navController.navigate(route) {
+                popUpTo(navController.graph.findStartDestination().id) {
+                    saveState = true
+                }
+                launchSingleTop = true
+                restoreState = true
+            }
+        }
+
+        UpdateDialog(
+            updateState = updateState,
+            onStartDownload = { manifest -> updateManager.startUpdateDownload(manifest) },
+            onRetryInstall = { manifest, apkFile -> updateManager.proceedToInstall(manifest, apkFile) },
+            onOpenPermissionSettings = { updateManager.openInstallPermissionSettings() },
+            onDismissOptional = { updateManager.dismissOptionalUpdate() },
+            onClearError = { updateManager.clearStatus() }
+        )
+
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            val useNavigationRail = maxWidth >= 840.dp
+
+            Scaffold(
+                snackbarHost = { SnackbarHost(snackbarHostState) },
+                contentWindowInsets = WindowInsets.safeDrawing,
+                bottomBar = {
+                    if (showBottomBar && !useNavigationRail) {
+                        NavigationBar(
+                            containerColor = MaterialTheme.colorScheme.surface
+                        ) {
+                            studentTabs.forEach { tab ->
+                                val selected = currentRoute == tab.route
+                                NavigationBarItem(
+                                    selected = selected,
+                                    onClick = { navigateToTab(tab.route) },
+                                    icon = {
+                                        TabIconWithBadge(
+                                            tab = tab,
+                                            selected = selected,
+                                            unreadCount = unreadCount
                                         )
-                                    }
-                                },
-                                label = {
-                                    Text(
-                                        text = tab.label,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        style = MaterialTheme.typography.labelSmall
-                                    )
-                                },
-                                modifier = Modifier.testTag("nav_${tab.route}")
-                            )
+                                    },
+                                    label = {
+                                        Text(
+                                            text = tab.label,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            style = MaterialTheme.typography.labelSmall
+                                        )
+                                    },
+                                    modifier = Modifier.testTag("nav_${tab.route}")
+                                )
+                            }
                         }
                     }
                 }
-            }
-        ) { innerPadding ->
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding)
-            ) {
-                OfflineStatusBanner(isOnline = isOnline)
-                Box(modifier = Modifier.weight(1f)) {
-                    NavHost(
-                        navController = navController,
-                        startDestination = NavRoutes.HOME
+            ) { innerPadding ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding)
+                ) {
+                    if (showBottomBar && useNavigationRail) {
+                        NavigationRail(
+                            containerColor = MaterialTheme.colorScheme.surface,
+                            modifier = Modifier.fillMaxHeight()
+                        ) {
+                            studentTabs.forEach { tab ->
+                                val selected = currentRoute == tab.route
+                                NavigationRailItem(
+                                    selected = selected,
+                                    onClick = { navigateToTab(tab.route) },
+                                    icon = {
+                                        TabIconWithBadge(
+                                            tab = tab,
+                                            selected = selected,
+                                            unreadCount = unreadCount
+                                        )
+                                    },
+                                    label = {
+                                        Text(
+                                            text = tab.label,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            style = MaterialTheme.typography.labelSmall
+                                        )
+                                    },
+                                    modifier = Modifier.testTag("nav_${tab.route}")
+                                )
+                            }
+                        }
+                    }
+
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight(),
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        composable(NavRoutes.HOME) {
-                            HomeScreen(
-                                userProfile = userProfile,
-                                isAdmin = isAdmin,
-                                searchQuery = searchQuery,
-                                onSearchQueryChange = mainViewModel::updateSearchQuery,
-                                searchResults = searchResults,
-                                subjectsState = subjectsState,
-                                lessonsState = lessonsState,
-                                materialsState = materialsState,
-                                announcementsState = announcementsState,
-                                favoritesState = favoritesState,
-                                progressState = progressState,
-                                readAnnouncementIds = readIds,
-                                onOpenSubject = { id -> navController.navigate(NavRoutes.subjectDetail(id)) },
-                                onViewAllSubjects = { navController.navigate(NavRoutes.SUBJECTS) },
-                                onWatchLesson = openLessonAction,
-                                onOpenMaterial = { mat -> navController.navigate(NavRoutes.pdfViewer(mat.id)) },
-                                onDownloadMaterial = downloadMaterialAction,
-                                onShareMaterial = shareMaterialAction,
-                                onToggleFavoriteLesson = toggleFavoriteLesson,
-                                onToggleFavoriteMaterial = toggleFavoriteMaterial,
-                                onOpenAnnouncement = { ann ->
-                                    mainViewModel.markAnnouncementRead(ann.id)
-                                    if (!ann.subjectId.isNullOrBlank()) {
-                                        navController.navigate(NavRoutes.subjectDetail(ann.subjectId))
+                        OfflineStatusBanner(isOnline = isOnline)
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .then(
+                                    if (useNavigationRail) Modifier.widthIn(max = 960.dp)
+                                    else Modifier
+                                )
+                        ) {
+                            NavHost(
+                                navController = navController,
+                                startDestination = NavRoutes.HOME
+                            ) {
+                                composable(NavRoutes.HOME) {
+                                    HomeScreen(
+                                        userProfile = userProfile,
+                                        isAdmin = isAdmin,
+                                        searchQuery = searchQuery,
+                                        onSearchQueryChange = mainViewModel::updateSearchQuery,
+                                        searchResults = searchResults,
+                                        subjectsState = subjectsState,
+                                        lessonsState = lessonsState,
+                                        materialsState = materialsState,
+                                        announcementsState = announcementsState,
+                                        favoritesState = favoritesState,
+                                        progressState = progressState,
+                                        readAnnouncementIds = readIds,
+                                        onOpenSubject = { id -> navController.navigate(NavRoutes.subjectDetail(id)) },
+                                        onViewAllSubjects = { navController.navigate(NavRoutes.SUBJECTS) },
+                                        onWatchLesson = openLessonAction,
+                                        onOpenMaterial = { mat -> navController.navigate(NavRoutes.pdfViewer(mat.id)) },
+                                        onDownloadMaterial = downloadMaterialAction,
+                                        onShareMaterial = shareMaterialAction,
+                                        onToggleFavoriteLesson = toggleFavoriteLesson,
+                                        onToggleFavoriteMaterial = toggleFavoriteMaterial,
+                                        onOpenAnnouncement = { ann ->
+                                            mainViewModel.markAnnouncementRead(ann.id)
+                                            if (!ann.subjectId.isNullOrBlank()) {
+                                                navController.navigate(NavRoutes.subjectDetail(ann.subjectId))
+                                            } else {
+                                                navController.navigate(NavRoutes.NOTIFICATIONS)
+                                            }
+                                        },
+                                        onOpenNotifications = { navController.navigate(NavRoutes.NOTIFICATIONS) },
+                                        onOpenLibrary = { navController.navigate(NavRoutes.LIBRARY) },
+                                        onOpenAdminPanel = {
+                                            if (isAdmin) navController.navigate(NavRoutes.ADMIN_DASHBOARD)
+                                        },
+                                        platformConfig = platformConfig,
+                                        catalogNodesState = catalogNodesState,
+                                        onOpenCatalogNode = { nodeId ->
+                                            navController.navigate(NavRoutes.catalogNode(nodeId))
+                                        }
+                                    )
+                                }
+
+                                composable(
+                                    route = NavRoutes.CATALOG_NODE,
+                                    arguments = listOf(navArgument("nodeId") { type = NavType.StringType })
+                                ) { entry ->
+                                    val nodeId = entry.arguments?.getString("nodeId") ?: ""
+                                    val node = catalogNodes.firstOrNull { it.id == nodeId }
+                                    CatalogBrowserScreen(
+                                        node = node,
+                                        allNodes = catalogNodes,
+                                        subjects = subjects,
+                                        lessons = lessons,
+                                        materials = materials,
+                                        onBack = { navController.popBackStack() },
+                                        onOpenChildNode = { childId ->
+                                            navController.navigate(NavRoutes.catalogNode(childId))
+                                        },
+                                        onOpenSubject = { id ->
+                                            navController.navigate(NavRoutes.subjectDetail(id))
+                                        }
+                                    )
+                                }
+
+                                composable(NavRoutes.SUBJECTS) {
+                                    SubjectsScreen(
+                                        subjectsState = subjectsState,
+                                        lessons = lessons,
+                                        materials = materials,
+                                        onOpenSubject = { id -> navController.navigate(NavRoutes.subjectDetail(id)) }
+                                    )
+                                }
+
+                                composable(NavRoutes.LIBRARY) {
+                                    MyLibraryScreen(
+                                        favoritesState = favoritesState,
+                                        progressState = progressState,
+                                        lessons = lessons,
+                                        materials = materials,
+                                        onWatchLesson = openLessonAction,
+                                        onOpenMaterial = { mat -> navController.navigate(NavRoutes.pdfViewer(mat.id)) },
+                                        onDownloadMaterial = downloadMaterialAction,
+                                        onShareMaterial = shareMaterialAction,
+                                        onToggleFavoriteLesson = toggleFavoriteLesson,
+                                        onToggleFavoriteMaterial = toggleFavoriteMaterial
+                                    )
+                                }
+
+                                composable(NavRoutes.NOTIFICATIONS) {
+                                    NotificationsScreen(
+                                        announcementsState = announcementsState,
+                                        readIds = readIds,
+                                        onAnnouncementClick = { ann ->
+                                            mainViewModel.markAnnouncementRead(ann.id)
+                                            if (!ann.subjectId.isNullOrBlank()) {
+                                                navController.navigate(NavRoutes.subjectDetail(ann.subjectId))
+                                            }
+                                        },
+                                        onMarkAllRead = mainViewModel::markAllAnnouncementsRead
+                                    )
+                                }
+
+                                composable(NavRoutes.ACCOUNT) {
+                                    AccountScreen(
+                                        userProfile = userProfile,
+                                        isAdmin = isAdmin,
+                                        favoritesCount = favorites.size,
+                                        watchedCount = progressList.size,
+                                        completedCount = progressList.count { it.completed },
+                                        onOpenAdminPanel = {
+                                            if (isAdmin) navController.navigate(NavRoutes.ADMIN_DASHBOARD)
+                                        },
+                                        onSignOut = {
+                                            signOutUser(credentialManager, scope)
+                                        },
+                                        themeMode = themeMode,
+                                        onThemeModeChange = onThemeModeChange,
+                                        updateState = updateState,
+                                        onCheckForUpdates = { updateManager.checkForUpdates(manual = true) }
+                                    )
+                                }
+
+                                composable(
+                                    route = NavRoutes.SUBJECT_DETAIL,
+                                    arguments = listOf(navArgument("subjectId") { type = NavType.StringType })
+                                ) { entry ->
+                                    val subjectId = entry.arguments?.getString("subjectId") ?: ""
+                                    val subject = subjects.firstOrNull { it.id == subjectId }
+                                    val subjectLessons = lessons.filter { it.subjectId == subjectId }
+                                    val subjectMaterials = materials.filter { it.subjectId == subjectId }
+                                    val subjectUnits = units.filter { it.subjectId == subjectId }
+                                    SubjectDetailScreen(
+                                        subject = subject,
+                                        lessons = subjectLessons,
+                                        materials = subjectMaterials,
+                                        favorites = favorites,
+                                        progressList = progressList,
+                                        onBack = { navController.popBackStack() },
+                                        onWatchLesson = openLessonAction,
+                                        onOpenMaterial = { mat -> navController.navigate(NavRoutes.pdfViewer(mat.id)) },
+                                        onDownloadMaterial = downloadMaterialAction,
+                                        onShareMaterial = shareMaterialAction,
+                                        onToggleFavoriteLesson = toggleFavoriteLesson,
+                                        onToggleFavoriteMaterial = toggleFavoriteMaterial,
+                                        units = subjectUnits
+                                    )
+                                }
+
+                                composable(
+                                    route = NavRoutes.LESSON_TEACHERS,
+                                    arguments = listOf(navArgument("lessonId") { type = NavType.StringType })
+                                ) { entry ->
+                                    val lessonId = entry.arguments?.getString("lessonId") ?: ""
+                                    val lesson = lessons.firstOrNull { it.id == lessonId }
+                                    val lessonExplanations = explanations.filter { it.lessonId == lessonId }
+                                    val lessonBlocks = contentBlocks.filter { it.lessonId == lessonId }
+                                    val related = lesson?.let { l ->
+                                        materials.filter { it.lessonId == l.id || it.subjectId == l.subjectId }
+                                    }.orEmpty()
+                                    val prog = progressList.firstOrNull { it.lessonId == lessonId }
+                                    val isFav = favorites.any { it.itemId == lessonId && it.parsedType() == FavoriteType.LESSON }
+
+                                    LessonTeachersScreen(
+                                        lesson = lesson,
+                                        explanations = lessonExplanations,
+                                        contentBlocks = lessonBlocks,
+                                        teachers = teachers,
+                                        relatedMaterials = related,
+                                        isFavorite = isFav,
+                                        progress = prog,
+                                        onBack = { navController.popBackStack() },
+                                        onToggleFavorite = { if (lesson != null) toggleFavoriteLesson(lesson) },
+                                        onOpenExplanation = { expId ->
+                                            navController.navigate(NavRoutes.explanationDetail(expId))
+                                        },
+                                        onWatchDirectLesson = {
+                                            if (lesson != null) navController.navigate(NavRoutes.videoPlayer(lesson.id))
+                                        },
+                                        onOpenMaterial = { mat -> navController.navigate(NavRoutes.pdfViewer(mat.id)) },
+                                        onDownloadMaterial = downloadMaterialAction,
+                                        onShareMaterial = shareMaterialAction
+                                    )
+                                }
+
+                                composable(
+                                    route = NavRoutes.EXPLANATION_DETAIL,
+                                    arguments = listOf(navArgument("explanationId") { type = NavType.StringType })
+                                ) { entry ->
+                                    val expId = entry.arguments?.getString("explanationId") ?: ""
+                                    val exp = explanations.firstOrNull { it.id == expId }
+                                    val teacher = exp?.let { e -> teachers.firstOrNull { it.id == e.teacherId } }
+                                    val lesson = exp?.let { e -> lessons.firstOrNull { it.id == e.lessonId } }
+                                    val expBlocks = contentBlocks.filter { it.explanationId == expId }
+                                    val related = exp?.let { e ->
+                                        materials.filter {
+                                            it.teacherId == e.teacherId ||
+                                                it.lessonId == e.lessonId ||
+                                                it.subjectId == e.subjectId
+                                        }
+                                    }.orEmpty()
+
+                                    ExplanationDetailScreen(
+                                        explanation = exp,
+                                        teacher = teacher,
+                                        lesson = lesson,
+                                        blocks = expBlocks,
+                                        customSectionTypes = customSectionTypes,
+                                        relatedMaterials = related,
+                                        onBack = { navController.popBackStack() },
+                                        onPlayBlockVideo = { block ->
+                                            navController.navigate(NavRoutes.blockVideoPlayer(block.id))
+                                        },
+                                        onOpenBlockPdf = { block ->
+                                            navController.navigate(NavRoutes.blockPdfViewer(block.id))
+                                        },
+                                        onOpenMaterial = { mat -> navController.navigate(NavRoutes.pdfViewer(mat.id)) },
+                                        onDownloadMaterial = downloadMaterialAction,
+                                        onShareMaterial = shareMaterialAction
+                                    )
+                                }
+
+                                composable(
+                                    route = NavRoutes.VIDEO_PLAYER,
+                                    arguments = listOf(navArgument("lessonId") { type = NavType.StringType })
+                                ) { entry ->
+                                    val lessonId = entry.arguments?.getString("lessonId") ?: ""
+                                    val lesson = lessons.firstOrNull { it.id == lessonId }
+                                    val related = lesson?.let { l -> materials.filter { it.subjectId == l.subjectId } }.orEmpty()
+                                    val prog = progressList.firstOrNull { it.lessonId == lessonId }
+                                    val isFav = favorites.any { it.itemId == lessonId && it.parsedType() == FavoriteType.LESSON }
+                                    VideoPlayerScreen(
+                                        lesson = lesson,
+                                        relatedMaterials = related,
+                                        initialProgress = prog,
+                                        isFavorite = isFav,
+                                        onBack = { navController.popBackStack() },
+                                        onSaveProgress = { pos, dur, done ->
+                                            if (lesson != null) {
+                                                mainViewModel.saveLessonProgress(lesson, pos, dur, done)
+                                            }
+                                        },
+                                        onToggleFavorite = { if (lesson != null) toggleFavoriteLesson(lesson) },
+                                        onOpenMaterial = { mat -> navController.navigate(NavRoutes.pdfViewer(mat.id)) },
+                                        onDownloadMaterial = downloadMaterialAction,
+                                        onShareMaterial = shareMaterialAction
+                                    )
+                                }
+
+                                composable(
+                                    route = NavRoutes.BLOCK_VIDEO_PLAYER,
+                                    arguments = listOf(navArgument("blockId") { type = NavType.StringType })
+                                ) { entry ->
+                                    val blockId = entry.arguments?.getString("blockId") ?: ""
+                                    val block = contentBlocks.firstOrNull { it.id == blockId }
+                                    val parentLesson = block?.let { b -> lessons.firstOrNull { it.id == b.lessonId } }
+                                    val parentExp = block?.let { b -> explanations.firstOrNull { it.id == b.explanationId } }
+                                    val syntheticLesson = block?.let { b ->
+                                        val url = b.mediaUrl ?: ""
+                                        val sourceType = if (b.parsedBlockType() == ContentBlockType.YOUTUBE_VIDEO) {
+                                            VideoSourceType.YOUTUBE.name
+                                        } else {
+                                            VideoSourceType.EXTERNAL.name
+                                        }
+                                        Lesson(
+                                            id = parentLesson?.id ?: b.lessonId.ifBlank { b.id },
+                                            subjectId = b.subjectId,
+                                            subjectName = parentLesson?.subjectName ?: parentExp?.subjectName ?: "",
+                                            unitTitle = parentLesson?.unitTitle ?: b.subtitle ?: "",
+                                            title = b.title,
+                                            description = b.bodyText ?: b.subtitle ?: "",
+                                            teacherName = parentExp?.teacherName,
+                                            durationLabel = b.durationLabel,
+                                            thumbnailUrl = b.thumbnailUrl,
+                                            videoUrl = url,
+                                            videoSourceType = sourceType
+                                        )
+                                    }
+                                    val related = block?.let { b ->
+                                        materials.filter { it.lessonId == b.lessonId || it.subjectId == b.subjectId }
+                                    }.orEmpty()
+                                    val prog = parentLesson?.let { l -> progressList.firstOrNull { it.lessonId == l.id } }
+
+                                    VideoPlayerScreen(
+                                        lesson = syntheticLesson,
+                                        relatedMaterials = related,
+                                        initialProgress = prog,
+                                        isFavorite = false,
+                                        onBack = { navController.popBackStack() },
+                                        onSaveProgress = { pos, dur, done ->
+                                            if (parentLesson != null) {
+                                                mainViewModel.saveLessonProgress(parentLesson, pos, dur, done)
+                                            }
+                                        },
+                                        onToggleFavorite = { if (parentLesson != null) toggleFavoriteLesson(parentLesson) },
+                                        onOpenMaterial = { mat -> navController.navigate(NavRoutes.pdfViewer(mat.id)) },
+                                        onDownloadMaterial = downloadMaterialAction,
+                                        onShareMaterial = shareMaterialAction
+                                    )
+                                }
+
+                                composable(
+                                    route = NavRoutes.PDF_VIEWER,
+                                    arguments = listOf(navArgument("materialId") { type = NavType.StringType })
+                                ) { entry ->
+                                    val materialId = entry.arguments?.getString("materialId") ?: ""
+                                    val mat = materials.firstOrNull { it.id == materialId }
+                                    val isFav = favorites.any { it.itemId == materialId && it.parsedType() == FavoriteType.MATERIAL }
+                                    PdfViewerScreen(
+                                        material = mat,
+                                        isFavorite = isFav,
+                                        onBack = { navController.popBackStack() },
+                                        onDownloadClick = { if (mat != null) downloadMaterialAction(mat) },
+                                        onShareClick = { if (mat != null) shareMaterialAction(mat) },
+                                        onToggleFavorite = { if (mat != null) toggleFavoriteMaterial(mat) }
+                                    )
+                                }
+
+                                composable(
+                                    route = NavRoutes.BLOCK_PDF_VIEWER,
+                                    arguments = listOf(navArgument("blockId") { type = NavType.StringType })
+                                ) { entry ->
+                                    val blockId = entry.arguments?.getString("blockId") ?: ""
+                                    val block = contentBlocks.firstOrNull { it.id == blockId }
+                                    val parentExp = block?.let { b -> explanations.firstOrNull { it.id == b.explanationId } }
+                                    val syntheticMat = block?.let { b ->
+                                        StudyMaterial(
+                                            id = b.id,
+                                            subjectId = b.subjectId,
+                                            subjectName = parentExp?.subjectName ?: "",
+                                            lessonId = b.lessonId,
+                                            materialType = MaterialType.STUDY_NOTE.name,
+                                            title = b.title,
+                                            description = b.bodyText ?: b.subtitle ?: "",
+                                            fileUrl = b.mediaUrl ?: ""
+                                        )
+                                    }
+                                    PdfViewerScreen(
+                                        material = syntheticMat,
+                                        isFavorite = false,
+                                        onBack = { navController.popBackStack() },
+                                        onDownloadClick = { if (syntheticMat != null) downloadMaterialAction(syntheticMat) },
+                                        onShareClick = { if (syntheticMat != null) shareMaterialAction(syntheticMat) },
+                                        onToggleFavorite = {}
+                                    )
+                                }
+
+                                composable(NavRoutes.ADMIN_DASHBOARD) {
+                                    if (isAdmin) {
+                                        val adminViewModel: AdminViewModel = viewModel(
+                                            key = "admin_${firebaseUser.uid}",
+                                            factory = viewModelFactory {
+                                                initializer {
+                                                    val app = checkNotNull(this[APPLICATION_KEY]) as Application
+                                                    val db = resolveAbkFirestore(app)
+                                                    AdminViewModel(AdminRepository(db))
+                                                }
+                                            }
+                                        )
+                                        AdminDashboardScreen(
+                                            adminViewModel = adminViewModel,
+                                            currentUserId = firebaseUser.uid,
+                                            onBack = { navController.popBackStack() }
+                                        )
                                     } else {
-                                        navController.navigate(NavRoutes.NOTIFICATIONS)
-                                    }
-                                },
-                                onOpenNotifications = { navController.navigate(NavRoutes.NOTIFICATIONS) },
-                                onOpenLibrary = { navController.navigate(NavRoutes.LIBRARY) },
-                                onOpenAdminPanel = {
-                                    if (isAdmin) navController.navigate(NavRoutes.ADMIN_DASHBOARD)
-                                },
-                                platformConfig = platformConfig,
-                                catalogNodesState = catalogNodesState,
-                                onOpenCatalogNode = { nodeId ->
-                                    navController.navigate(NavRoutes.catalogNode(nodeId))
-                                }
-                            )
-                        }
-
-                        composable(
-                            route = NavRoutes.CATALOG_NODE,
-                            arguments = listOf(navArgument("nodeId") { type = NavType.StringType })
-                        ) { entry ->
-                            val nodeId = entry.arguments?.getString("nodeId") ?: ""
-                            val node = catalogNodes.firstOrNull { it.id == nodeId }
-                            CatalogBrowserScreen(
-                                node = node,
-                                allNodes = catalogNodes,
-                                subjects = subjects,
-                                lessons = lessons,
-                                materials = materials,
-                                onBack = { navController.popBackStack() },
-                                onOpenChildNode = { childId ->
-                                    navController.navigate(NavRoutes.catalogNode(childId))
-                                },
-                                onOpenSubject = { id ->
-                                    navController.navigate(NavRoutes.subjectDetail(id))
-                                }
-                            )
-                        }
-
-                        composable(NavRoutes.SUBJECTS) {
-                            SubjectsScreen(
-                                subjectsState = subjectsState,
-                                lessons = lessons,
-                                materials = materials,
-                                onOpenSubject = { id -> navController.navigate(NavRoutes.subjectDetail(id)) }
-                            )
-                        }
-
-                        composable(NavRoutes.LIBRARY) {
-                            MyLibraryScreen(
-                                favoritesState = favoritesState,
-                                progressState = progressState,
-                                lessons = lessons,
-                                materials = materials,
-                                onWatchLesson = openLessonAction,
-                                onOpenMaterial = { mat -> navController.navigate(NavRoutes.pdfViewer(mat.id)) },
-                                onDownloadMaterial = downloadMaterialAction,
-                                onShareMaterial = shareMaterialAction,
-                                onToggleFavoriteLesson = toggleFavoriteLesson,
-                                onToggleFavoriteMaterial = toggleFavoriteMaterial
-                            )
-                        }
-
-                        composable(NavRoutes.NOTIFICATIONS) {
-                            NotificationsScreen(
-                                announcementsState = announcementsState,
-                                readIds = readIds,
-                                onAnnouncementClick = { ann ->
-                                    mainViewModel.markAnnouncementRead(ann.id)
-                                    if (!ann.subjectId.isNullOrBlank()) {
-                                        navController.navigate(NavRoutes.subjectDetail(ann.subjectId))
-                                    }
-                                },
-                                onMarkAllRead = mainViewModel::markAllAnnouncementsRead
-                            )
-                        }
-
-                        composable(NavRoutes.ACCOUNT) {
-                            AccountScreen(
-                                userProfile = userProfile,
-                                isAdmin = isAdmin,
-                                favoritesCount = favorites.size,
-                                watchedCount = progressList.size,
-                                completedCount = progressList.count { it.completed },
-                                onOpenAdminPanel = {
-                                    if (isAdmin) navController.navigate(NavRoutes.ADMIN_DASHBOARD)
-                                },
-                                onSignOut = {
-                                    signOutUser(credentialManager, scope)
-                                }
-                            )
-                        }
-
-                        composable(
-                            route = NavRoutes.SUBJECT_DETAIL,
-                            arguments = listOf(navArgument("subjectId") { type = NavType.StringType })
-                        ) { entry ->
-                            val subjectId = entry.arguments?.getString("subjectId") ?: ""
-                            val subject = subjects.firstOrNull { it.id == subjectId }
-                            val subjectLessons = lessons.filter { it.subjectId == subjectId }
-                            val subjectMaterials = materials.filter { it.subjectId == subjectId }
-                            val subjectUnits = units.filter { it.subjectId == subjectId }
-                            SubjectDetailScreen(
-                                subject = subject,
-                                lessons = subjectLessons,
-                                materials = subjectMaterials,
-                                favorites = favorites,
-                                progressList = progressList,
-                                onBack = { navController.popBackStack() },
-                                onWatchLesson = openLessonAction,
-                                onOpenMaterial = { mat -> navController.navigate(NavRoutes.pdfViewer(mat.id)) },
-                                onDownloadMaterial = downloadMaterialAction,
-                                onShareMaterial = shareMaterialAction,
-                                onToggleFavoriteLesson = toggleFavoriteLesson,
-                                onToggleFavoriteMaterial = toggleFavoriteMaterial,
-                                units = subjectUnits
-                            )
-                        }
-
-                        composable(
-                            route = NavRoutes.LESSON_TEACHERS,
-                            arguments = listOf(navArgument("lessonId") { type = NavType.StringType })
-                        ) { entry ->
-                            val lessonId = entry.arguments?.getString("lessonId") ?: ""
-                            val lesson = lessons.firstOrNull { it.id == lessonId }
-                            val lessonExplanations = explanations.filter { it.lessonId == lessonId }
-                            val lessonBlocks = contentBlocks.filter { it.lessonId == lessonId }
-                            val related = lesson?.let { l ->
-                                materials.filter { it.lessonId == l.id || it.subjectId == l.subjectId }
-                            }.orEmpty()
-                            val prog = progressList.firstOrNull { it.lessonId == lessonId }
-                            val isFav = favorites.any { it.itemId == lessonId && it.parsedType() == FavoriteType.LESSON }
-
-                            LessonTeachersScreen(
-                                lesson = lesson,
-                                explanations = lessonExplanations,
-                                contentBlocks = lessonBlocks,
-                                teachers = teachers,
-                                relatedMaterials = related,
-                                isFavorite = isFav,
-                                progress = prog,
-                                onBack = { navController.popBackStack() },
-                                onToggleFavorite = { if (lesson != null) toggleFavoriteLesson(lesson) },
-                                onOpenExplanation = { expId ->
-                                    navController.navigate(NavRoutes.explanationDetail(expId))
-                                },
-                                onWatchDirectLesson = {
-                                    if (lesson != null) navController.navigate(NavRoutes.videoPlayer(lesson.id))
-                                },
-                                onOpenMaterial = { mat -> navController.navigate(NavRoutes.pdfViewer(mat.id)) },
-                                onDownloadMaterial = downloadMaterialAction,
-                                onShareMaterial = shareMaterialAction
-                            )
-                        }
-
-                        composable(
-                            route = NavRoutes.EXPLANATION_DETAIL,
-                            arguments = listOf(navArgument("explanationId") { type = NavType.StringType })
-                        ) { entry ->
-                            val expId = entry.arguments?.getString("explanationId") ?: ""
-                            val exp = explanations.firstOrNull { it.id == expId }
-                            val teacher = exp?.let { e -> teachers.firstOrNull { it.id == e.teacherId } }
-                            val lesson = exp?.let { e -> lessons.firstOrNull { it.id == e.lessonId } }
-                            val expBlocks = contentBlocks.filter { it.explanationId == expId }
-                            val related = exp?.let { e ->
-                                materials.filter {
-                                    it.teacherId == e.teacherId ||
-                                        it.lessonId == e.lessonId ||
-                                        it.subjectId == e.subjectId
-                                }
-                            }.orEmpty()
-
-                            ExplanationDetailScreen(
-                                explanation = exp,
-                                teacher = teacher,
-                                lesson = lesson,
-                                blocks = expBlocks,
-                                customSectionTypes = customSectionTypes,
-                                relatedMaterials = related,
-                                onBack = { navController.popBackStack() },
-                                onPlayBlockVideo = { block ->
-                                    navController.navigate(NavRoutes.blockVideoPlayer(block.id))
-                                },
-                                onOpenBlockPdf = { block ->
-                                    navController.navigate(NavRoutes.blockPdfViewer(block.id))
-                                },
-                                onOpenMaterial = { mat -> navController.navigate(NavRoutes.pdfViewer(mat.id)) },
-                                onDownloadMaterial = downloadMaterialAction,
-                                onShareMaterial = shareMaterialAction
-                            )
-                        }
-
-                        composable(
-                            route = NavRoutes.VIDEO_PLAYER,
-                            arguments = listOf(navArgument("lessonId") { type = NavType.StringType })
-                        ) { entry ->
-                            val lessonId = entry.arguments?.getString("lessonId") ?: ""
-                            val lesson = lessons.firstOrNull { it.id == lessonId }
-                            val related = lesson?.let { l -> materials.filter { it.subjectId == l.subjectId } }.orEmpty()
-                            val prog = progressList.firstOrNull { it.lessonId == lessonId }
-                            val isFav = favorites.any { it.itemId == lessonId && it.parsedType() == FavoriteType.LESSON }
-                            VideoPlayerScreen(
-                                lesson = lesson,
-                                relatedMaterials = related,
-                                initialProgress = prog,
-                                isFavorite = isFav,
-                                onBack = { navController.popBackStack() },
-                                onSaveProgress = { pos, dur, done ->
-                                    if (lesson != null) {
-                                        mainViewModel.saveLessonProgress(lesson, pos, dur, done)
-                                    }
-                                },
-                                onToggleFavorite = { if (lesson != null) toggleFavoriteLesson(lesson) },
-                                onOpenMaterial = { mat -> navController.navigate(NavRoutes.pdfViewer(mat.id)) },
-                                onDownloadMaterial = downloadMaterialAction,
-                                onShareMaterial = shareMaterialAction
-                            )
-                        }
-
-                        composable(
-                            route = NavRoutes.BLOCK_VIDEO_PLAYER,
-                            arguments = listOf(navArgument("blockId") { type = NavType.StringType })
-                        ) { entry ->
-                            val blockId = entry.arguments?.getString("blockId") ?: ""
-                            val block = contentBlocks.firstOrNull { it.id == blockId }
-                            val parentLesson = block?.let { b -> lessons.firstOrNull { it.id == b.lessonId } }
-                            val parentExp = block?.let { b -> explanations.firstOrNull { it.id == b.explanationId } }
-                            val syntheticLesson = block?.let { b ->
-                                val url = b.mediaUrl ?: ""
-                                val sourceType = if (b.parsedBlockType() == ContentBlockType.YOUTUBE_VIDEO) {
-                                    VideoSourceType.YOUTUBE.name
-                                } else {
-                                    VideoSourceType.EXTERNAL.name
-                                }
-                                Lesson(
-                                    id = parentLesson?.id ?: b.lessonId.ifBlank { b.id },
-                                    subjectId = b.subjectId,
-                                    subjectName = parentLesson?.subjectName ?: parentExp?.subjectName ?: "",
-                                    unitTitle = parentLesson?.unitTitle ?: b.subtitle ?: "",
-                                    title = b.title,
-                                    description = b.bodyText ?: b.subtitle ?: "",
-                                    teacherName = parentExp?.teacherName,
-                                    durationLabel = b.durationLabel,
-                                    thumbnailUrl = b.thumbnailUrl,
-                                    videoUrl = url,
-                                    videoSourceType = sourceType
-                                )
-                            }
-                            val related = block?.let { b ->
-                                materials.filter { it.lessonId == b.lessonId || it.subjectId == b.subjectId }
-                            }.orEmpty()
-                            val prog = parentLesson?.let { l -> progressList.firstOrNull { it.lessonId == l.id } }
-
-                            VideoPlayerScreen(
-                                lesson = syntheticLesson,
-                                relatedMaterials = related,
-                                initialProgress = prog,
-                                isFavorite = false,
-                                onBack = { navController.popBackStack() },
-                                onSaveProgress = { pos, dur, done ->
-                                    if (parentLesson != null) {
-                                        mainViewModel.saveLessonProgress(parentLesson, pos, dur, done)
-                                    }
-                                },
-                                onToggleFavorite = { if (parentLesson != null) toggleFavoriteLesson(parentLesson) },
-                                onOpenMaterial = { mat -> navController.navigate(NavRoutes.pdfViewer(mat.id)) },
-                                onDownloadMaterial = downloadMaterialAction,
-                                onShareMaterial = shareMaterialAction
-                            )
-                        }
-
-                        composable(
-                            route = NavRoutes.PDF_VIEWER,
-                            arguments = listOf(navArgument("materialId") { type = NavType.StringType })
-                        ) { entry ->
-                            val materialId = entry.arguments?.getString("materialId") ?: ""
-                            val mat = materials.firstOrNull { it.id == materialId }
-                            val isFav = favorites.any { it.itemId == materialId && it.parsedType() == FavoriteType.MATERIAL }
-                            PdfViewerScreen(
-                                material = mat,
-                                isFavorite = isFav,
-                                onBack = { navController.popBackStack() },
-                                onDownloadClick = { if (mat != null) downloadMaterialAction(mat) },
-                                onShareClick = { if (mat != null) shareMaterialAction(mat) },
-                                onToggleFavorite = { if (mat != null) toggleFavoriteMaterial(mat) }
-                            )
-                        }
-
-                        composable(
-                            route = NavRoutes.BLOCK_PDF_VIEWER,
-                            arguments = listOf(navArgument("blockId") { type = NavType.StringType })
-                        ) { entry ->
-                            val blockId = entry.arguments?.getString("blockId") ?: ""
-                            val block = contentBlocks.firstOrNull { it.id == blockId }
-                            val parentExp = block?.let { b -> explanations.firstOrNull { it.id == b.explanationId } }
-                            val syntheticMat = block?.let { b ->
-                                StudyMaterial(
-                                    id = b.id,
-                                    subjectId = b.subjectId,
-                                    subjectName = parentExp?.subjectName ?: "",
-                                    lessonId = b.lessonId,
-                                    materialType = MaterialType.STUDY_NOTE.name,
-                                    title = b.title,
-                                    description = b.bodyText ?: b.subtitle ?: "",
-                                    fileUrl = b.mediaUrl ?: ""
-                                )
-                            }
-                            PdfViewerScreen(
-                                material = syntheticMat,
-                                isFavorite = false,
-                                onBack = { navController.popBackStack() },
-                                onDownloadClick = { if (syntheticMat != null) downloadMaterialAction(syntheticMat) },
-                                onShareClick = { if (syntheticMat != null) shareMaterialAction(syntheticMat) },
-                                onToggleFavorite = {}
-                            )
-                        }
-
-                        composable(NavRoutes.ADMIN_DASHBOARD) {
-                            if (isAdmin) {
-                                val adminViewModel: AdminViewModel = viewModel(
-                                    key = "admin_${firebaseUser.uid}",
-                                    factory = viewModelFactory {
-                                        initializer {
-                                            val app = checkNotNull(this[APPLICATION_KEY]) as Application
-                                            val db = resolveAbkFirestore(app)
-                                            AdminViewModel(AdminRepository(db))
+                                        LaunchedEffect(Unit) {
+                                            navController.popBackStack()
                                         }
                                     }
-                                )
-                                AdminDashboardScreen(
-                                    adminViewModel = adminViewModel,
-                                    currentUserId = firebaseUser.uid,
-                                    onBack = { navController.popBackStack() }
-                                )
-                            } else {
-                                LaunchedEffect(Unit) {
-                                    navController.popBackStack()
                                 }
                             }
                         }
@@ -812,13 +955,57 @@ private fun AuthenticatedAbkApp(firebaseUser: FirebaseUser) {
     }
 }
 
+@Composable
+private fun TabIconWithBadge(
+    tab: BottomTab,
+    selected: Boolean,
+    unreadCount: Int
+) {
+    if (tab.route == NavRoutes.NOTIFICATIONS && unreadCount > 0) {
+        BadgedBox(
+            badge = {
+                Badge {
+                    Text(if (unreadCount > 9) "+9" else unreadCount.toString())
+                }
+            }
+        ) {
+            Icon(
+                imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
+                contentDescription = tab.label
+            )
+        }
+    } else {
+        Icon(
+            imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
+            contentDescription = tab.label
+        )
+    }
+}
+
 private fun resolveAbkFirestore(app: Application): FirebaseFirestore {
     val dbId = runCatching { app.getString(R.string.firestore_database_id) }
         .getOrNull()
         ?.takeIf { it.isNotBlank() }
-    return if (dbId != null) {
+    val db = if (dbId != null) {
         runCatching { FirebaseFirestore.getInstance(dbId) }.getOrElse { FirebaseFirestore.getInstance() }
     } else {
         FirebaseFirestore.getInstance()
     }
+    if (!firestoreConfigured) {
+        synchronized(NavRoutes) {
+            if (!firestoreConfigured) {
+                runCatching {
+                    db.firestoreSettings = firestoreSettings {
+                        setLocalCacheSettings(
+                            persistentCacheSettings {
+                                setSizeBytes(50L * 1024L * 1024L)
+                            }
+                        )
+                    }
+                }
+                firestoreConfigured = true
+            }
+        }
+    }
+    return db
 }

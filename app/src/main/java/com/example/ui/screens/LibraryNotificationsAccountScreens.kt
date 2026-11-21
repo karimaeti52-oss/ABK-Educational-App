@@ -63,7 +63,14 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.material.icons.filled.BrightnessMedium
+import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.ui.res.stringResource
 import coil.compose.AsyncImage
+import com.example.BuildConfig
+import com.example.R
 import com.example.data.model.Announcement
 import com.example.data.model.FavoriteItem
 import com.example.data.model.FavoriteType
@@ -78,9 +85,12 @@ import com.example.ui.components.AnnouncementBannerCard
 import com.example.ui.components.InfoPill
 import com.example.ui.components.LessonCard
 import com.example.ui.components.MaterialCard
-import com.example.ui.theme.AbkNavyDeep
-import com.example.ui.theme.AbkSkyPrimary
-import com.example.ui.theme.AbkSuccess
+import com.example.ui.theme.MidadGold
+import com.example.ui.theme.MidadNavyDeep
+import com.example.ui.theme.MidadSuccess
+import com.example.ui.theme.MidadTurquoise
+import com.example.ui.theme.ThemePreferenceMode
+import com.example.update.AppUpdateState
 import com.example.util.NotificationHelper
 import com.example.util.PdfCacheManager
 import com.example.util.UrlUtils
@@ -236,7 +246,7 @@ fun MyLibraryScreen(
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Column(Modifier.padding(14.dp)) {
-                                        Text(prog.subjectName, style = MaterialTheme.typography.labelSmall, color = AbkSkyPrimary)
+                                        Text(prog.subjectName, style = MaterialTheme.typography.labelSmall, color = MidadTurquoise)
                                         Text(prog.lessonTitle, style = MaterialTheme.typography.titleMedium)
                                         Text(
                                             text = if (prog.completed) "مكتمل" else "توقفت عند ${UrlUtils.formatDurationMs(prog.lastPositionMs)}",
@@ -378,7 +388,7 @@ fun NotificationsScreen(
                 if (announcementsState.data.isEmpty()) {
                     AbkEmptyState(
                         title = "لا توجد إشعارات حالياً",
-                        subtitle = "ستصل هنا تنبيهات الدروس الجديدة والنوطات والإعلانات من إدارة منصة ABK."
+                        subtitle = "ستصل هنا تنبيهات الدروس الجديدة والنوطات والإعلانات من إدارة منصة مداد التعليمية."
                     )
                 } else {
                     LazyColumn(
@@ -407,7 +417,11 @@ fun AccountScreen(
     watchedCount: Int,
     completedCount: Int,
     onOpenAdminPanel: () -> Unit,
-    onSignOut: () -> Unit
+    onSignOut: () -> Unit,
+    themeMode: ThemePreferenceMode = ThemePreferenceMode.SYSTEM,
+    onThemeModeChange: (ThemePreferenceMode) -> Unit = {},
+    updateState: AppUpdateState = AppUpdateState.Idle,
+    onCheckForUpdates: () -> Unit = {}
 ) {
     Column(
         modifier = Modifier
@@ -461,7 +475,7 @@ fun AccountScreen(
                 }
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(
-                        text = userProfile?.displayName?.ifBlank { "طالب ABK" } ?: "طالب ABK",
+                        text = userProfile?.displayName?.ifBlank { "طالب مداد" } ?: "طالب مداد",
                         style = MaterialTheme.typography.titleLarge,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -478,7 +492,7 @@ fun AccountScreen(
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         InfoPill(
                             text = if (isAdmin) "مدير المنصة" else "حساب طالب متزامن",
-                            containerColor = if (isAdmin) AbkNavyDeep else MaterialTheme.colorScheme.primaryContainer,
+                            containerColor = if (isAdmin) MidadNavyDeep else MaterialTheme.colorScheme.primaryContainer,
                             contentColor = if (isAdmin) Color.White else MaterialTheme.colorScheme.onPrimaryContainer
                         )
                     }
@@ -495,14 +509,14 @@ fun AccountScreen(
                 label = "دروس تمت مشاهدتها",
                 value = watchedCount.toString(),
                 icon = Icons.Filled.PlayCircleFilled,
-                tint = AbkSkyPrimary,
+                tint = MidadTurquoise,
                 modifier = Modifier.weight(1f)
             )
             AccountStatCard(
                 label = "دروس مكتملة",
                 value = completedCount.toString(),
                 icon = Icons.Filled.CheckCircle,
-                tint = AbkSuccess,
+                tint = MidadSuccess,
                 modifier = Modifier.weight(1f)
             )
             AccountStatCard(
@@ -514,11 +528,130 @@ fun AccountScreen(
             )
         }
 
+        // Theme Mode Card (System / Light / Dark)
+        Card(
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.BrightnessMedium,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.secondary
+                    )
+                    Text(
+                        text = stringResource(R.string.theme_preference_title),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    ThemePreferenceMode.entries.forEach { mode ->
+                        val selected = themeMode == mode
+                        FilterChip(
+                            selected = selected,
+                            onClick = { onThemeModeChange(mode) },
+                            label = {
+                                Text(
+                                    text = mode.labelAr,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("theme_mode_${mode.name}")
+                        )
+                    }
+                }
+            }
+        }
+
+        // App Version & In-App Over-the-Top Update Card
+        Card(
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.SystemUpdate,
+                            contentDescription = null,
+                            tint = MidadGold
+                        )
+                        Column {
+                            Text(
+                                text = stringResource(R.string.app_name),
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = "الإصدار الحالي: ${BuildConfig.VERSION_NAME} (رقم البناء ${BuildConfig.VERSION_CODE})",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+                OutlinedButton(
+                    onClick = onCheckForUpdates,
+                    enabled = updateState !is AppUpdateState.Checking && updateState !is AppUpdateState.Downloading,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .testTag("update_check_btn")
+                ) {
+                    if (updateState is AppUpdateState.Checking) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("جارٍ التحقق من التحديثات…")
+                    } else {
+                        Icon(Icons.Filled.SystemUpdate, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(stringResource(R.string.check_for_updates))
+                    }
+                }
+            }
+        }
+
         // STRICTLY ADMIN-ONLY SECTION — Completely invisible to regular students
         if (isAdmin) {
             Card(
                 shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = AbkNavyDeep),
+                colors = CardDefaults.cardColors(containerColor = MidadNavyDeep),
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag("admin_entry_card")
@@ -534,7 +667,7 @@ fun AccountScreen(
                         Icon(
                             imageVector = Icons.Filled.AdminPanelSettings,
                             contentDescription = null,
-                            tint = Color(0xFF38BDF8),
+                            tint = MidadGold,
                             modifier = Modifier.size(28.dp)
                         )
                         Column {
@@ -557,7 +690,7 @@ fun AccountScreen(
                             .height(48.dp)
                             .testTag("open_admin_panel_btn"),
                         shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = AbkSkyPrimary)
+                        colors = ButtonDefaults.buttonColors(containerColor = MidadTurquoise)
                     ) {
                         Text("فتح لوحة التحكم الإدارية", style = MaterialTheme.typography.labelLarge)
                     }
@@ -578,7 +711,7 @@ fun AccountScreen(
                 Icon(
                     imageVector = Icons.Filled.DownloadDone,
                     contentDescription = null,
-                    tint = AbkSuccess
+                    tint = MidadSuccess
                 )
                 Column {
                     Text("مزامنة تلقائية مجانية", style = MaterialTheme.typography.titleSmall)

@@ -1,6 +1,6 @@
 {
-  "name": "ABK",
-  "description": "منصة ABK التعليمية المتكاملة للدروس المرئية ومكتبة PDF ولوحة التحكم",
+  "name": "مداد التعليمية",
+  "description": "منصة مداد التعليمية — طريقك نحو التفوق للدروس المرئية ومكتبة PDF ولوحة التحكم",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

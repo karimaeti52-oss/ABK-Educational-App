@@ -80,13 +80,14 @@ import com.example.data.model.PlatformConfig
 import com.example.data.model.StudyMaterial
 import com.example.data.model.Subject
 import com.example.data.model.Teacher
-import com.example.ui.theme.AbkNavyDeep
-import com.example.ui.theme.AbkNavyPrimary
-import com.example.ui.theme.AbkSkyContainer
-import com.example.ui.theme.AbkSkyLight
-import com.example.ui.theme.AbkSkyPrimary
-import com.example.ui.theme.AbkSuccess
-import com.example.ui.theme.AbkWarning
+import com.example.data.model.resolvedForMidad
+import com.example.ui.theme.MidadGold
+import com.example.ui.theme.MidadNavyDeep
+import com.example.ui.theme.MidadNavyPrimary
+import com.example.ui.theme.MidadSuccess
+import com.example.ui.theme.MidadSuccessContainer
+import com.example.ui.theme.MidadTurquoise
+import com.example.ui.theme.MidadWarning
 import com.example.ui.theme.parseSafeHexColor
 import com.example.util.UrlUtils
 
@@ -95,31 +96,34 @@ fun AbkLogoMark(
     platformConfig: PlatformConfig = PlatformConfig(),
     modifier: Modifier = Modifier
 ) {
-    val name = platformConfig.platformName.ifBlank { "ABK" }
-    val tagline = platformConfig.platformTagline.ifBlank { "المنصة التعليمية" }
+    val resolved = platformConfig.resolvedForMidad()
+    val name = resolved.platformName.ifBlank { stringResource(R.string.app_name) }
+    val tagline = resolved.platformTagline.ifBlank { stringResource(R.string.platform_tagline) }
     Row(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        if (!platformConfig.logoUrl.isNullOrBlank()) {
+        if (!resolved.logoUrl.isNullOrBlank()) {
             AsyncImage(
-                model = platformConfig.logoUrl,
+                model = resolved.logoUrl,
                 contentDescription = name,
                 modifier = Modifier
-                    .size(40.dp)
-                    .clip(RoundedCornerShape(12.dp)),
+                    .size(42.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .border(1.dp, MidadGold.copy(alpha = 0.45f), RoundedCornerShape(12.dp)),
                 contentScale = ContentScale.Crop,
-                error = painterResource(id = R.drawable.abk_app_icon),
-                placeholder = painterResource(id = R.drawable.abk_app_icon)
+                error = painterResource(id = R.drawable.midad_app_icon),
+                placeholder = painterResource(id = R.drawable.midad_app_icon)
             )
         } else {
             Image(
-                painter = painterResource(id = R.drawable.abk_app_icon),
+                painter = painterResource(id = R.drawable.midad_app_icon),
                 contentDescription = stringResource(R.string.app_name),
                 modifier = Modifier
-                    .size(40.dp)
-                    .clip(RoundedCornerShape(12.dp)),
+                    .size(42.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .border(1.dp, MidadGold.copy(alpha = 0.45f), RoundedCornerShape(12.dp)),
                 contentScale = ContentScale.Crop
             )
         }
@@ -154,7 +158,7 @@ fun CatalogNodeCard(
         modifier = modifier
             .clickable(onClick = onClick)
             .testTag("catalog_node_card_${node.id}"),
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
@@ -163,7 +167,7 @@ fun CatalogNodeCard(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(92.dp)
+                    .height(94.dp)
             ) {
                 if (!node.imageUrl.isNullOrBlank()) {
                     AsyncImage(
@@ -171,11 +175,11 @@ fun CatalogNodeCard(
                         contentDescription = node.title,
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Crop,
-                        error = painterResource(id = R.drawable.img_abk_hero)
+                        error = painterResource(id = R.drawable.img_midad_hero)
                     )
                 } else {
                     Image(
-                        painter = painterResource(id = R.drawable.img_abk_hero),
+                        painter = painterResource(id = R.drawable.img_midad_hero),
                         contentDescription = node.title,
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Crop
@@ -186,13 +190,13 @@ fun CatalogNodeCard(
                         .fillMaxSize()
                         .background(
                             Brush.verticalGradient(
-                                listOf(Color.Black.copy(alpha = 0.15f), accent.copy(alpha = 0.88f))
+                                listOf(Color.Black.copy(alpha = 0.14f), accent.copy(alpha = 0.88f))
                             )
                         )
                 )
                 Surface(
                     shape = RoundedCornerShape(8.dp),
-                    color = Color.White.copy(alpha = 0.92f),
+                    color = Color.White.copy(alpha = 0.94f),
                     modifier = Modifier
                         .align(Alignment.TopStart)
                         .padding(8.dp)
@@ -236,7 +240,7 @@ fun CatalogNodeCard(
                         InfoPill(text = "$subjectCount مواد")
                     }
                     if (childCount == 0 && subjectCount == 0) {
-                        InfoPill(text = "تصفح")
+                        InfoPill(text = "استكشاف")
                     }
                 }
             }
@@ -255,7 +259,7 @@ fun TeacherShowcaseCard(
         modifier = modifier
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
             .testTag("teacher_card_${teacher.id}"),
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
     ) {
@@ -271,9 +275,9 @@ fun TeacherShowcaseCard(
                     modifier = Modifier
                         .size(52.dp)
                         .clip(CircleShape)
-                        .border(1.dp, MaterialTheme.colorScheme.secondary, CircleShape),
+                        .border(1.5.dp, MaterialTheme.colorScheme.secondary, CircleShape),
                     contentScale = ContentScale.Crop,
-                    error = painterResource(id = R.drawable.abk_app_icon)
+                    error = painterResource(id = R.drawable.midad_app_icon)
                 )
             } else {
                 Surface(
@@ -285,7 +289,7 @@ fun TeacherShowcaseCard(
                         Text(
                             text = teacher.name.take(2),
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                            color = MaterialTheme.colorScheme.primary
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
                         )
                     }
                 }
@@ -357,7 +361,7 @@ fun AbkSearchBar(
             .fillMaxWidth()
             .testTag("search_input"),
         singleLine = true,
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(18.dp),
         placeholder = {
             Text(
                 text = placeholder,
@@ -388,7 +392,7 @@ fun AbkSearchBar(
         },
         colors = OutlinedTextFieldDefaults.colors(
             focusedContainerColor = MaterialTheme.colorScheme.surface,
-            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
             focusedBorderColor = MaterialTheme.colorScheme.secondary,
             unfocusedBorderColor = MaterialTheme.colorScheme.outline
         )
@@ -397,15 +401,15 @@ fun AbkSearchBar(
 
 fun subjectVisuals(iconKey: String): Triple<ImageVector, Color, Int> {
     return when (iconKey.lowercase()) {
-        "math" -> Triple(Icons.Filled.Calculate, AbkNavyDeep, R.drawable.img_subject_stem)
-        "analysis" -> Triple(Icons.Filled.Functions, AbkSkyPrimary, R.drawable.img_subject_stem)
-        "arabic" -> Triple(Icons.Filled.AutoStories, AbkNavyPrimary, R.drawable.img_subject_humanities)
-        "religion" -> Triple(Icons.AutoMirrored.Filled.MenuBook, Color(0xFF0F766E), R.drawable.img_subject_humanities)
-        "english" -> Triple(Icons.Filled.Language, Color(0xFF0369A1), R.drawable.img_subject_humanities)
-        "physics" -> Triple(Icons.Filled.Science, Color(0xFF1D4ED8), R.drawable.img_subject_stem)
-        "science" -> Triple(Icons.Filled.Biotech, Color(0xFF0284C7), R.drawable.img_subject_stem)
-        "chemistry" -> Triple(Icons.Filled.Science, Color(0xFF0E7490), R.drawable.img_subject_stem)
-        else -> Triple(Icons.Filled.School, AbkNavyDeep, R.drawable.img_abk_hero)
+        "math" -> Triple(Icons.Filled.Calculate, MidadNavyDeep, R.drawable.img_midad_stem)
+        "analysis" -> Triple(Icons.Filled.Functions, MidadTurquoise, R.drawable.img_midad_stem)
+        "arabic" -> Triple(Icons.Filled.AutoStories, MidadNavyPrimary, R.drawable.img_midad_humanities)
+        "religion" -> Triple(Icons.AutoMirrored.Filled.MenuBook, Color(0xFF0F766E), R.drawable.img_midad_humanities)
+        "english" -> Triple(Icons.Filled.Language, Color(0xFF155E75), R.drawable.img_midad_humanities)
+        "physics" -> Triple(Icons.Filled.Science, Color(0xFF1D4ED8), R.drawable.img_midad_stem)
+        "science" -> Triple(Icons.Filled.Biotech, MidadTurquoise, R.drawable.img_midad_stem)
+        "chemistry" -> Triple(Icons.Filled.Science, Color(0xFF0E7490), R.drawable.img_midad_stem)
+        else -> Triple(Icons.Filled.School, MidadNavyDeep, R.drawable.img_midad_hero)
     }
 }
 
@@ -422,7 +426,7 @@ fun SubjectCard(
         modifier = modifier
             .clickable(onClick = onClick)
             .testTag("subject_card_${subject.id}"),
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
@@ -431,7 +435,7 @@ fun SubjectCard(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(102.dp)
+                    .height(104.dp)
             ) {
                 if (!subject.imageUrl.isNullOrBlank()) {
                     AsyncImage(
@@ -455,13 +459,13 @@ fun SubjectCard(
                         .fillMaxSize()
                         .background(
                             Brush.verticalGradient(
-                                listOf(Color.Transparent, accent.copy(alpha = 0.85f))
+                                listOf(Color.Transparent, accent.copy(alpha = 0.88f))
                             )
                         )
                 )
                 Surface(
                     shape = CircleShape,
-                    color = Color.White.copy(alpha = 0.94f),
+                    color = Color.White.copy(alpha = 0.95f),
                     modifier = Modifier
                         .align(Alignment.TopStart)
                         .padding(10.dp)
@@ -478,7 +482,7 @@ fun SubjectCard(
                 }
                 Text(
                     text = subject.title,
-                    style = MaterialTheme.typography.titleMedium,
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                     color = Color.White,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -548,7 +552,7 @@ fun LessonCard(
             .fillMaxWidth()
             .clickable(onClick = onWatchClick)
             .testTag("lesson_card_${lesson.id}"),
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
     ) {
@@ -560,9 +564,9 @@ fun LessonCard(
             ) {
                 Box(
                     modifier = Modifier
-                        .size(width = 112.dp, height = 78.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(AbkNavyDeep)
+                        .size(width = 114.dp, height = 80.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(MidadNavyDeep)
                 ) {
                     if (thumb != null) {
                         AsyncImage(
@@ -570,11 +574,11 @@ fun LessonCard(
                             contentDescription = lesson.title,
                             modifier = Modifier.fillMaxSize(),
                             contentScale = ContentScale.Crop,
-                            error = painterResource(id = R.drawable.img_abk_hero)
+                            error = painterResource(id = R.drawable.img_midad_hero)
                         )
                     } else {
                         Image(
-                            painter = painterResource(id = R.drawable.img_abk_hero),
+                            painter = painterResource(id = R.drawable.img_midad_hero),
                             contentDescription = lesson.title,
                             modifier = Modifier.fillMaxSize(),
                             contentScale = ContentScale.Crop
@@ -624,7 +628,7 @@ fun LessonCard(
                             Icon(
                                 imageVector = Icons.Filled.CheckCircle,
                                 contentDescription = "تمت المشاهدة",
-                                tint = AbkSuccess,
+                                tint = MidadSuccess,
                                 modifier = Modifier.size(16.dp)
                             )
                         }
@@ -698,7 +702,7 @@ fun LessonCard(
                 Spacer(Modifier.width(8.dp))
                 Button(
                     onClick = onWatchClick,
-                    shape = RoundedCornerShape(10.dp),
+                    shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                     modifier = Modifier.testTag("watch_lesson_btn_${lesson.id}")
                 ) {
@@ -735,7 +739,7 @@ fun MaterialCard(
             .fillMaxWidth()
             .clickable(onClick = onOpenPdf)
             .testTag("material_card_${material.id}"),
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
     ) {
@@ -747,9 +751,9 @@ fun MaterialCard(
                 Box(
                     modifier = Modifier
                         .size(width = 68.dp, height = 88.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(AbkSkyContainer)
-                        .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp)),
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(MaterialTheme.colorScheme.primaryContainer)
+                        .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(14.dp)),
                     contentAlignment = Alignment.Center
                 ) {
                     if (!material.coverUrl.isNullOrBlank()) {
@@ -796,8 +800,8 @@ fun MaterialCard(
                         if (isCachedOffline) {
                             InfoPill(
                                 text = "متاح أوفلاين",
-                                containerColor = Color(0xFFD1FAE5),
-                                contentColor = AbkSuccess
+                                containerColor = MidadSuccessContainer,
+                                contentColor = MidadSuccess
                             )
                         }
                     }
@@ -842,7 +846,7 @@ fun MaterialCard(
                     modifier = Modifier
                         .weight(1f)
                         .testTag("open_pdf_btn_${material.id}"),
-                    shape = RoundedCornerShape(10.dp),
+                    shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                 ) {
                     Icon(
@@ -857,7 +861,7 @@ fun MaterialCard(
                     onClick = onDownloadClick,
                     modifier = Modifier
                         .minimumInteractiveComponentSize()
-                        .clip(RoundedCornerShape(10.dp))
+                        .clip(RoundedCornerShape(12.dp))
                         .background(MaterialTheme.colorScheme.primaryContainer)
                         .testTag("download_pdf_btn_${material.id}")
                 ) {
@@ -871,7 +875,7 @@ fun MaterialCard(
                     onClick = onShareClick,
                     modifier = Modifier
                         .minimumInteractiveComponentSize()
-                        .clip(RoundedCornerShape(10.dp))
+                        .clip(RoundedCornerShape(12.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant)
                         .testTag("share_pdf_btn_${material.id}")
                 ) {
@@ -897,7 +901,7 @@ fun AnnouncementBannerCard(
     val accent = when (category) {
         AnnouncementCategory.URGENT -> MaterialTheme.colorScheme.error
         AnnouncementCategory.NEW_LESSON -> MaterialTheme.colorScheme.secondary
-        AnnouncementCategory.NEW_MATERIAL -> AbkSuccess
+        AnnouncementCategory.NEW_MATERIAL -> MidadSuccess
         AnnouncementCategory.GENERAL -> MaterialTheme.colorScheme.primary
     }
     Card(
@@ -905,9 +909,9 @@ fun AnnouncementBannerCard(
             .fillMaxWidth()
             .clickable(onClick = onClick)
             .testTag("announcement_card_${announcement.id}"),
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(
-            containerColor = if (isUnread) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+            containerColor = if (isUnread) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
             else MaterialTheme.colorScheme.surface
         ),
         border = BorderStroke(
@@ -951,8 +955,8 @@ fun AnnouncementBannerCard(
                     if (announcement.pinned) {
                         InfoPill(
                             text = "مثبت",
-                            containerColor = AbkWarning.copy(alpha = 0.15f),
-                            contentColor = AbkWarning
+                            containerColor = MidadWarning.copy(alpha = 0.16f),
+                            contentColor = MidadWarning
                         )
                     }
                     if (isUnread) {
@@ -992,7 +996,7 @@ fun AbkEmptyState(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Image(
-            painter = painterResource(id = R.drawable.img_empty_state),
+            painter = painterResource(id = R.drawable.img_midad_empty),
             contentDescription = title,
             modifier = Modifier
                 .size(136.dp)

@@ -197,7 +197,7 @@ fun onGoogleSignInClicked(
 
             val signedInUser = authResult.user ?: Firebase.auth.currentUser
             if (signedInUser != null) {
-                Log.i(AUTH_TAG, "Firebase Google Sign-In succeeded: uid=${signedInUser.uid}, email=${signedInUser.email}")
+                Log.i(AUTH_TAG, "Firebase Google Sign-In succeeded: uid=${signedInUser.uid}")
                 onAuthSuccess(signedInUser)
             } else {
                 val msg = "نجحت مصادقة Google لكن FirebaseAuth لم يُرجع جلسة مستخدم صالحة (currentUser == null)."

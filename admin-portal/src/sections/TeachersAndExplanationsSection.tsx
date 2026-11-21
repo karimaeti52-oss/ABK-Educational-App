@@ -251,7 +251,7 @@ export function TeachersSection({
                     <h4 className="font-bold text-[#0F294A]">{t.sortOrder}. {t.name}</h4>
                     <StatusBadge status={t.status} published={t.published} deletedAt={t.deletedAt} />
                   </div>
-                  <p className="text-xs text-slate-500">{t.headline || 'مدرس في منصة ABK'}</p>
+                  <p className="text-xs text-slate-500">{t.headline || 'مدرس في منصة مداد التعليمية'}</p>
                   <p className="mt-0.5 text-[11px] text-sky-700">
                     {store.explanations.filter((e) => e.teacherId === t.id && !e.deletedAt).length} شرح درس
                   </p>

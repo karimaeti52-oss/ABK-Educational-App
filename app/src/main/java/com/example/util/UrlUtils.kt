@@ -18,6 +18,15 @@ object UrlUtils {
         "drive\\.google\\.com/open\\?id=([a-zA-Z0-9_-]+)"
     )
 
+    fun isSafeHttpsUrl(rawUrl: String?): Boolean {
+        val candidate = rawUrl?.trim().orEmpty()
+        if (candidate.isEmpty()) return false
+        return runCatching {
+            val uri = java.net.URI(candidate)
+            uri.scheme.equals("https", ignoreCase = true) && !uri.host.isNullOrBlank()
+        }.getOrDefault(false)
+    }
+
     fun extractYouTubeVideoId(url: String): String? {
         val trimmed = url.trim()
         if (trimmed.isEmpty()) return null

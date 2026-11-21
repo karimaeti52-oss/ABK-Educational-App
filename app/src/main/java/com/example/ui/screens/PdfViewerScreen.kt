@@ -203,7 +203,7 @@ fun PdfViewerScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color(0xFFE2E8F0))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
                 .padding(innerPadding)
                 .testTag("pdf_viewer_screen")
         ) {
@@ -315,7 +315,7 @@ private fun PdfPageItem(
                     modifier = Modifier.fillMaxWidth(),
                     contentScale = ContentScale.FillWidth
                 )
-                Surface(color = Color(0xFFF8FAFC), modifier = Modifier.fillMaxWidth()) {
+                Surface(color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
                     Row(
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
                         horizontalArrangement = Arrangement.End

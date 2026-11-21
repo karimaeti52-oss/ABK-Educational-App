@@ -368,16 +368,16 @@ data class BottomNavConfigItem(
 @Keep
 @IgnoreExtraProperties
 data class PlatformConfig(
-    val platformName: String = "ABK",
-    val platformTagline: String = "المنصة التعليمية",
-    val homeHeadline: String = "ماذا تدرس؟",
-    val welcomeTitle: String = "ابدأ رحلتك الدراسية اليوم",
-    val welcomeSubtitle: String = "دروس مرئية، شروحات لعدة أساتذة، ملخصات واختبارات تفاعلية.",
+    val platformName: String = "مداد التعليمية",
+    val platformTagline: String = "طريقك نحو التفوق",
+    val homeHeadline: String = "ماذا تدرس اليوم؟",
+    val welcomeTitle: String = "ابدأ رحلتك الدراسية نحو التفوق",
+    val welcomeSubtitle: String = "دروس مرئية منظمة، شروحات لعدة أساتذة، كتب ونوطات PDF واختبارات تفاعلية.",
     val logoUrl: String? = null,
     val heroBannerUrl: String? = null,
-    val primaryColorHex: String = "#0F294A",
-    val secondaryColorHex: String = "#0EA5E9",
-    val accentColorHex: String? = "#38BDF8",
+    val primaryColorHex: String = "#142A43",
+    val secondaryColorHex: String = "#167D83",
+    val accentColorHex: String? = "#C7A15A",
     val bottomNavItems: List<BottomNavConfigItem> = emptyList(),
     val allowOfflinePdf: Boolean = true,
     val showAnnouncements: Boolean = true,
@@ -385,6 +385,21 @@ data class PlatformConfig(
     val maintenanceMode: Boolean = false,
     val updatedBy: String = ""
 )
+
+private val legacyAbkNames = setOf("ABK", "منصة ABK", "منصة ABK التعليمية", "أكاديمية ABK", "مِداد التعليمية")
+private val legacyAbkTaglines = setOf("المنصة التعليمية", "طريقك للتفوق الدراسي في مكان واحد", "طريقك نحو التفوّق")
+
+fun PlatformConfig.resolvedForMidad(): PlatformConfig {
+    val cleanName = platformName.trim()
+    val cleanTagline = platformTagline.trim()
+    return copy(
+        platformName = if (cleanName.isBlank() || cleanName in legacyAbkNames) "مداد التعليمية" else platformName,
+        platformTagline = if (cleanTagline.isBlank() || cleanTagline in legacyAbkTaglines) "طريقك نحو التفوق" else platformTagline,
+        primaryColorHex = if (primaryColorHex.equals("#0F294A", ignoreCase = true)) "#142A43" else primaryColorHex,
+        secondaryColorHex = if (secondaryColorHex.equals("#0EA5E9", ignoreCase = true)) "#167D83" else secondaryColorHex,
+        accentColorHex = if (accentColorHex.isNullOrBlank() || accentColorHex.equals("#38BDF8", ignoreCase = true)) "#C7A15A" else accentColorHex
+    )
+}
 
 @Keep
 @IgnoreExtraProperties

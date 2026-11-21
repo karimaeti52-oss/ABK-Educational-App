@@ -15,6 +15,7 @@ import {
 import { firebaseAuth, firestoreDb } from '../firebase';
 import type {
   AdminEntry,
+  AndroidReleaseManifest,
   Announcement,
   AuditLog,
   BackupSnapshot,
@@ -73,14 +74,14 @@ export function subscribePlatformConfig(
 }
 
 export const DEFAULT_PLATFORM_CONFIG: PlatformConfig = {
-  platformName: 'ABK',
-  platformTagline: 'المنصة التعليمية',
-  homeHeadline: 'ماذا تدرس؟',
+  platformName: 'مداد التعليمية',
+  platformTagline: 'طريقك نحو التفوق',
+  homeHeadline: 'ماذا تدرس اليوم؟',
   welcomeTitle: 'ابدأ رحلتك التعليمية اليوم',
   welcomeSubtitle: 'دروس مرئية، شروحات لعدة أساتذة، ملخصات واختبارات تفاعلية',
-  primaryColorHex: '#0F294A',
-  secondaryColorHex: '#0EA5E9',
-  accentColorHex: '#38BDF8',
+  primaryColorHex: '#142A43',
+  secondaryColorHex: '#167D83',
+  accentColorHex: '#C7A15A',
   bottomNavItems: [
     { route: 'home', label: 'الرئيسية', iconKey: 'home', visible: true, sortOrder: 1 },
     { route: 'subjects', label: 'المواد', iconKey: 'book', visible: true, sortOrder: 2 },
@@ -93,6 +94,17 @@ export const DEFAULT_PLATFORM_CONFIG: PlatformConfig = {
   showContinueWatching: true,
   maintenanceMode: false,
   updatedBy: 'system',
+};
+
+export const DEFAULT_ANDROID_RELEASE: AndroidReleaseManifest = {
+  versionCode: 2,
+  versionName: '1.1.0',
+  minSupportedVersionCode: 1,
+  apkUrl: '',
+  sha256: '',
+  fileSizeBytes: 0,
+  releaseNotes: '',
+  mandatory: false,
 };
 
 export async function recordAudit(
@@ -252,6 +264,62 @@ export async function savePlatformConfig(
     })
   );
   await recordAudit(staff, 'UPDATE_BRANDING', 'platformConfig', 'main', `تحديث هوية وتصميم المنصة (${config.platformName})`);
+}
+
+export function subscribeAndroidRelease(
+  onData: (release: AndroidReleaseManifest) => void
+): Unsubscribe {
+  return onSnapshot(doc(firestoreDb, 'appConfig', 'android_release'), (snap) => {
+    if (snap.exists()) {
+      onData({ ...DEFAULT_ANDROID_RELEASE, ...(snap.data() as Partial<AndroidReleaseManifest>) });
+    } else {
+      onData(DEFAULT_ANDROID_RELEASE);
+    }
+  });
+}
+
+export async function saveAndroidRelease(
+  release: AndroidReleaseManifest,
+  staff: StaffSession | null
+) {
+  const apkUrl = release.apkUrl.trim();
+  const sha256 = release.sha256.trim().toLowerCase();
+  if (!/^https:\/\/\S+$/i.test(apkUrl)) {
+    throw new Error('رابط ملف APK يجب أن يبدأ بـ https:// ولا يحتوي على مسافات.');
+  }
+  if (!/^[a-f0-9]{64}$/.test(sha256)) {
+    throw new Error('بصمة SHA-256 غير صالحة (يجب أن تتكون من 64 خانة ست عشرية).');
+  }
+  const versionCode = Math.floor(Number(release.versionCode));
+  if (!Number.isFinite(versionCode) || versionCode < 1) {
+    throw new Error('رقم الإصدار (versionCode) يجب أن يكون عدداً صحيحاً أكبر من 0.');
+  }
+  const minSupported = Math.max(0, Math.floor(Number(release.minSupportedVersionCode || 0)));
+  const fileSize = Math.max(0, Math.floor(Number(release.fileSizeBytes || 0)));
+  const uid = staff?.uid || firebaseAuth.currentUser?.uid || 'admin';
+  await setDoc(
+    doc(firestoreDb, 'appConfig', 'android_release'),
+    {
+      versionCode,
+      versionName: release.versionName.trim(),
+      minSupportedVersionCode: minSupported,
+      apkUrl,
+      sha256,
+      fileSizeBytes: fileSize,
+      releaseNotes: release.releaseNotes.trim(),
+      mandatory: Boolean(release.mandatory),
+      publishedAtMillis: Date.now(),
+      updatedBy: uid,
+      updatedAt: serverTimestamp(),
+    }
+  );
+  await recordAudit(
+    staff,
+    'PUBLISH_ANDROID_RELEASE',
+    'appConfig',
+    'android_release',
+    `نشر تحديث تطبيق Android: v${release.versionName.trim()} (${versionCode})`
+  );
 }
 
 export async function exportClientSnapshotJson(): Promise<Record<string, unknown>> {

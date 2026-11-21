@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "ABK"
+rootProject.name = "Midad"
 
 include(":app")

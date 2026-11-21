@@ -263,7 +263,9 @@ fun ExplanationDetailScreen(
                                 block = block,
                                 isDownload = blockType == ContentBlockType.DOWNLOAD_FILE,
                                 onOpenUrl = { url ->
-                                    if (url.isNotBlank()) runCatching { uriHandler.openUri(url) }
+                                    if (UrlUtils.isSafeHttpsUrl(url)) {
+                                        runCatching { uriHandler.openUri(url.trim()) }
+                                    }
                                 }
                             )
                         }
@@ -283,7 +285,9 @@ fun ExplanationDetailScreen(
                                 block = block,
                                 onOpenPdf = { onOpenBlockPdf(block) },
                                 onOpenUrl = { url ->
-                                    if (url.isNotBlank()) runCatching { uriHandler.openUri(url) }
+                                    if (UrlUtils.isSafeHttpsUrl(url)) {
+                                        runCatching { uriHandler.openUri(url.trim()) }
+                                    }
                                 }
                             )
                         }
@@ -346,7 +350,7 @@ private fun BlockVideoCard(block: ContentBlock, onPlay: () -> Unit) {
                         contentDescription = block.title,
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Crop,
-                        error = painterResource(id = R.drawable.img_abk_hero)
+                        error = painterResource(id = R.drawable.img_midad_hero)
                     )
                 }
                 Box(

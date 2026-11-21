@@ -31,13 +31,13 @@ fun handleFirestoreError(
     val providerInfoList = currentUser?.providerData?.map { provider ->
         JSONObject().apply {
             put("providerId", provider.providerId)
-            put("email", provider.email)
+            put("hasEmail", !provider.email.isNullOrBlank())
         }
     } ?: emptyList()
 
     val authInfoJson = JSONObject().apply {
         put("userId", currentUser?.uid)
-        put("email", currentUser?.email)
+        put("hasEmail", !currentUser?.email.isNullOrBlank())
         put("emailVerified", currentUser?.isEmailVerified)
         put("tenantId", currentUser?.tenantId)
         put("providerInfo", JSONArray(providerInfoList))

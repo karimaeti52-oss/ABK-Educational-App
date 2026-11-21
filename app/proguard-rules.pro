@@ -1,21 +1,31 @@
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# ProGuard / R8 Rules for Midad Educational Platform
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+# Keep line numbers & rename source file attribute for clean stack traces
+-keepattributes SourceFile,LineNumberTable,*Annotation*,Signature,InnerClasses,EnclosingMethod
+-renamesourcefileattribute SourceFile
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+# Preserve @Keep annotated Firestore models, update models, and JavascriptInterface classes
+-keep @androidx.annotation.Keep class * { *; }
+-keepclassmembers @androidx.annotation.Keep class * { *; }
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+-keep class com.example.data.model.** { *; }
+-keep class com.example.update.** { *; }
+
+# Keep WebView JavaScript bridge methods (YouTube IFrame player)
+-keepclassmembers class * {
+    @android.webkit.JavascriptInterface <methods>;
+}
+
+# Preserve enums used cleanly with Firestore deserialization
+-keepclassmembers enum com.example.** {
+    public static **[] values();
+    public static ** valueOf(java.lang.String);
+}
+
+# Strip verbose/debug/info logs from release builds
+-assumenosideeffects class android.util.Log {
+    public static boolean isLoggable(java.lang.String, int);
+    public static int v(...);
+    public static int d(...);
+    public static int i(...);
+}

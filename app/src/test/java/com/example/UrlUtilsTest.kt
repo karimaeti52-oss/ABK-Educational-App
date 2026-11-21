@@ -50,4 +50,17 @@ class UrlUtilsTest {
         assertEquals("02:05", UrlUtils.formatDurationMs(125_000L))
         assertEquals("1:01:05", UrlUtils.formatDurationMs(3_665_000L))
     }
+
+    @Test
+    fun validatesSafeHttpsUrlsOnly() {
+        org.junit.Assert.assertTrue(UrlUtils.isSafeHttpsUrl("https://github.com/org/repo/releases/download/v1.1.0/midad.apk"))
+        org.junit.Assert.assertTrue(UrlUtils.isSafeHttpsUrl("  HTTPS://cdn.midad.edu/file.pdf "))
+        org.junit.Assert.assertFalse(UrlUtils.isSafeHttpsUrl("http://example.com/file.apk"))
+        org.junit.Assert.assertFalse(UrlUtils.isSafeHttpsUrl("javascript:alert(1)"))
+        org.junit.Assert.assertFalse(UrlUtils.isSafeHttpsUrl("intent://scan/#Intent;end"))
+        org.junit.Assert.assertFalse(UrlUtils.isSafeHttpsUrl("file:///data/local/tmp/x.apk"))
+        org.junit.Assert.assertFalse(UrlUtils.isSafeHttpsUrl("data:text/html,<script>alert(1)</script>"))
+        org.junit.Assert.assertFalse(UrlUtils.isSafeHttpsUrl(""))
+        org.junit.Assert.assertFalse(UrlUtils.isSafeHttpsUrl(null))
+    }
 }

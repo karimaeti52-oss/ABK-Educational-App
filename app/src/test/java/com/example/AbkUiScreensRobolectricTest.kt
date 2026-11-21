@@ -22,6 +22,7 @@ import com.example.data.model.Subject
 import com.example.data.model.Teacher
 import com.example.data.model.UiState
 import com.example.data.model.UserProfile
+import com.example.ui.screens.AccountScreen
 import com.example.ui.screens.AuthScreen
 import com.example.ui.screens.CatalogBrowserScreen
 import com.example.ui.screens.ExplanationDetailScreen
@@ -30,6 +31,9 @@ import com.example.ui.screens.LessonTeachersScreen
 import com.example.ui.screens.SuspendedAccountScreen
 import com.example.ui.screens.VideoPlayerScreen
 import com.example.ui.theme.ABKTheme
+import com.example.ui.theme.MidadTheme
+import com.example.ui.theme.ThemePreferenceMode
+import com.example.update.AppUpdateState
 import com.example.viewmodel.SearchResults
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -56,7 +60,8 @@ class AbkUiScreensRobolectricTest {
             }
         }
         composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithText("ABK").assertIsDisplayed()
+        composeTestRule.onNodeWithText("مداد التعليمية").assertIsDisplayed()
+        composeTestRule.onNodeWithText("طريقك نحو التفوق").assertIsDisplayed()
         composeTestRule.onNodeWithTag("auth_error_banner")
             .performScrollTo()
             .assertIsDisplayed()
@@ -139,10 +144,86 @@ class AbkUiScreensRobolectricTest {
         }
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("home_screen").assertIsDisplayed()
-        composeTestRule.onNodeWithText("منصة ABK").assertIsDisplayed()
+        // Legacy "منصة ABK" automatically upgrades to "مداد التعليمية" via resolvedForMidad()
+        composeTestRule.onNodeWithText("مداد التعليمية").assertIsDisplayed()
         composeTestRule.onNodeWithText("ماذا تدرس؟").assertIsDisplayed()
         composeTestRule.onNodeWithTag("catalog_node_card_node_sec").performClick()
         assertEquals("node_sec", openedNodeId)
+    }
+
+    @Test
+    fun `HomeScreen preserves non-legacy custom platformName from admin branding`() {
+        val customConfig = PlatformConfig(
+            platformName = "أكاديمية النخبة",
+            platformTagline = "شعار مخصص",
+            homeHeadline = "استكشف الدروس",
+            primaryColorHex = "#142A43",
+            secondaryColorHex = "#167D83"
+        )
+        composeTestRule.setContent {
+            MidadTheme(platformConfig = customConfig) {
+                HomeScreen(
+                    userProfile = UserProfile(userId = "u1", displayName = "طالب تجريبي"),
+                    isAdmin = false,
+                    searchQuery = "",
+                    onSearchQueryChange = {},
+                    searchResults = SearchResults(),
+                    subjectsState = UiState.Success(emptyList()),
+                    lessonsState = UiState.Success(emptyList()),
+                    materialsState = UiState.Success(emptyList()),
+                    announcementsState = UiState.Success(emptyList()),
+                    favoritesState = UiState.Success(emptyList()),
+                    progressState = UiState.Success(emptyList()),
+                    readAnnouncementIds = emptySet(),
+                    onOpenSubject = {},
+                    onViewAllSubjects = {},
+                    onWatchLesson = {},
+                    onOpenMaterial = {},
+                    onDownloadMaterial = {},
+                    onShareMaterial = {},
+                    onToggleFavoriteLesson = {},
+                    onToggleFavoriteMaterial = {},
+                    onOpenAnnouncement = {},
+                    onOpenNotifications = {},
+                    onOpenLibrary = {},
+                    onOpenAdminPanel = {},
+                    platformConfig = customConfig
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("أكاديمية النخبة").assertIsDisplayed()
+        composeTestRule.onNodeWithText("استكشف الدروس").assertIsDisplayed()
+    }
+
+    @Test
+    fun `AccountScreen switches theme preference and triggers manual update check`() {
+        var selectedMode: ThemePreferenceMode = ThemePreferenceMode.SYSTEM
+        var updateCheckTriggered = false
+
+        composeTestRule.setContent {
+            MidadTheme(darkTheme = false) {
+                AccountScreen(
+                    userProfile = UserProfile(userId = "u1", displayName = "طالب مداد", email = "student@midad.edu"),
+                    isAdmin = false,
+                    favoritesCount = 3,
+                    watchedCount = 7,
+                    completedCount = 2,
+                    onOpenAdminPanel = {},
+                    onSignOut = {},
+                    themeMode = selectedMode,
+                    onThemeModeChange = { selectedMode = it },
+                    updateState = AppUpdateState.Idle,
+                    onCheckForUpdates = { updateCheckTriggered = true }
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("account_screen").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("theme_mode_DARK").performScrollTo().performClick()
+        assertEquals(ThemePreferenceMode.DARK, selectedMode)
+        composeTestRule.onNodeWithTag("update_check_btn").performScrollTo().performClick()
+        org.junit.Assert.assertTrue(updateCheckTriggered)
     }
 
     @Test

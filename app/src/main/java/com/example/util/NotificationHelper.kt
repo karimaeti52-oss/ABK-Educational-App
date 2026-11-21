@@ -16,7 +16,7 @@ import com.example.R
 
 object NotificationHelper {
     private const val CHANNEL_ID = "abk_announcements_channel"
-    private const val CHANNEL_NAME = "إعلانات وتنبيهات ABK"
+    private const val CHANNEL_NAME = "إعلانات وتنبيهات مداد التعليمية"
 
     fun ensureChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -28,7 +28,7 @@ object NotificationHelper {
                     CHANNEL_NAME,
                     NotificationManager.IMPORTANCE_DEFAULT
                 ).apply {
-                    description = "تنبيهات الدروس الجديدة والملفات والإعلانات في منصة ABK"
+                    description = "تنبيهات الدروس الجديدة والملفات والإعلانات في منصة مداد التعليمية"
                 }
                 manager.createNotificationChannel(channel)
             }

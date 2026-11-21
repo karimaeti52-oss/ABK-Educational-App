@@ -14,12 +14,14 @@ import com.example.data.model.StudyMaterial
 import com.example.data.model.Subject
 import com.example.data.model.Teacher
 import com.example.data.model.UnitItem
+import com.example.data.model.resolvedForMidad
 import com.google.firebase.Firebase
 import com.google.firebase.Timestamp
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
+import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.snapshots
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
@@ -27,10 +29,30 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.tasks.await
+
+data class CursorPage<T>(
+    val items: List<T>,
+    val lastCursor: DocumentSnapshot? = null,
+    val hasMore: Boolean = false
+)
 
 class AbkContentRepository(
     private val db: FirebaseFirestore
 ) {
+    companion object {
+        const val CATALOG_LIMIT = 150L
+        const val SUBJECTS_LIMIT = 150L
+        const val UNITS_LIMIT = 200L
+        const val TEACHERS_LIMIT = 150L
+        const val LESSONS_LIMIT = 300L
+        const val EXPLANATIONS_LIMIT = 300L
+        const val CONTENT_BLOCKS_LIMIT = 500L
+        const val CUSTOM_SECTIONS_LIMIT = 80L
+        const val MATERIALS_LIMIT = 300L
+        const val ANNOUNCEMENTS_LIMIT = 50L
+    }
+
     private val auth = Firebase.auth
 
     private fun requireUid(): String =
@@ -42,11 +64,12 @@ class AbkContentRepository(
             db.collection("platformConfig").document("main")
                 .snapshots()
                 .map { snapshot ->
-                    if (snapshot.exists()) {
+                    val raw = if (snapshot.exists()) {
                         snapshot.toObject(PlatformConfig::class.java) ?: PlatformConfig()
                     } else {
                         PlatformConfig()
                     }
+                    raw.resolvedForMidad()
                 }
                 .catch { error ->
                     logStreamErrorIfAuthenticated(error, uid, "platformConfig/main")
@@ -60,6 +83,7 @@ class AbkContentRepository(
         emitAll(
             db.collection("catalogNodes")
                 .whereEqualTo("published", true)
+                .limit(CATALOG_LIMIT)
                 .snapshots()
                 .map { snapshot ->
                     snapshot.toObjects(
@@ -81,6 +105,7 @@ class AbkContentRepository(
         emitAll(
             db.collection("subjects")
                 .whereEqualTo("published", true)
+                .limit(SUBJECTS_LIMIT)
                 .snapshots()
                 .map { snapshot ->
                     snapshot.toObjects(
@@ -102,6 +127,7 @@ class AbkContentRepository(
         emitAll(
             db.collection("units")
                 .whereEqualTo("published", true)
+                .limit(UNITS_LIMIT)
                 .snapshots()
                 .map { snapshot ->
                     snapshot.toObjects(
@@ -123,6 +149,7 @@ class AbkContentRepository(
         emitAll(
             db.collection("teachers")
                 .whereEqualTo("published", true)
+                .limit(TEACHERS_LIMIT)
                 .snapshots()
                 .map { snapshot ->
                     snapshot.toObjects(
@@ -144,6 +171,7 @@ class AbkContentRepository(
         emitAll(
             db.collection("lessons")
                 .whereEqualTo("published", true)
+                .limit(LESSONS_LIMIT)
                 .snapshots()
                 .map { snapshot ->
                     snapshot.toObjects(
@@ -164,11 +192,47 @@ class AbkContentRepository(
         )
     }
 
+    suspend fun fetchLessonsPage(
+        subjectId: String? = null,
+        pageSize: Long = 25L,
+        startAfter: DocumentSnapshot? = null
+    ): Result<CursorPage<Lesson>> = try {
+        requireUid()
+        var query: Query = db.collection("lessons")
+            .whereEqualTo("published", true)
+        if (!subjectId.isNullOrBlank()) {
+            query = query.whereEqualTo("subjectId", subjectId)
+        }
+        query = query.limit(pageSize)
+        if (startAfter != null) {
+            query = query.startAfter(startAfter)
+        }
+        val snap = query.get().await()
+        val items = snap.toObjects(
+            Lesson::class.java,
+            DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+        ).filter { it.deletedAt == null && it.status != PublishStatus.ARCHIVED.name }
+        val last = snap.documents.lastOrNull()
+        Result.success(
+            CursorPage(
+                items = items,
+                lastCursor = last,
+                hasMore = snap.documents.size >= pageSize
+            )
+        )
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        handleFirestoreError(e, OperationType.LIST, "lessons")
+        Result.failure(e)
+    }
+
     fun observePublishedLessonExplanations(): Flow<List<LessonExplanation>> = flow {
         val uid = requireUid()
         emitAll(
             db.collection("lessonExplanations")
                 .whereEqualTo("published", true)
+                .limit(EXPLANATIONS_LIMIT)
                 .snapshots()
                 .map { snapshot ->
                     snapshot.toObjects(
@@ -190,6 +254,7 @@ class AbkContentRepository(
         emitAll(
             db.collection("contentBlocks")
                 .whereEqualTo("published", true)
+                .limit(CONTENT_BLOCKS_LIMIT)
                 .snapshots()
                 .map { snapshot ->
                     snapshot.toObjects(
@@ -211,6 +276,7 @@ class AbkContentRepository(
         emitAll(
             db.collection("customSectionTypes")
                 .whereEqualTo("published", true)
+                .limit(CUSTOM_SECTIONS_LIMIT)
                 .snapshots()
                 .map { snapshot ->
                     snapshot.toObjects(
@@ -230,6 +296,7 @@ class AbkContentRepository(
         emitAll(
             db.collection("materials")
                 .whereEqualTo("published", true)
+                .limit(MATERIALS_LIMIT)
                 .snapshots()
                 .map { snapshot ->
                     snapshot.toObjects(
@@ -246,11 +313,47 @@ class AbkContentRepository(
         )
     }
 
+    suspend fun fetchMaterialsPage(
+        subjectId: String? = null,
+        pageSize: Long = 25L,
+        startAfter: DocumentSnapshot? = null
+    ): Result<CursorPage<StudyMaterial>> = try {
+        requireUid()
+        var query: Query = db.collection("materials")
+            .whereEqualTo("published", true)
+        if (!subjectId.isNullOrBlank()) {
+            query = query.whereEqualTo("subjectId", subjectId)
+        }
+        query = query.limit(pageSize)
+        if (startAfter != null) {
+            query = query.startAfter(startAfter)
+        }
+        val snap = query.get().await()
+        val items = snap.toObjects(
+            StudyMaterial::class.java,
+            DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+        ).filter { it.deletedAt == null && it.status != PublishStatus.ARCHIVED.name }
+        val last = snap.documents.lastOrNull()
+        Result.success(
+            CursorPage(
+                items = items,
+                lastCursor = last,
+                hasMore = snap.documents.size >= pageSize
+            )
+        )
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        handleFirestoreError(e, OperationType.LIST, "materials")
+        Result.failure(e)
+    }
+
     fun observePublishedAnnouncements(): Flow<List<Announcement>> = flow {
         val uid = requireUid()
         emitAll(
             db.collection("announcements")
                 .whereEqualTo("published", true)
+                .limit(ANNOUNCEMENTS_LIMIT)
                 .snapshots()
                 .map { snapshot ->
                     snapshot.toObjects(
