@@ -392,6 +392,19 @@ jobs:
             exit 1
           fi
 
+          if ! "$AAPT2_BIN" dump resources "$PERMANENT_ASSET_NAME" | python3 - <<'PY'
+          import re, sys
+          dump = sys.stdin.read()
+          m = re.search(r"resource\s+0x[0-9a-fA-F]+\s+string/default_web_client_id\b(.*?)(?=\n\s*resource\s+0x|\Z)", dump, re.S)
+          if not m or ".apps.googleusercontent.com" not in m.group(1):
+              sys.exit(1)
+          PY
+          then
+            echo "::error::string/default_web_client_id was stripped or invalid inside final Release APK ($PERMANENT_ASSET_NAME)."
+            exit 1
+          fi
+          echo "Verified string/default_web_client_id is preserved inside final Release APK ($PERMANENT_ASSET_NAME)."
+
           echo "permanent_asset=${PERMANENT_ASSET_NAME}" >> "$GITHUB_OUTPUT"
           echo "versioned_asset=${VERSIONED_ASSET_NAME}" >> "$GITHUB_OUTPUT"
           echo "sha256=${PERM_SHA256}" >> "$GITHUB_OUTPUT"

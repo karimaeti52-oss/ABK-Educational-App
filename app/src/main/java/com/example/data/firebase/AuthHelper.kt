@@ -334,14 +334,18 @@ fun signOutUser(
 
 @SuppressLint("DiscouragedApi")
 internal fun resolveWebClientId(context: Context): String? {
-    val resId = context.resources.getIdentifier(
-        "default_web_client_id",
-        "string",
-        context.packageName
-    )
+    val appContext = context.applicationContext ?: context
+    val packageCandidates = listOfNotNull(
+        context.packageName.takeIf { it.isNotBlank() },
+        appContext.packageName.takeIf { it.isNotBlank() }
+    ).distinct()
+    val resId = packageCandidates.firstNotNullOfOrNull { pkg ->
+        context.resources.getIdentifier("default_web_client_id", "string", pkg).takeIf { it != 0 }
+            ?: appContext.resources.getIdentifier("default_web_client_id", "string", pkg).takeIf { it != 0 }
+    } ?: 0
     if (resId == 0) return null
     return try {
-        val value = context.getString(resId).trim()
+        val value = appContext.getString(resId).trim()
         value.takeIf {
             it.isNotBlank() &&
                 !it.contains("placeholder", ignoreCase = true) &&
