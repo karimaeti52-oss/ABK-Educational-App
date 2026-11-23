@@ -32,7 +32,7 @@ class StudentRepository(
     private val auth = Firebase.auth
 
     companion object {
-        const val BOOTSTRAPPED_ADMIN_EMAIL = "karimaeti07@gmail.com"
+        private val STAFF_CLAIMS_ROLES = setOf("SUPER_ADMIN", "ADMIN", "CONTENT_MANAGER", "TEACHER", "VIEWER")
         const val FAVORITES_LIMIT = 200L
         const val PROGRESS_LIMIT = 200L
         const val READ_ANNOUNCEMENTS_LIMIT = 100L
@@ -52,15 +52,12 @@ class StudentRepository(
             val safeEmail = (user.email ?: "").take(160)
             val safePhoto = user.photoUrl?.toString()?.take(500)
 
-            val isBootstrappedAdmin = user.isEmailVerified &&
-                safeEmail.equals(BOOTSTRAPPED_ADMIN_EMAIL, ignoreCase = true)
-
             if (!existingSnap.exists()) {
                 val payload = mutableMapOf<String, Any>(
                     "userId" to uid,
                     "displayName" to safeName,
                     "email" to safeEmail,
-                    "role" to if (isBootstrappedAdmin) UserRole.ADMIN.name else UserRole.STUDENT.name,
+                    "role" to UserRole.STUDENT.name,
                     "accountStatus" to AccountStatus.ACTIVE.name,
                     "lastActiveAt" to FieldValue.serverTimestamp(),
                     "createdAt" to FieldValue.serverTimestamp(),
@@ -116,12 +113,17 @@ class StudentRepository(
         )
     }
 
-    fun observeIsAdmin(userId: String, email: String?, isEmailVerified: Boolean): Flow<Boolean> = flow {
+    fun observeIsAdmin(
+        userId: String,
+        @Suppress("UNUSED_PARAMETER") email: String?,
+        @Suppress("UNUSED_PARAMETER") isEmailVerified: Boolean
+    ): Flow<Boolean> = flow {
         val uid = requireUserId()
         check(uid == userId)
-        val isBootstrapped = isEmailVerified &&
-            email?.equals(BOOTSTRAPPED_ADMIN_EMAIL, ignoreCase = true) == true
-        if (isBootstrapped) {
+        val claims = runCatching { auth.currentUser?.getIdToken(false)?.await()?.claims }.getOrNull().orEmpty()
+        val claimRole = claims["abkRole"] as? String
+        val hasStaffClaim = claims["abkStaff"] == true || (claimRole != null && claimRole in STAFF_CLAIMS_ROLES)
+        if (hasStaffClaim) {
             emit(true)
             return@flow
         }
@@ -129,7 +131,7 @@ class StudentRepository(
         emitAll(
             db.collection("admins").document(userId)
                 .snapshots()
-                .map { snap -> snap.exists() }
+                .map { snap -> snap.exists() && snap.getBoolean("active") != false }
                 .catch { error ->
                     logStreamError(error, uid, OperationType.GET, path)
                     emit(false)

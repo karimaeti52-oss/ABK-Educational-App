@@ -1,5 +1,8 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, ExternalLink, Play, X } from 'lucide-react';
+import { AlertTriangle, ExternalLink, Loader2, Play, X } from 'lucide-react';
+import { firebaseAuth } from '../firebase';
+import { resolveActiveR2WorkerUrl } from '../services/r2UploadClient';
+import type { PlatformConfig } from '../types';
 import {
   extractYouTubeVideoId,
   getYouTubeWatchUrl,
@@ -11,6 +14,130 @@ import {
 interface YouTubePlayerProps {
   url: string;
   title?: string;
+}
+
+function shouldAttachWorkerAuth(url: string, platformConfig?: Partial<PlatformConfig> | null): boolean {
+  try {
+    const parsed = new URL(url);
+    const activeWorker = resolveActiveR2WorkerUrl(platformConfig);
+    if (activeWorker) {
+      const workerParsed = new URL(activeWorker);
+      if (parsed.origin === workerParsed.origin) return true;
+    }
+    return (
+      parsed.hostname.endsWith('.workers.dev') &&
+      (parsed.pathname.startsWith('/files/') || parsed.pathname.startsWith('/b2/files/'))
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function AuthenticatedDirectVideo({
+  url,
+  platformConfig,
+  className = 'aspect-video w-full',
+  onFatalError,
+}: {
+  url: string;
+  platformConfig?: Partial<PlatformConfig> | null;
+  className?: string;
+  onFatalError?: () => void;
+}) {
+  const [resolvedSrc, setResolvedSrc] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    let canceled = false;
+    let createdBlobUrl: string | null = null;
+    setErrorMsg(null);
+
+    if (!url) {
+      setResolvedSrc(null);
+      return;
+    }
+
+    const needsWorkerAuth = shouldAttachWorkerAuth(url, platformConfig) && Boolean(firebaseAuth.currentUser);
+    if (!needsWorkerAuth) {
+      setResolvedSrc(url);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    setResolvedSrc(null);
+
+    (async () => {
+      try {
+        const token = await firebaseAuth.currentUser?.getIdToken();
+        if (!token) {
+          throw new Error('يرجى تسجيل الدخول للمعاينة.');
+        }
+        const res = await fetch(url, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) {
+          throw new Error(`تعذر تحميل الفيديو المحمي (HTTP ${res.status})`);
+        }
+        const blob = await res.blob();
+        createdBlobUrl = URL.createObjectURL(blob);
+        if (!canceled) {
+          setResolvedSrc(createdBlobUrl);
+        } else {
+          URL.revokeObjectURL(createdBlobUrl);
+          createdBlobUrl = null;
+        }
+      } catch (err) {
+        if (!canceled) {
+          setErrorMsg(err instanceof Error ? err.message : 'تعذر تحميل معاينة الفيديو.');
+          onFatalError?.();
+        }
+      } finally {
+        if (!canceled) {
+          setLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      canceled = true;
+      if (createdBlobUrl) {
+        URL.revokeObjectURL(createdBlobUrl);
+      }
+    };
+  }, [url, platformConfig, onFatalError]);
+
+  if (loading) {
+    return (
+      <div className="flex aspect-video w-full flex-col items-center justify-center gap-2 bg-slate-900 text-xs text-slate-200">
+        <Loader2 className="h-7 w-7 animate-spin text-sky-400" />
+        <span>جاري تحميل معاينة الفيديو المحمي...</span>
+      </div>
+    );
+  }
+
+  if (errorMsg) {
+    return (
+      <div className="flex aspect-video w-full flex-col items-center justify-center gap-2 bg-amber-50 p-4 text-center text-xs text-amber-900">
+        <AlertTriangle className="h-7 w-7 text-amber-600" />
+        <p className="font-bold">{errorMsg}</p>
+      </div>
+    );
+  }
+
+  if (!resolvedSrc) return null;
+
+  return (
+    <video
+      src={resolvedSrc}
+      controls
+      playsInline
+      preload="metadata"
+      onError={() => onFatalError?.()}
+      className={className}
+    />
+  );
 }
 
 export function YouTubeVideoPlayer({ url, title = 'مشغل فيديو YouTube' }: YouTubePlayerProps) {
@@ -159,11 +286,13 @@ export function VideoPreviewModal({
   open,
   title,
   url,
+  platformConfig,
   onClose,
 }: {
   open: boolean;
   title: string;
   url: string;
+  platformConfig?: Partial<PlatformConfig> | null;
   onClose: () => void;
 }) {
   const [directVideoError, setDirectVideoError] = useState(false);
@@ -216,13 +345,11 @@ export function VideoPreviewModal({
           ) : (
             <div className="space-y-2.5">
               <div className="aspect-video w-full overflow-hidden rounded-2xl bg-black">
-                <video
-                  src={url}
-                  controls
-                  playsInline
-                  preload="metadata"
-                  onError={() => setDirectVideoError(true)}
+                <AuthenticatedDirectVideo
+                  url={url}
+                  platformConfig={platformConfig}
                   className="h-full w-full"
+                  onFatalError={() => setDirectVideoError(true)}
                 />
               </div>
               <div className="flex justify-end">

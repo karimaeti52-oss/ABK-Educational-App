@@ -1,6 +1,17 @@
 # Optional local dev overrides for `wrangler dev` (NEVER commit real .dev.vars to Git!)
 FIREBASE_PROJECT_ID="gen-lang-client-0343268738"
 FIREBASE_DATABASE_ID="ai-studio-android-abk-452af8d1-cf14-40e7-aead-48a40e7f239d"
-SUPER_ADMIN_EMAIL="karimaeti07@gmail.com"
+SUPER_ADMIN_EMAIL=""
 ALLOWED_ORIGINS="http://localhost:5173,http://localhost:4173,https://gen-lang-client-0343268738.web.app"
-READ_ACCESS_MODE="public"
+READ_ACCESS_MODE="authenticated"
+DEFAULT_R2_LIMIT_GB="10"
+DEFAULT_TOTAL_LIMIT_GB="10"
+DEFAULT_B2_LIMIT_GB="10"
+B2_ENABLED="false"
+
+# Backblaze B2 S3-compatible credentials (keep disabled until account is linked and verified)
+# B2_ENDPOINT="https://s3.us-west-004.backblazeb2.com"
+# B2_REGION="us-west-004"
+# B2_BUCKET_NAME=""
+# B2_KEY_ID=""
+# B2_APPLICATION_KEY=""

@@ -53,11 +53,12 @@ export const ROLE_DEFAULT_PERMISSIONS = {
   VIEWER: [PERMISSIONS.VIEW_AUDIT],
 };
 
-export function resolveEffectiveRole(decodedToken, adminDoc, superAdminEmail = 'karimaeti07@gmail.com') {
-  const email = (decodedToken?.email || '').toLowerCase();
+export function resolveEffectiveRole(decodedToken, adminDoc, superAdminEmail = '') {
+  const email = (decodedToken?.email || '').trim().toLowerCase();
   const emailVerified = Boolean(decodedToken?.email_verified);
+  const configuredSuperEmail = String(superAdminEmail || '').trim().toLowerCase();
 
-  if (emailVerified && email === superAdminEmail.toLowerCase()) {
+  if (configuredSuperEmail && emailVerified && email === configuredSuperEmail) {
     return 'SUPER_ADMIN';
   }
 

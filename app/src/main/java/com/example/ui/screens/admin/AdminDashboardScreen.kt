@@ -389,7 +389,8 @@ fun AdminDashboardScreen(
                                     val isSelf = user.userId == currentUserId
                                     val parsedStatus = user.parsedStatus()
                                     val isBlocked = parsedStatus == AccountStatus.SUSPENDED || parsedStatus == AccountStatus.BANNED
-                                    val isUserAdmin = user.parsedRole() == UserRole.ADMIN
+                                    val isSuperAdmin = user.role == "SUPER_ADMIN"
+                                    val isUserAdmin = isSuperAdmin || user.parsedRole() == UserRole.ADMIN
                                     Card(
                                         shape = RoundedCornerShape(16.dp),
                                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -415,7 +416,11 @@ fun AdminDashboardScreen(
                                                 }
                                                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                                     InfoPill(
-                                                        text = if (isUserAdmin) "مدير" else "طالب",
+                                                        text = when {
+                                                            isSuperAdmin -> "مدير عام"
+                                                            isUserAdmin -> "مدير"
+                                                            else -> "طالب"
+                                                        },
                                                         containerColor = if (isUserAdmin) MidadNavyDeep else MaterialTheme.colorScheme.primaryContainer,
                                                         contentColor = if (isUserAdmin) Color.White else MaterialTheme.colorScheme.onPrimaryContainer
                                                     )
@@ -426,7 +431,7 @@ fun AdminDashboardScreen(
                                                     )
                                                 }
                                             }
-                                            if (!isSelf) {
+                                            if (!isSelf && !isSuperAdmin) {
                                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                                     OutlinedButton(
                                                         onClick = { adminViewModel.toggleUserSuspension(user) },

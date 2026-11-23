@@ -1,10 +1,22 @@
-import type { MediaKind, PlatformConfig, R2QuotaStatus, R2StorageLimits } from '../types.ts';
+import type {
+  B2QuotaStatus,
+  MediaAccessLevel,
+  MediaKind,
+  MultiProviderStorageSummary,
+  PlatformConfig,
+  R2QuotaStatus,
+  R2StorageLimits,
+  StorageProviderId,
+} from '../types.ts';
 
 export const DEFAULT_R2_LIMITS: R2StorageLimits = {
   maxVideoSizeMb: 200,
   maxPdfSizeMb: 100,
   maxImageSizeMb: 20,
-  totalStorageLimitGb: 25,
+  r2StorageLimitGb: 10,
+  b2StorageLimitGb: 10,
+  b2Enabled: false,
+  totalStorageLimitGb: 10,
 };
 
 export const MULTIPART_THRESHOLD_BYTES = 5 * 1024 * 1024;
@@ -45,6 +57,7 @@ export interface ResumableUploadSession {
   fileName: string;
   sizeBytes: number;
   folder: string;
+  storageProvider?: StorageProviderId;
   uploadId: string;
   objectKey: string;
   partSizeBytes: number;
@@ -66,6 +79,8 @@ export interface R2UploadProgress {
 export interface R2UploadResult {
   url: string;
   objectKey: string;
+  storageProvider: StorageProviderId;
+  accessLevel: MediaAccessLevel;
   sizeBytes: number;
   sizeLabel: string;
   contentType: string;
@@ -103,15 +118,139 @@ const EXT_INFO: Record<string, { mediaKind: MediaKind; contentType: string }> = 
 
 export function resolveR2StorageLimits(config?: Partial<PlatformConfig> | null): R2StorageLimits {
   const clamp = (val: unknown, fallback: number, min: number, max: number) => {
+    if (val === undefined || val === null || val === '') return fallback;
     const n = Number(val);
-    if (!Number.isFinite(n) || n <= 0) return fallback;
+    if (!Number.isFinite(n)) return fallback;
     return Math.min(max, Math.max(min, Math.round(n)));
   };
+  const r2StorageLimitGb = clamp(config?.r2StorageLimitGb, DEFAULT_R2_LIMITS.r2StorageLimitGb, 1, 500);
+  const b2StorageLimitGb = clamp(config?.b2StorageLimitGb, DEFAULT_R2_LIMITS.b2StorageLimitGb, 0, 500);
+  const b2Enabled = config?.b2Enabled === true;
+  // Active quota defaults strictly to R2 alone (10 GB) unless Backblaze B2 is also enabled.
+  const totalStorageLimitGb = b2Enabled ? r2StorageLimitGb + b2StorageLimitGb : r2StorageLimitGb;
+
   return {
     maxVideoSizeMb: clamp(config?.maxVideoSizeMb, DEFAULT_R2_LIMITS.maxVideoSizeMb, 1, 2048),
     maxPdfSizeMb: clamp(config?.maxPdfSizeMb, DEFAULT_R2_LIMITS.maxPdfSizeMb, 1, 1024),
     maxImageSizeMb: clamp(config?.maxImageSizeMb, DEFAULT_R2_LIMITS.maxImageSizeMb, 1, 256),
-    totalStorageLimitGb: clamp(config?.totalStorageLimitGb, DEFAULT_R2_LIMITS.totalStorageLimitGb, 1, 1000),
+    r2StorageLimitGb,
+    b2StorageLimitGb,
+    b2Enabled,
+    totalStorageLimitGb,
+  };
+}
+
+const GIB = 1024 * 1024 * 1024;
+
+export function buildMultiProviderStorageSummary(options: {
+  limits: R2StorageLimits;
+  r2Quota?: R2QuotaStatus | null;
+  b2Status?: B2QuotaStatus | null;
+}): MultiProviderStorageSummary {
+  const { limits, r2Quota, b2Status } = options;
+
+  const r2AllocatedBytes = limits.r2StorageLimitGb * GIB;
+  const r2Verified = Boolean(
+    r2Quota &&
+      r2Quota.verified === true &&
+      r2Quota.r2Bound !== false &&
+      (r2Quota.r2 ? r2Quota.r2.verified === true : Number.isFinite(r2Quota.totalLimitBytes) && r2Quota.totalLimitBytes > 0)
+  );
+  const r2ActiveBytes = r2Verified
+    ? Math.max(0, Number(r2Quota?.r2?.activeLimitBytes ?? r2AllocatedBytes))
+    : 0;
+  const r2UsedBytes = r2Verified ? Math.max(0, Number(r2Quota?.r2?.usedBytes ?? r2Quota?.usedBytes ?? 0)) : 0;
+  const r2RemainingActive = r2Verified ? Math.max(0, r2ActiveBytes - r2UsedBytes) : 0;
+  const r2RemainingAllocated = Math.max(0, r2AllocatedBytes - r2UsedBytes);
+  const r2UsedPct =
+    r2AllocatedBytes > 0 ? Math.min(100, Number(((r2UsedBytes / r2AllocatedBytes) * 100).toFixed(1))) : 0;
+  const r2NearLimit = r2Verified && r2ActiveBytes > 0 && r2UsedBytes / r2ActiveBytes >= 0.85;
+
+  const b2AllocatedBytes = limits.b2StorageLimitGb * GIB;
+  const effectiveB2 = b2Status ?? r2Quota?.b2 ?? null;
+  // Never rely on Firestore b2Enabled alone to report B2 as enabled or verified!
+  const b2WorkerConfigured = Boolean(effectiveB2?.workerConfigured ?? (effectiveB2?.verified || effectiveB2?.enabled));
+  const b2Verified = Boolean(effectiveB2?.verified === true);
+  const b2Enabled = Boolean(effectiveB2?.enabled === true && b2Verified);
+  const b2ActiveBytes = b2Enabled ? Math.max(0, Number(effectiveB2?.activeLimitBytes ?? b2AllocatedBytes)) : 0;
+  const b2UsedBytes = b2Verified ? Math.max(0, Number(effectiveB2?.usedBytes || 0)) : 0;
+  const b2RemainingActive = b2Enabled ? Math.max(0, b2ActiveBytes - b2UsedBytes) : 0;
+  const b2RemainingAllocated = Math.max(0, b2AllocatedBytes - b2UsedBytes);
+  const b2UsedPct =
+    b2AllocatedBytes > 0 ? Math.min(100, Number(((b2UsedBytes / b2AllocatedBytes) * 100).toFixed(1))) : 0;
+
+  const targetTotalBytes = r2AllocatedBytes + b2AllocatedBytes;
+  const verifiedActiveTotalBytes = r2ActiveBytes + b2ActiveBytes;
+  const totalUsedBytes = r2UsedBytes + (b2Enabled ? b2UsedBytes : 0);
+  const remainingActiveBytes = Math.max(0, verifiedActiveTotalBytes - totalUsedBytes);
+  const remainingTargetBytes = Math.max(0, targetTotalBytes - totalUsedBytes);
+  const usedPercentOfTarget =
+    targetTotalBytes > 0 ? Math.min(100, Number(((totalUsedBytes / targetTotalBytes) * 100).toFixed(1))) : 0;
+  const usedPercentOfActive =
+    verifiedActiveTotalBytes > 0
+      ? Math.min(100, Number(((totalUsedBytes / verifiedActiveTotalBytes) * 100).toFixed(1)))
+      : 0;
+
+  let b2StatusState: 'verified' | 'unverified' | 'disabled_unlinked' = 'disabled_unlinked';
+  let b2StatusMessage = 'غير مفعّل — بانتظار تجهيز حساب Backblaze B2 وربطه فعلياً في Worker';
+  if (b2Enabled) {
+    b2StatusState = 'verified';
+    b2StatusMessage = 'متصل ومُتحقّق فعلياً من حساب Backblaze B2';
+  } else if (effectiveB2?.error) {
+    b2StatusState = 'unverified';
+    b2StatusMessage = `تعذر التحقق الفعلي من Backblaze B2: ${effectiveB2.error}`;
+  } else if (b2WorkerConfigured && b2Verified && !b2Enabled) {
+    b2StatusState = 'disabled_unlinked';
+    b2StatusMessage = 'حساب B2 متصل ومُختبَر — جاهز للتفعيل عند تفعيله من إعدادات النظام';
+  } else if (limits.b2Enabled && !b2Verified) {
+    b2StatusState = 'unverified';
+    b2StatusMessage = 'إعداد Firestore يطلب B2 لكن Worker غير مربوط أو لم ينجح الاختبار الفعلي بعد — المساحة غير محتسبة';
+  }
+
+  return {
+    r2: {
+      provider: 'cloudflare-r2',
+      label: 'Cloudflare R2',
+      enabled: true,
+      verified: r2Verified,
+      allocatedBytes: r2AllocatedBytes,
+      activeBytes: r2ActiveBytes,
+      usedBytes: r2UsedBytes,
+      remainingActiveBytes: r2RemainingActive,
+      remainingAllocatedBytes: r2RemainingAllocated,
+      usedPercentOfAllocated: r2UsedPct,
+      fileCount: r2Verified ? Number(r2Quota?.r2?.fileCount ?? r2Quota?.fileCount ?? 0) : 0,
+      nearLimit: r2NearLimit,
+      status: r2Verified ? 'verified' : 'unverified',
+      statusMessage: r2Verified
+        ? 'متصل ومُتحقّق فعلياً من حساب Cloudflare R2'
+        : r2Quota?.r2?.error
+          ? `فشل التحقق من R2: ${r2Quota.r2.error}`
+          : 'غير مفعّل كسعة متاحة بعد — بانتظار التحقق الفعلي من حساب Cloudflare R2 وربط Worker',
+    },
+    b2: {
+      provider: 'backblaze-b2',
+      label: 'Backblaze B2',
+      enabled: b2Enabled,
+      verified: b2Verified,
+      allocatedBytes: b2AllocatedBytes,
+      activeBytes: b2ActiveBytes,
+      usedBytes: b2UsedBytes,
+      remainingActiveBytes: b2RemainingActive,
+      remainingAllocatedBytes: b2RemainingAllocated,
+      usedPercentOfAllocated: b2UsedPct,
+      fileCount: b2Verified ? Number(effectiveB2?.fileCount || 0) : 0,
+      nearLimit: b2Enabled && b2ActiveBytes > 0 && b2UsedBytes / b2ActiveBytes >= 0.85,
+      status: b2StatusState,
+      statusMessage: b2StatusMessage,
+    },
+    targetTotalBytes,
+    verifiedActiveTotalBytes,
+    totalUsedBytes,
+    remainingActiveBytes,
+    remainingTargetBytes,
+    usedPercentOfTarget,
+    usedPercentOfActive,
   };
 }
 
@@ -178,7 +317,8 @@ export function validateR2FileLimits(
   fileSize: number,
   mediaKind: MediaKind,
   limits: R2StorageLimits,
-  quotaStatus?: R2QuotaStatus | null
+  quotaStatus?: R2QuotaStatus | null,
+  storageProvider: StorageProviderId = 'r2'
 ): void {
   if (!Number.isFinite(fileSize) || fileSize <= 0) {
     throw new R2UploadError('INVALID_TYPE', 'الملف المختار فارغ ولا يمكن رفعه.', false);
@@ -199,20 +339,57 @@ export function validateR2FileLimits(
     );
   }
 
-  if (quotaStatus && fileSize > quotaStatus.remainingBytes) {
-    throw new R2UploadError(
-      'QUOTA_EXCEEDED',
-      `المساحة المتبقية (${formatBytesReadable(quotaStatus.remainingBytes)}) لا تكفي لرفع هذا الملف (${formatBytesReadable(fileSize)}).`,
-      false
-    );
+  if (quotaStatus) {
+    if (storageProvider === 'b2') {
+      const b2 = quotaStatus.b2;
+      if (!b2 || b2.verified !== true || b2.enabled !== true) {
+        throw new R2UploadError(
+          'WORKER_NOT_CONFIGURED',
+          'خدمة Backblaze B2 غير مفعّلة أو لم تُختبر فعلياً في Worker بعد.',
+          false
+        );
+      }
+      const b2Remaining =
+        b2.remainingBytes !== undefined
+          ? b2.remainingBytes
+          : Math.max(0, Number(b2.allocatedLimitBytes || 0) - Number(b2.usedBytes || 0));
+      if (fileSize > b2Remaining) {
+        throw new R2UploadError(
+          'QUOTA_EXCEEDED',
+          `المساحة المتبقية في Backblaze B2 (${formatBytesReadable(b2Remaining)}) لا تكفي لرفع هذا الملف (${formatBytesReadable(fileSize)}).`,
+          false
+        );
+      }
+      return;
+    }
+
+    if (quotaStatus.verified === false || quotaStatus.r2Bound === false) {
+      throw new R2UploadError(
+        'WORKER_NOT_CONFIGURED',
+        'حساب Cloudflare R2 غير متحقق منه بعد. نفّذ «التحقق الفعلي من حساب الخدمة» أولاً.',
+        false
+      );
+    }
+    const r2Remaining =
+      quotaStatus.r2?.remainingBytes !== undefined
+        ? quotaStatus.r2.remainingBytes
+        : quotaStatus.remainingBytes;
+    if (fileSize > r2Remaining) {
+      throw new R2UploadError(
+        'QUOTA_EXCEEDED',
+        `المساحة المتبقية في Cloudflare R2 (${formatBytesReadable(r2Remaining)}) لا تكفي لرفع هذا الملف (${formatBytesReadable(fileSize)}).`,
+        false
+      );
+    }
   }
 }
 
 export function buildFileFingerprint(
   file: { name: string; size: number; lastModified?: number },
-  folder: string
+  folder: string,
+  storageProvider: StorageProviderId = 'r2'
 ): string {
-  return `midad_r2_upload::${folder}::${file.name}::${file.size}::${file.lastModified ?? 0}`;
+  return `midad_upload_${storageProvider}::${folder}::${file.name}::${file.size}::${file.lastModified ?? 0}`;
 }
 
 export function loadSavedUploadSession(
@@ -272,10 +449,10 @@ async function fetchJsonOrThrow(
   if (!res.ok) {
     const msg = String(body.error || `خطأ من خادم التخزين (HTTP ${res.status})`);
     const code = String(body.code || '');
-    if (res.status === 401) throw new R2UploadError('UNAUTHORIZED', msg, false);
-    if (res.status === 403) throw new R2UploadError('UNAUTHORIZED', msg, false);
+    if (res.status === 401 || res.status === 403) throw new R2UploadError('UNAUTHORIZED', msg, false);
     if (res.status === 413 || code === 'FILE_TOO_LARGE') throw new R2UploadError('FILE_TOO_LARGE', msg, false);
     if (res.status === 507 || code === 'QUOTA_EXCEEDED') throw new R2UploadError('QUOTA_EXCEEDED', msg, false);
+    if (code === 'B2_NOT_CONFIGURED') throw new R2UploadError('WORKER_NOT_CONFIGURED', msg, false);
     throw new R2UploadError('NETWORK', msg, res.status >= 500);
   }
   return body;
@@ -286,6 +463,8 @@ export interface MultipartEngineOptions {
   file: Blob & { name: string; size: number; type?: string; lastModified?: number };
   folder: string;
   getAuthToken: () => Promise<string>;
+  storageProvider?: StorageProviderId;
+  accessLevel?: MediaAccessLevel;
   limits?: R2StorageLimits;
   quotaStatus?: R2QuotaStatus | null;
   imageOnly?: boolean;
@@ -304,17 +483,20 @@ export async function executeResumableR2Upload(options: MultipartEngineOptions):
   if (!workerBaseUrl) {
     throw new R2UploadError(
       'WORKER_NOT_CONFIGURED',
-      'رابط Cloudflare R2 Worker غير مضبوط. انتقل إلى إعدادات المنصة وأدخل رابط Worker الصحيح (HTTPS).',
+      'رابط Storage Worker غير مضبوط. انتقل إلى إعدادات المنصة وأدخل رابط Worker الصحيح (HTTPS).',
       false
     );
   }
 
+  const storageProvider: StorageProviderId = options.storageProvider === 'b2' ? 'b2' : 'r2';
+  const accessLevel: MediaAccessLevel =
+    options.accessLevel ?? (options.folder.trim().toLowerCase() === 'branding' ? 'public' : 'private');
   const limits = options.limits ?? DEFAULT_R2_LIMITS;
   const spec = detectR2FileSpec(options.file, {
     imageOnly: options.imageOnly,
     videoOnly: options.videoOnly,
   });
-  validateR2FileLimits(options.file.size, spec.mediaKind, limits, options.quotaStatus);
+  validateR2FileLimits(options.file.size, spec.mediaKind, limits, options.quotaStatus, storageProvider);
 
   const token = await options.getAuthToken();
   if (!token) {
@@ -348,12 +530,14 @@ export async function executeResumableR2Upload(options: MultipartEngineOptions):
     }
     const result = await fetchJsonOrThrow(
       fetchImpl,
-      `${workerBaseUrl}/upload?fileName=${encodeURIComponent(options.file.name)}&folder=${encodeURIComponent(options.folder)}`,
+      `${workerBaseUrl}/upload?fileName=${encodeURIComponent(options.file.name)}&folder=${encodeURIComponent(options.folder)}&provider=${storageProvider}&accessLevel=${accessLevel}`,
       {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': spec.contentType,
+          'X-Storage-Provider': storageProvider,
+          'X-Access-Level': accessLevel,
         },
         body: options.file,
         signal: options.signal,
@@ -363,6 +547,8 @@ export async function executeResumableR2Upload(options: MultipartEngineOptions):
     return {
       url: String(result.publicUrl),
       objectKey: String(result.objectKey),
+      storageProvider: result.storageProvider === 'b2' ? 'b2' : storageProvider,
+      accessLevel: result.accessLevel === 'public' ? 'public' : accessLevel,
       sizeBytes: Number(result.sizeBytes || options.file.size),
       sizeLabel: formatBytesReadable(Number(result.sizeBytes || options.file.size)),
       contentType: String(result.contentType || spec.contentType),
@@ -373,7 +559,7 @@ export async function executeResumableR2Upload(options: MultipartEngineOptions):
 
   // Resumable Multipart Upload (> 5 MB)
   emitProgress(0, 'checking', 0, 1);
-  const fingerprint = buildFileFingerprint(options.file, options.folder);
+  const fingerprint = buildFileFingerprint(options.file, options.folder, storageProvider);
   let session = loadSavedUploadSession(options.storage, fingerprint);
 
   if (!session) {
@@ -388,6 +574,8 @@ export async function executeResumableR2Upload(options: MultipartEngineOptions):
         contentType: spec.contentType,
         folder: options.folder,
         sizeBytes: options.file.size,
+        provider: storageProvider,
+        accessLevel,
       }),
       signal: options.signal,
     });
@@ -399,6 +587,7 @@ export async function executeResumableR2Upload(options: MultipartEngineOptions):
       fileName: options.file.name,
       sizeBytes: options.file.size,
       folder: options.folder,
+      storageProvider,
       uploadId: String(initJson.uploadId),
       objectKey: String(initJson.objectKey),
       partSizeBytes,
@@ -458,12 +647,13 @@ export async function executeResumableR2Upload(options: MultipartEngineOptions):
         const freshToken = await options.getAuthToken();
         const partRes = await fetchJsonOrThrow(
           fetchImpl,
-          `${workerBaseUrl}/multipart/part?key=${encodeURIComponent(session.objectKey)}&uploadId=${encodeURIComponent(session.uploadId)}&partNumber=${partNumber}`,
+          `${workerBaseUrl}/multipart/part?key=${encodeURIComponent(session.objectKey)}&uploadId=${encodeURIComponent(session.uploadId)}&partNumber=${partNumber}&provider=${storageProvider}`,
           {
             method: 'PUT',
             headers: {
               Authorization: `Bearer ${freshToken}`,
               'Content-Type': 'application/octet-stream',
+              'X-Storage-Provider': storageProvider,
             },
             body: chunkBlob,
             signal: options.signal,
@@ -514,6 +704,7 @@ export async function executeResumableR2Upload(options: MultipartEngineOptions):
     body: JSON.stringify({
       objectKey: session.objectKey,
       uploadId: session.uploadId,
+      provider: storageProvider,
       parts: session.uploadedParts,
     }),
     signal: options.signal,
@@ -525,6 +716,8 @@ export async function executeResumableR2Upload(options: MultipartEngineOptions):
   return {
     url: String(completedJson.publicUrl),
     objectKey: String(completedJson.objectKey || session.objectKey),
+    storageProvider: completedJson.storageProvider === 'b2' ? 'b2' : storageProvider,
+    accessLevel: completedJson.accessLevel === 'public' ? 'public' : accessLevel,
     sizeBytes: finalSize,
     sizeLabel: formatBytesReadable(finalSize),
     contentType: String(completedJson.contentType || spec.contentType),

@@ -9,6 +9,8 @@ export type PublishStatus = 'DRAFT' | 'PUBLISHED' | 'ARCHIVED';
 export type CatalogNodeType = 'STAGE' | 'GRADE' | 'BRANCH' | 'COURSE' | 'CUSTOM';
 export type VideoSourceType = 'YOUTUBE' | 'MP4' | 'EXTERNAL';
 export type MediaKind = 'VIDEO' | 'PDF' | 'IMAGE' | 'ATTACHMENT';
+export type StorageProviderId = 'r2' | 'b2';
+export type MediaAccessLevel = 'private' | 'public';
 export type MaterialType =
   | 'TEXTBOOK'
   | 'STUDY_NOTE'
@@ -170,6 +172,7 @@ export interface Lesson {
   videoUrl: string;
   videoSourceType: VideoSourceType;
   r2ObjectKey?: string;
+  storageProvider?: StorageProviderId;
   sizeBytes?: number;
   published: boolean;
   status?: PublishStatus;
@@ -217,6 +220,7 @@ export interface ContentBlock {
   durationLabel?: string;
   fileSizeLabel?: string;
   r2ObjectKey?: string;
+  storageProvider?: StorageProviderId;
   sizeBytes?: number;
   qaItems?: QaItem[];
   quizQuestions?: QuizQuestion[];
@@ -268,6 +272,9 @@ export interface PlatformConfig {
   maxVideoSizeMb?: number;
   maxPdfSizeMb?: number;
   maxImageSizeMb?: number;
+  r2StorageLimitGb?: number;
+  b2StorageLimitGb?: number;
+  b2Enabled?: boolean;
   totalStorageLimitGb?: number;
   updatedBy: string;
   updatedAt?: unknown;
@@ -302,6 +309,7 @@ export interface StudyMaterial {
   coverUrl?: string;
   fileUrl: string;
   r2ObjectKey?: string;
+  storageProvider?: StorageProviderId;
   sizeBytes?: number;
   published: boolean;
   status?: PublishStatus;
@@ -317,6 +325,7 @@ export interface MediaAsset {
   description?: string;
   fileName: string;
   objectKey: string;
+  storageProvider?: StorageProviderId;
   fileUrl: string;
   contentType: string;
   mediaKind: MediaKind;
@@ -338,17 +347,85 @@ export interface R2StorageLimits {
   maxVideoSizeMb: number;
   maxPdfSizeMb: number;
   maxImageSizeMb: number;
+  r2StorageLimitGb: number;
+  b2StorageLimitGb: number;
+  b2Enabled: boolean;
   totalStorageLimitGb: number;
 }
 
+export interface R2ProviderQuotaDetail {
+  provider: 'cloudflare-r2';
+  bound: boolean;
+  verified: boolean;
+  usedBytes: number;
+  allocatedLimitBytes: number;
+  activeLimitBytes: number;
+  remainingBytes: number;
+  fileCount: number;
+  usedPercent: number;
+  nearLimit: boolean;
+  error?: string | null;
+}
+
+export interface B2QuotaStatus {
+  provider: 'backblaze-b2';
+  workerConfigured?: boolean;
+  credentialsConfigured?: boolean;
+  enabled: boolean;
+  verified: boolean;
+  allocatedLimitBytes: number;
+  activeLimitBytes?: number;
+  usedBytes: number;
+  remainingBytes?: number;
+  fileCount?: number;
+  usedPercent?: number;
+  nearLimit?: boolean;
+  error?: string | null;
+}
+
 export interface R2QuotaStatus {
+  provider?: 'cloudflare-r2';
+  verified?: boolean;
+  r2Bound?: boolean;
   usedBytes: number;
   totalLimitBytes: number;
+  targetTotalBytes?: number;
   remainingBytes: number;
   fileCount: number;
   usedPercent: number;
   nearLimit: boolean;
   limits: R2StorageLimits;
+  r2?: R2ProviderQuotaDetail;
+  b2?: B2QuotaStatus;
+}
+
+export interface ProviderStorageSummary {
+  provider: 'cloudflare-r2' | 'backblaze-b2';
+  label: string;
+  enabled: boolean;
+  verified: boolean;
+  allocatedBytes: number;
+  activeBytes: number;
+  usedBytes: number;
+  remainingActiveBytes: number;
+  remainingAllocatedBytes: number;
+  usedPercentOfAllocated: number;
+  fileCount: number;
+  nearLimit: boolean;
+  status: 'verified' | 'unverified' | 'disabled_unlinked';
+  statusMessage: string;
+}
+
+export interface MultiProviderStorageSummary {
+  r2: ProviderStorageSummary;
+  b2: ProviderStorageSummary;
+  targetTotalBytes: number;
+  verifiedActiveTotalBytes: number;
+  totalUsedBytes: number;
+  remainingActiveBytes: number;
+  remainingTargetBytes: number;
+  usedPercentOfTarget: number;
+  usedPercentOfActive: number;
 }
 
 export interface Announcement {

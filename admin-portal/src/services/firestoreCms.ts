@@ -103,6 +103,9 @@ export const DEFAULT_PLATFORM_CONFIG: PlatformConfig = {
   maxVideoSizeMb: DEFAULT_R2_LIMITS.maxVideoSizeMb,
   maxPdfSizeMb: DEFAULT_R2_LIMITS.maxPdfSizeMb,
   maxImageSizeMb: DEFAULT_R2_LIMITS.maxImageSizeMb,
+  r2StorageLimitGb: DEFAULT_R2_LIMITS.r2StorageLimitGb,
+  b2StorageLimitGb: DEFAULT_R2_LIMITS.b2StorageLimitGb,
+  b2Enabled: DEFAULT_R2_LIMITS.b2Enabled,
   totalStorageLimitGb: DEFAULT_R2_LIMITS.totalStorageLimitGb,
   updatedBy: 'system',
 };
@@ -225,13 +228,23 @@ export async function hardDeleteEntity(
   id: string,
   staff: StaffSession | null,
   label: string,
-  options?: { r2ObjectKey?: string; platformConfig?: Partial<PlatformConfig> }
+  options?: {
+    r2ObjectKey?: string;
+    storageProvider?: 'r2' | 'b2';
+    fileUrl?: string;
+    platformConfig?: Partial<PlatformConfig>;
+  }
 ) {
   if (options?.r2ObjectKey) {
     try {
-      await deleteR2ObjectIfConfigured(options.r2ObjectKey, options.platformConfig);
+      await deleteR2ObjectIfConfigured(
+        options.r2ObjectKey,
+        options.platformConfig,
+        options.storageProvider,
+        options.fileUrl
+      );
     } catch (e) {
-      console.warn('R2 object cleanup skipped:', e);
+      console.warn('Storage object cleanup skipped:', e);
     }
   }
   await deleteDoc(doc(firestoreDb, collectionName, id));
@@ -261,6 +274,7 @@ export async function registerUploadedMediaAsset(
       description: details.description?.trim() || undefined,
       fileName: meta.fileName,
       objectKey: meta.objectKey,
+      storageProvider: meta.storageProvider,
       fileUrl: meta.url,
       contentType: meta.contentType,
       mediaKind: meta.mediaKind,

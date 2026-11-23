@@ -14,7 +14,7 @@ export function loadConfig(env = process.env) {
     databaseId:
       env.FIREBASE_FIRESTORE_DATABASE_ID ||
       'ai-studio-android-abk-452af8d1-cf14-40e7-aead-48a40e7f239d',
-    superAdminEmail: (env.SUPER_ADMIN_EMAIL || 'karimaeti07@gmail.com').toLowerCase(),
+    superAdminEmail: (env.SUPER_ADMIN_EMAIL || '').trim().toLowerCase(),
     serviceAccountJson: env.FIREBASE_SERVICE_ACCOUNT_JSON || '',
     serviceAccountFile: env.FIREBASE_SERVICE_ACCOUNT_FILE || '',
     allowedOrigins,

@@ -258,4 +258,75 @@ class VideoPlayerPlaybackTest {
         composeTestRule.onNodeWithTag("exo_player_error_box").assertIsDisplayed()
         composeTestRule.onNodeWithText("رمز التشخيص: CLEARTEXT_HTTP_BLOCKED").assertIsDisplayed()
     }
+
+    @OptIn(UnstableApi::class)
+    @Test
+    fun `B2 worker file routes detect MP4, attach Bearer token with Range, and map HTTP 401`() {
+        assertEquals(
+            VideoSourceType.MP4,
+            com.example.util.UrlUtils.detectVideoSourceType(
+                "https://midad-worker.example.workers.dev/b2/files/videos/lesson.mp4"
+            )
+        )
+
+        val payload = ByteArray(64) { idx -> (idx + 1).toByte() }
+        val server = MockWebServer()
+        server.start()
+        try {
+            val workerBase = server.url("").toString().removeSuffix("/")
+            server.enqueue(
+                MockResponse()
+                    .setResponseCode(206)
+                    .addHeader("Content-Type", "video/mp4")
+                    .addHeader("Accept-Ranges", "bytes")
+                    .addHeader("Content-Range", "bytes 0-15/${payload.size}")
+                    .setBody(Buffer().write(payload, 0, 16))
+            )
+
+            val client = VideoPlaybackSupport.createVideoOkHttpClient(
+                r2WorkerBaseUrl = workerBase,
+                authTokenProvider = { "firebase-b2-token-456" }
+            )
+            val dataSource = OkHttpDataSource.Factory(client).createDataSource()
+            dataSource.open(
+                DataSpec.Builder()
+                    .setUri(server.url("/b2/files/videos/lesson.mp4").toString())
+                    .setPosition(0L)
+                    .setLength(16L)
+                    .build()
+            )
+            val buf = ByteArray(16)
+            var total = 0
+            while (total < buf.size) {
+                val read = dataSource.read(buf, total, buf.size - total)
+                if (read <= 0) break
+                total += read
+            }
+            dataSource.close()
+
+            assertEquals(16, total)
+            assertArrayEquals(payload.copyOfRange(0, 16), buf)
+            val req = server.takeRequest()
+            assertEquals("bytes=0-15", req.getHeader("Range"))
+            assertEquals("Bearer firebase-b2-token-456", req.getHeader("Authorization"))
+        } finally {
+            server.shutdown()
+        }
+
+        val dataSpec = DataSpec.Builder().setUri("https://cdn.midad.edu/b2/files/lesson.mp4").build()
+        val http401 = HttpDataSource.InvalidResponseCodeException(
+            401,
+            "Unauthorized",
+            IOException("401"),
+            emptyMap(),
+            dataSpec,
+            ByteArray(0)
+        )
+        val diag401 = VideoPlaybackSupport.mapPlaybackExceptionToArabic(
+            PlaybackException("Unauthorized", http401, PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS),
+            "https://cdn.midad.edu/b2/files/lesson.mp4"
+        )
+        assertEquals(VideoErrorCause.UNAUTHORIZED, diag401.cause)
+        assertEquals("HTTP_401", diag401.technicalCode)
+    }
 }

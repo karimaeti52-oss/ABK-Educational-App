@@ -138,11 +138,11 @@ export async function fetchFirestoreDocWithToken(env, idToken, docPath, fetchImp
 
 export async function resolveStaffAuthorization(env, idToken, fetchImpl = fetch) {
   const payload = await verifyFirebaseIdToken(idToken, env.FIREBASE_PROJECT_ID, fetchImpl);
-  const email = String(payload.email || '').toLowerCase();
+  const email = String(payload.email || '').trim().toLowerCase();
   const emailVerified = Boolean(payload.email_verified);
-  const superAdminEmail = String(env.SUPER_ADMIN_EMAIL || 'karimaeti07@gmail.com').toLowerCase();
+  const superAdminEmail = String(env.SUPER_ADMIN_EMAIL || '').trim().toLowerCase();
 
-  if (emailVerified && email === superAdminEmail) {
+  if (superAdminEmail && emailVerified && email === superAdminEmail) {
     return { uid: payload.sub, email, role: 'SUPER_ADMIN', authorized: true };
   }
 
@@ -164,19 +164,17 @@ export async function resolveStaffAuthorization(env, idToken, fetchImpl = fetch)
 
 export async function verifyReaderNotBanned(env, idToken, fetchImpl = fetch) {
   const payload = await verifyFirebaseIdToken(idToken, env.FIREBASE_PROJECT_ID, fetchImpl);
-  const email = String(payload.email || '').toLowerCase();
-  const superAdminEmail = String(env.SUPER_ADMIN_EMAIL || 'karimaeti07@gmail.com').toLowerCase();
-  if (payload.email_verified && email === superAdminEmail) {
-    return { uid: payload.sub, allowed: true };
+  const email = String(payload.email || '').trim().toLowerCase();
+  const superAdminEmail = String(env.SUPER_ADMIN_EMAIL || '').trim().toLowerCase();
+  if (superAdminEmail && payload.email_verified && email === superAdminEmail) {
+    return { uid: payload.sub, allowed: true, role: 'SUPER_ADMIN' };
   }
 
-  try {
-    const userDoc = await fetchFirestoreDocWithToken(env, idToken, `users/${encodeURIComponent(payload.sub)}`, fetchImpl);
-    if (userDoc && (userDoc.accountStatus === 'BANNED' || userDoc.accountStatus === 'SUSPENDED')) {
-      return { uid: payload.sub, allowed: false, reason: userDoc.accountStatus };
-    }
-  } catch {
-    // Allow valid signed-in user if profile doc hasn't been created yet
+  // fetchFirestoreDocWithToken returns null cleanly when HTTP 404 (profile not yet created),
+  // and throws on non-404 errors (5xx / network failure / permission denied) so caller fails CLOSED.
+  const userDoc = await fetchFirestoreDocWithToken(env, idToken, `users/${encodeURIComponent(payload.sub)}`, fetchImpl);
+  if (userDoc && (userDoc.accountStatus === 'BANNED' || userDoc.accountStatus === 'SUSPENDED')) {
+    return { uid: payload.sub, allowed: false, reason: userDoc.accountStatus };
   }
   return { uid: payload.sub, allowed: true };
 }

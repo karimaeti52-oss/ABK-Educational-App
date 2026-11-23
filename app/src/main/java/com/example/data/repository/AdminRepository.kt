@@ -487,10 +487,37 @@ class AdminRepository(
 
     // --- STUDENT ACCOUNT MANAGEMENT ---
 
+    private suspend fun guardNotLastActiveAdmin(targetUserId: String, actionLabel: String) {
+        val targetAdminSnap = db.collection("admins").document(targetUserId).get().await()
+        if (!targetAdminSnap.exists()) return
+        val targetActive = targetAdminSnap.getBoolean("active") != false
+        val targetRole = targetAdminSnap.getString("role") ?: UserRole.ADMIN.name
+        if (targetRole == "SUPER_ADMIN") {
+            throw IllegalStateException("لا يمكن $actionLabel حساب المدير العام الأساسي.")
+        }
+        if (targetActive && (targetRole == UserRole.ADMIN.name || targetRole == "SUPER_ADMIN")) {
+            val allAdminsSnap = db.collection("admins").get().await()
+            val otherActiveAdmins = allAdminsSnap.documents.count { doc ->
+                doc.id != targetUserId &&
+                    doc.getBoolean("active") != false &&
+                    (doc.getString("role") in setOf(UserRole.ADMIN.name, "SUPER_ADMIN", null))
+            }
+            if (otherActiveAdmins == 0) {
+                throw IllegalStateException("لا يمكن $actionLabel آخر حساب مسؤول فعال في المنصة.")
+            }
+        }
+    }
+
     suspend fun setUserAccountStatus(targetUserId: String, status: AccountStatus): Result<Unit> {
         val path = "users/$targetUserId"
         return try {
-            requireAdminUid()
+            val adminUid = requireAdminUid()
+            if (targetUserId == adminUid && status != AccountStatus.ACTIVE) {
+                throw IllegalStateException("لا يمكنك تعطيل أو حظر حسابك الحالي.")
+            }
+            if (status == AccountStatus.SUSPENDED || status == AccountStatus.BANNED) {
+                guardNotLastActiveAdmin(targetUserId, "تعطيل أو حظر")
+            }
             db.collection("users").document(targetUserId)
                 .update(
                     mapOf(
@@ -511,17 +538,42 @@ class AdminRepository(
         val uidPath = "admins/${targetUser.userId}"
         return try {
             val adminUid = requireAdminUid()
+            if (targetUser.userId == adminUid && !makeAdmin) {
+                throw IllegalStateException("لا يمكنك إزالة صلاحياتك الإدارية بنفسك.")
+            }
             val adminRef = db.collection("admins").document(targetUser.userId)
             val userRef = db.collection("users").document(targetUser.userId)
             if (makeAdmin) {
-                adminRef.set(
-                    mapOf(
-                        "uid" to targetUser.userId,
-                        "email" to targetUser.email,
-                        "grantedBy" to adminUid,
-                        "createdAt" to FieldValue.serverTimestamp()
-                    )
-                ).await()
+                val existingAdmin = adminRef.get().await()
+                if (existingAdmin.exists() && existingAdmin.getString("role") == "SUPER_ADMIN") {
+                    throw IllegalStateException("لا يمكن تعديل دور المدير العام من التطبيق.")
+                }
+                if (existingAdmin.exists()) {
+                    adminRef.update(
+                        mapOf(
+                            "uid" to targetUser.userId,
+                            "email" to targetUser.email.take(160),
+                            "displayName" to targetUser.displayName.take(100),
+                            "role" to UserRole.ADMIN.name,
+                            "active" to true,
+                            "grantedBy" to adminUid,
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    ).await()
+                } else {
+                    adminRef.set(
+                        mapOf(
+                            "uid" to targetUser.userId,
+                            "email" to targetUser.email.take(160),
+                            "displayName" to targetUser.displayName.take(100),
+                            "role" to UserRole.ADMIN.name,
+                            "active" to true,
+                            "grantedBy" to adminUid,
+                            "createdAt" to FieldValue.serverTimestamp(),
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    ).await()
+                }
                 userRef.update(
                     mapOf(
                         "role" to UserRole.ADMIN.name,
@@ -529,6 +581,7 @@ class AdminRepository(
                     )
                 ).await()
             } else {
+                guardNotLastActiveAdmin(targetUser.userId, "إزالة صلاحيات")
                 adminRef.delete().await()
                 userRef.update(
                     mapOf(

@@ -7,14 +7,13 @@ import {
   type User,
 } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
-import { AlertCircle, CheckCircle2, Lock, LogIn, ShieldAlert, ShieldCheck } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Copy, Lock, LogIn, RefreshCw, ShieldAlert, ShieldCheck } from 'lucide-react';
 import { ApiError, checkBackendHealth, fetchBackendSession } from './api';
 import { AdminLayout } from './components/Layout';
 import {
   firebaseAuth,
   firestoreDb,
   googleProvider,
-  SUPER_ADMIN_EMAIL,
 } from './firebase';
 import {
   DEFAULT_PLATFORM_CONFIG,
@@ -60,7 +59,6 @@ import type {
   MediaAsset,
   NavSectionId,
   PlatformConfig,
-  StaffRole,
   StaffSession,
   StudyMaterial,
   Subject,
@@ -68,6 +66,7 @@ import type {
   UnitItem,
   UserProfile,
 } from './types';
+import { resolveFrontendStaffRole } from './utils/staffRole';
 
 const IDLE_TIMEOUT_SECONDS = 30 * 60;
 
@@ -114,7 +113,6 @@ export default function App() {
   }, [toast]);
 
   const resolveStaffSession = useCallback(async (user: User): Promise<StaffSession | null> => {
-    const email = (user.email || '').trim().toLowerCase();
     const backendUp = await checkBackendHealth();
 
     if (backendUp) {
@@ -128,44 +126,30 @@ export default function App() {
         if (err instanceof ApiError && err.status === 403) {
           throw new Error(err.message);
         }
-        // Fall through to Firestore check only if network/service error
+        // Fall through to Firestore/claims check only if backend unavailable
       }
     }
 
     // Fallback when running static frontend without Node server:
-    // Check ID token claims + Firestore /admins/{uid} + designated Super Admin bootstrap email
+    // Verify Firebase Custom Claim (abkRole only) + Firestore /admins/{uid}
     const tokenResult = await user.getIdTokenResult();
-    const claimRole = tokenResult.claims.role as StaffRole | undefined;
-    const claimStaff = tokenResult.claims.abkStaff === true || tokenResult.claims.admin === true;
 
-    let adminDocRole: StaffRole | undefined;
-    let adminPermissions: string[] = [];
-    let teacherId: string | null = null;
+    let adminDoc: Partial<AdminEntry> | null = null;
     try {
       const snap = await getDoc(doc(firestoreDb, 'admins', user.uid));
       if (snap.exists()) {
-        const data = snap.data() as Partial<AdminEntry>;
-        if (data.active === false) {
-          throw new Error('تم تعطيل صلاحية هذا الحساب الإداري.');
-        }
-        adminDocRole = (data.role as StaffRole | undefined) || 'ADMIN';
-        adminPermissions = Array.isArray(data.permissions) ? data.permissions : [];
-        teacherId = data.teacherId || null;
+        adminDoc = snap.data() as Partial<AdminEntry>;
       }
-    } catch (docErr) {
-      if (docErr instanceof Error && docErr.message.includes('تعطيل')) {
-        throw docErr;
-      }
+    } catch {
+      // Fall back to verified abkRole custom claim if /admins/{uid} read fails temporarily
     }
 
-    const isSuperEmail = email === SUPER_ADMIN_EMAIL.toLowerCase();
-    const resolvedRole: StaffRole | null = isSuperEmail
-      ? 'SUPER_ADMIN'
-      : claimStaff && claimRole
-        ? claimRole
-        : adminDocRole || null;
+    const resolved = resolveFrontendStaffRole({
+      claims: tokenResult.claims as Record<string, unknown>,
+      adminDoc,
+    });
 
-    if (!resolvedRole) {
+    if (!resolved) {
       return null;
     }
 
@@ -173,9 +157,9 @@ export default function App() {
       uid: user.uid,
       email: user.email || '',
       name: user.displayName || user.email || 'مشرف مداد',
-      role: resolvedRole,
-      permissions: adminPermissions,
-      teacherId: teacherId || (tokenResult.claims.teacherId as string | undefined) || null,
+      role: resolved.role,
+      permissions: resolved.permissions,
+      teacherId: resolved.teacherId,
       authTime: Math.floor(Date.now() / 1000),
       mfaVerified: Boolean((tokenResult.claims.firebase as { sign_in_second_factor?: unknown } | undefined)?.sign_in_second_factor),
       backendOnline: false,
@@ -340,6 +324,41 @@ export default function App() {
     }
   }
 
+  async function handleRefreshAuthCheck() {
+    const current = firebaseAuth.currentUser;
+    if (!current) return;
+    setAuthError(null);
+    setAuthLoading(true);
+    try {
+      await current.getIdToken(true);
+      const resolved = await resolveStaffSession(current);
+      if (!resolved) {
+        setStaff(null);
+        setAuthError(
+          `الحساب (${current.email}) غير مخوّل للدخول إلى لوحة الإدارة. تأكد من منح Custom Claim (abkRole) أو إضافة وثيقة فعالة في /admins/${current.uid}.`
+        );
+      } else {
+        setStaff(resolved);
+        setIdleSecondsLeft(IDLE_TIMEOUT_SECONDS);
+        showToast('تم التحقق من الصلاحيات وتحديث الجلسة بنجاح');
+      }
+    } catch (err) {
+      setStaff(null);
+      setAuthError(err instanceof Error ? err.message : 'تعذر إعادة فحص صلاحيات الحساب.');
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  async function handleCopyUid(uid: string) {
+    try {
+      await navigator.clipboard.writeText(uid);
+      showToast('تم نسخ معرف UID بنجاح');
+    } catch {
+      showToast('تعذر النسخ التلقائي — يمكنك تحديد UID ونسخه يدوياً.', true);
+    }
+  }
+
   if (!authReady || authLoading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-100">
@@ -381,9 +400,29 @@ export default function App() {
               </div>
               <p>{authError}</p>
               {firebaseUser && (
-                <p className="mt-2 font-mono text-[11px] text-rose-700" dir="ltr">
-                  UID: {firebaseUser.uid}
-                </p>
+                <div className="mt-2.5 space-y-2 rounded-xl border border-rose-200 bg-white/80 p-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="select-all truncate font-mono text-[11px] text-rose-900" dir="ltr">
+                      UID: {firebaseUser.uid}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => void handleCopyUid(firebaseUser.uid)}
+                      className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 text-[11px] font-bold text-rose-800 hover:bg-rose-100"
+                    >
+                      <Copy className="h-3 w-3" />
+                      نسخ UID
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void handleRefreshAuthCheck()}
+                    className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-rose-700 px-3 py-2 text-[11px] font-bold text-white hover:bg-rose-800"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" />
+                    إعادة فحص الصلاحية (تحديث التوكن)
+                  </button>
+                </div>
               )}
             </div>
           )}

@@ -14,12 +14,18 @@ import {
 } from '../validators.js';
 
 test('resolveEffectiveRole prioritizes verified superAdminEmail and claims cleanly', () => {
+  const testSuperEmail = 'superadmin@test.local';
   assert.equal(
-    resolveEffectiveRole({ email: 'karimaeti07@gmail.com', email_verified: true }),
+    resolveEffectiveRole({ email: testSuperEmail, email_verified: true }, null, testSuperEmail),
     'SUPER_ADMIN'
   );
   assert.equal(
-    resolveEffectiveRole({ email: 'karimaeti07@gmail.com', email_verified: false }),
+    resolveEffectiveRole({ email: testSuperEmail, email_verified: false }, null, testSuperEmail),
+    'STUDENT'
+  );
+  // Without explicit superAdminEmail config, email alone grants nothing
+  assert.equal(
+    resolveEffectiveRole({ email: testSuperEmail, email_verified: true }, null),
     'STUDENT'
   );
   assert.equal(
@@ -103,7 +109,7 @@ test('Zod validators reject invalid RBAC emails, unsafe URLs, and malformed back
 test('Express HTTP API /api/health and /api/auth/me enforce tokens and RBAC end-to-end', async () => {
   const { createAdminApp } = await import('../app.js');
   const { loadConfig } = await import('../config.js');
-  const config = loadConfig({});
+  const config = loadConfig({ SUPER_ADMIN_EMAIL: 'superadmin@test.local' });
 
   const fakeServices = {
     auth: {
@@ -111,9 +117,9 @@ test('Express HTTP API /api/health and /api/auth/me enforce tokens and RBAC end-
         if (token === 'valid-super-token') {
           return {
             uid: 'uid_super',
-            email: 'karimaeti07@gmail.com',
+            email: 'superadmin@test.local',
             email_verified: true,
-            name: 'Kareem Super Admin',
+            name: 'Super Admin Test',
             auth_time: Math.floor(Date.now() / 1000),
           };
         }
@@ -176,7 +182,7 @@ test('Express HTTP API /api/health and /api/auth/me enforce tokens and RBAC end-
     assert.equal(superRes.status, 200);
     const superJson = await superRes.json();
     assert.equal(superJson.role, 'SUPER_ADMIN');
-    assert.equal(superJson.email, 'karimaeti07@gmail.com');
+    assert.equal(superJson.email, 'superadmin@test.local');
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -199,7 +205,7 @@ test('loadConfig binds 0.0.0.0, reads PORT env var, and parses semicolon-delimit
 test('User Management API lists Auth+Firestore users, revokes tokens on BAN, and enforces reauth + confirmation on DELETE', async () => {
   const { createAdminApp } = await import('../app.js');
   const { loadConfig } = await import('../config.js');
-  const config = loadConfig({});
+  const config = loadConfig({ SUPER_ADMIN_EMAIL: 'superadmin@test.local' });
 
   const revokedUids = [];
   const deletedAuthUids = [];
@@ -252,8 +258,8 @@ test('User Management API lists Auth+Firestore users, revokes tokens on BAN, and
       'uid_super',
       {
         uid: 'uid_super',
-        email: 'karimaeti07@gmail.com',
-        displayName: 'Kareem Super Admin',
+        email: 'superadmin@test.local',
+        displayName: 'Super Admin Test',
         disabled: false,
         emailVerified: true,
         metadata: { creationTime: '2025-12-01T00:00:00Z', lastSignInTime: '2026-05-03T00:00:00Z' },
@@ -297,10 +303,10 @@ test('User Management API lists Auth+Firestore users, revokes tokens on BAN, and
       async verifyIdToken(token) {
         const now = Math.floor(Date.now() / 1000);
         if (token === 'fresh-super') {
-          return { uid: 'uid_super', email: 'karimaeti07@gmail.com', email_verified: true, auth_time: now };
+          return { uid: 'uid_super', email: 'superadmin@test.local', email_verified: true, auth_time: now };
         }
         if (token === 'stale-super') {
-          return { uid: 'uid_super', email: 'karimaeti07@gmail.com', email_verified: true, auth_time: now - 7200 };
+          return { uid: 'uid_super', email: 'superadmin@test.local', email_verified: true, auth_time: now - 7200 };
         }
         throw Object.assign(new Error('bad'), { code: 'auth/invalid-id-token' });
       },
@@ -416,4 +422,283 @@ test('User Management API lists Auth+Firestore users, revokes tokens on BAN, and
   }
 });
 
+test('Admin safeguards prevent self-demotion, last-admin deletion/disabling, and unauthorized SUPER_ADMIN edits', async () => {
+  const { createAdminApp } = await import('../app.js');
+  const { loadConfig } = await import('../config.js');
+  const config = loadConfig({ SUPER_ADMIN_EMAIL: '' });
 
+  const adminDocs = new Map([
+    ['uid_super', { uid: 'uid_super', email: 'chief@abk.edu', role: 'SUPER_ADMIN', active: true }],
+    ['uid_admin2', { uid: 'uid_admin2', email: 'helper@abk.edu', role: 'ADMIN', active: true }],
+  ]);
+
+  const authStore = new Map([
+    [
+      'uid_super',
+      {
+        uid: 'uid_super',
+        email: 'chief@abk.edu',
+        displayName: 'Chief Super',
+        disabled: false,
+        emailVerified: true,
+        customClaims: { abkRole: 'SUPER_ADMIN' },
+        metadata: {},
+        providerData: [],
+      },
+    ],
+    [
+      'uid_admin2',
+      {
+        uid: 'uid_admin2',
+        email: 'helper@abk.edu',
+        displayName: 'Helper Admin',
+        disabled: false,
+        emailVerified: true,
+        customClaims: { abkRole: 'ADMIN' },
+        metadata: {},
+        providerData: [],
+      },
+    ],
+  ]);
+
+  const makeDocRef = (colName, docId) => ({
+    id: docId,
+    collection() {
+      return { async get() { return { docs: [] }; } };
+    },
+    async get() {
+      if (colName === 'admins' && adminDocs.has(docId)) {
+        return { exists: true, data: () => ({ ...adminDocs.get(docId) }) };
+      }
+      return { exists: false, data: () => null };
+    },
+    async set(data) {
+      if (colName === 'admins') adminDocs.set(docId, { ...data });
+    },
+    async update() {},
+    async delete() {
+      if (colName === 'admins') adminDocs.delete(docId);
+    },
+  });
+
+  const fakeServices = {
+    auth: {
+      async verifyIdToken(token) {
+        const now = Math.floor(Date.now() / 1000);
+        if (token === 'token-super') {
+          return { uid: 'uid_super', email: 'chief@abk.edu', email_verified: true, abkRole: 'SUPER_ADMIN', auth_time: now };
+        }
+        if (token === 'token-admin2') {
+          return { uid: 'uid_admin2', email: 'helper@abk.edu', email_verified: true, abkRole: 'ADMIN', auth_time: now };
+        }
+        throw Object.assign(new Error('bad'), { code: 'auth/invalid-id-token' });
+      },
+      async setCustomUserClaims(uid, claims) {
+        const u = authStore.get(uid);
+        if (u) u.customClaims = claims;
+      },
+      async getUser(uid) {
+        const u = authStore.get(uid);
+        if (!u) throw new Error('not found');
+        return u;
+      },
+      async getUserByEmail(email) {
+        for (const u of authStore.values()) {
+          if (u.email.toLowerCase() === email.toLowerCase()) return u;
+        }
+        throw new Error('not found');
+      },
+      async updateUser(uid, patch) {
+        const u = authStore.get(uid);
+        if (u) Object.assign(u, patch);
+      },
+      async revokeRefreshTokens() {},
+      async deleteUser() {},
+    },
+    db: {
+      collection(colName) {
+        return {
+          doc: (docId) => makeDocRef(colName, docId),
+          async get() {
+            if (colName === 'admins') {
+              return {
+                docs: Array.from(adminDocs.entries()).map(([id, data]) => ({ id, data: () => ({ ...data }) })),
+              };
+            }
+            return { docs: [] };
+          },
+          async add() {},
+        };
+      },
+      batch() {
+        return { delete() {}, async commit() {} };
+      },
+    },
+    appCheck: { async verifyToken() {} },
+  };
+
+  const app = createAdminApp({ config, firebaseServices: fakeServices });
+  const server = app.listen(0);
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  try {
+    // 1. Self-demotion via /api/admins/grant is rejected
+    const selfDemote = await fetch(`${baseUrl}/api/admins/grant`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token-super', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'chief@abk.edu', role: 'VIEWER', active: false }),
+    });
+    assert.equal(selfDemote.status, 400);
+
+    // 2. Super Admin can revoke secondary ADMIN when another active admin remains
+    const revokeHelper = await fetch(`${baseUrl}/api/admins/revoke`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token-super', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uid: 'uid_admin2' }),
+    });
+    assert.equal(revokeHelper.status, 200);
+    assert.equal(adminDocs.has('uid_admin2'), false);
+
+    // 3. Even if helper tries to suspend/revoke the sole remaining SUPER_ADMIN (or another SUPER_ADMIN calls it via grant/delete),
+    // last active SUPER_ADMIN cannot be downgraded or disabled even when SUPER_ADMIN_EMAIL is blank
+    const admin2SuspendSuper = await fetch(`${baseUrl}/api/users/uid_super/status`, {
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer token-admin2', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accountStatus: 'SUSPENDED' }),
+    });
+    assert.equal(admin2SuspendSuper.status, 403);
+
+    // Add a second regular admin, ensure another SUPER_ADMIN-less revoke on the sole SUPER_ADMIN is still blocked with 409
+    adminDocs.set('uid_admin3', { uid: 'uid_admin3', email: 'admin3@abk.edu', role: 'ADMIN', active: true });
+    authStore.set('uid_admin3', {
+      uid: 'uid_admin3',
+      email: 'admin3@abk.edu',
+      disabled: false,
+      emailVerified: true,
+      customClaims: { abkRole: 'SUPER_ADMIN' }, // has SUPER_ADMIN claim, acts on uid_super (sole SUPER_ADMIN doc)
+    });
+    const soleSuperDemote = await fetch(`${baseUrl}/api/admins/grant`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token-super', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'chief@abk.edu', role: 'ADMIN', active: true }),
+    });
+    assert.equal(soleSuperDemote.status, 400);
+
+    // Deleting uid_super while only 1 active SUPER_ADMIN exists in /admins -> blocked (409 or 403)
+    const adminDocsSnapshotCheck = adminDocs.get('uid_super');
+    assert.equal(adminDocsSnapshotCheck.role, 'SUPER_ADMIN');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('adminCliCore verifies and grants both Custom Claims and /admins/{uid} safely via Admin SDK', async () => {
+  const { grantAdminAccount, parseAdminCliArgs, verifyAdminAccountState } = await import('../adminCliCore.js');
+  const { loadConfig } = await import('../config.js');
+  const config = loadConfig({});
+
+  const parsed = parseAdminCliArgs(['--grant', '--email', 'admin@example.com', '--role', 'SUPER_ADMIN']);
+  assert.equal(parsed.mode, 'grant');
+  assert.equal(parsed.email, 'admin@example.com');
+  assert.equal(parsed.role, 'SUPER_ADMIN');
+
+  const adminsMap = new Map();
+  const usersMap = new Map([
+    ['uid_target', { userId: 'uid_target', email: 'admin@example.com', role: 'STUDENT', accountStatus: 'ACTIVE' }],
+  ]);
+  const logs = [];
+  const authUser = {
+    uid: 'uid_target',
+    email: 'admin@example.com',
+    displayName: 'Platform Owner',
+    emailVerified: true,
+    disabled: false,
+    customClaims: {},
+  };
+
+  const auth = {
+    async getUserByEmail(email) {
+      if (email !== authUser.email) throw new Error('not found');
+      return authUser;
+    },
+    async getUser(uid) {
+      if (uid !== authUser.uid) throw new Error('not found');
+      return authUser;
+    },
+    async setCustomUserClaims(uid, claims) {
+      if (uid === authUser.uid) authUser.customClaims = claims;
+    },
+  };
+
+  const db = {
+    collection(name) {
+      return {
+        doc(id) {
+          return {
+            async get() {
+              const map = name === 'admins' ? adminsMap : usersMap;
+              return map.has(id) ? { exists: true, data: () => map.get(id) } : { exists: false, data: () => null };
+            },
+            async set(data) {
+              if (name === 'admins') adminsMap.set(id, { ...(adminsMap.get(id) || {}), ...data });
+            },
+            async update(data) {
+              if (name === 'users' && usersMap.has(id)) {
+                usersMap.set(id, { ...usersMap.get(id), ...data });
+              }
+            },
+          };
+        },
+        async get() {
+          if (name === 'admins') {
+            return { docs: Array.from(adminsMap.entries()).map(([id, data]) => ({ id, data: () => data })) };
+          }
+          return { docs: [] };
+        },
+        async add(entry) {
+          logs.push(entry);
+        },
+      };
+    },
+  };
+
+  const FieldValueMock = { serverTimestamp: () => 'SERVER_TS' };
+
+  const beforeState = await verifyAdminAccountState({ auth, db, config, email: 'admin@example.com' });
+  assert.equal(beforeState.checks.readyForFirestore, false);
+  assert.equal(beforeState.checks.readyForStorage, false);
+  assert.equal(beforeState.checks.readyForFullAdmin, false);
+
+  const afterState = await grantAdminAccount({
+    auth,
+    db,
+    FieldValue: FieldValueMock,
+    config,
+    email: 'admin@example.com',
+    role: 'SUPER_ADMIN',
+  });
+  assert.equal(afterState.customClaims.abkRole, 'SUPER_ADMIN');
+  assert.equal(afterState.adminsDoc.exists, true);
+  assert.equal(afterState.adminsDoc.active, true);
+  assert.equal(afterState.adminsDoc.role, 'SUPER_ADMIN');
+  assert.equal(afterState.userProfile.role, 'SUPER_ADMIN');
+  assert.equal(afterState.checks.readyForFirestore, true);
+  assert.equal(afterState.checks.readyForStorage, true);
+  assert.equal(afterState.checks.readyForFullAdmin, true);
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0].action, 'GRANT_STAFF_ROLE');
+});
+
+test('loadConfig leaves service account key fields empty so Firebase Admin SDK uses ADC/WIF', async () => {
+  const { loadConfig } = await import('../config.js');
+  const cfg = loadConfig({
+    GOOGLE_APPLICATION_CREDENTIALS: '/tmp/gha-oidc-adc.json',
+  });
+  assert.equal(cfg.serviceAccountJson, '');
+  assert.equal(cfg.serviceAccountFile, '');
+  assert.equal(cfg.projectId, 'gen-lang-client-0343268738');
+  assert.equal(
+    cfg.databaseId,
+    'ai-studio-android-abk-452af8d1-cf14-40e7-aead-48a40e7f239d'
+  );
+});

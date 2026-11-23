@@ -3,6 +3,7 @@ import {
   resolveStaffAuthorization,
   verifyReaderNotBanned,
 } from './auth.js';
+import { createB2S3Client, hasB2Credentials } from './b2S3Client.js';
 import {
   buildSafeObjectKey,
   getMaxBytesForKind,
@@ -16,6 +17,8 @@ import {
   QUOTA_WARNING_RATIO,
 } from './storageLimits.js';
 
+const GIB = 1024 * 1024 * 1024;
+
 let cachedLimits = null;
 let cachedLimitsExpiresAt = 0;
 
@@ -26,14 +29,13 @@ function encodeObjectKeySegments(objectKey) {
     .join('/');
 }
 
-function decodeObjectKeyFromPath(pathname) {
-  const raw = pathname.replace(/^\/files\/+/, '');
+function decodeObjectKeyFromPath(pathname, prefix) {
+  const raw = pathname.slice(prefix.length).replace(/^\/+/, '');
   if (!raw) return '';
-  const decoded = raw
+  return raw
     .split('/')
     .map((seg) => decodeURIComponent(seg))
     .join('/');
-  return decoded;
 }
 
 function parseAllowedOrigins(env) {
@@ -49,7 +51,8 @@ function buildCorsHeaders(request, env, allowPublicMedia = false) {
   const headers = new Headers({
     Vary: 'Origin',
     'Access-Control-Allow-Methods': 'GET, HEAD, POST, PUT, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Authorization, Content-Type, Range, X-File-Name, X-Folder, X-File-Size',
+    'Access-Control-Allow-Headers':
+      'Authorization, Content-Type, Range, X-File-Name, X-Folder, X-File-Size, X-Storage-Provider, X-Access-Level',
     'Access-Control-Expose-Headers':
       'Accept-Ranges, Content-Range, Content-Length, Content-Type, ETag, Cache-Control',
     'Access-Control-Max-Age': '86400',
@@ -77,6 +80,26 @@ function extractBearerToken(request) {
   if (!authHeader.startsWith('Bearer ')) return null;
   const token = authHeader.slice('Bearer '.length).trim();
   return token || null;
+}
+
+function resolveProviderParam(rawValue) {
+  const normalized = String(rawValue || 'r2').trim().toLowerCase();
+  if (normalized === 'r2' || normalized === 'b2') {
+    return normalized;
+  }
+  return null;
+}
+
+function resolveAccessLevelParam(rawValue, folder = '') {
+  const normalized = String(rawValue || '').trim().toLowerCase();
+  if (normalized === 'public') return 'public';
+  if (normalized === 'private') return 'private';
+  return String(folder || '').trim().toLowerCase() === 'branding' ? 'public' : 'private';
+}
+
+function buildPublicMediaUrl(origin, provider, objectKey) {
+  const prefix = provider === 'b2' ? '/b2/files/' : '/files/';
+  return `${origin}${prefix}${encodeObjectKeySegments(objectKey)}`;
 }
 
 async function resolveDynamicLimits(env, idToken, fetchImpl) {
@@ -152,12 +175,210 @@ async function requireStaff(request, env, fetchImpl) {
   }
 }
 
+async function checkReaderAccess(request, env, fetchImpl) {
+  const bearerToken = extractBearerToken(request);
+  if (!bearerToken) {
+    return { hasToken: false, ok: true };
+  }
+  try {
+    const reader = await verifyReaderNotBanned(env, bearerToken, fetchImpl);
+    if (!reader.allowed) {
+      return {
+        hasToken: true,
+        ok: false,
+        response: jsonResponse({ error: 'حسابك موقوف أو محظور.' }, 403, request, env),
+      };
+    }
+    return { hasToken: true, ok: true, reader };
+  } catch (err) {
+    const message = String(err?.message || '');
+    const isServiceError =
+      message.includes('Firestore REST error') ||
+      message.includes('Failed to fetch Google SecureToken JWKS') ||
+      err?.name === 'TypeError';
+    if (isServiceError) {
+      return {
+        hasToken: true,
+        ok: false,
+        response: jsonResponse(
+          { error: 'تعذر التحقق من حالة الحساب حالياً.', code: 'AUTH_CHECK_UNAVAILABLE' },
+          503,
+          request,
+          env
+        ),
+      };
+    }
+    return {
+      hasToken: true,
+      ok: false,
+      response: jsonResponse({ error: 'رمز الجلسة غير صالح أو منتهي الصلاحية.' }, 401, request, env),
+    };
+  }
+}
+
+async function handleMediaRead({ request, env, fetchImpl, path, provider }) {
+  const prefix = provider === 'b2' ? '/b2/files/' : '/files/';
+  const objectKey = decodeObjectKeyFromPath(path, prefix);
+  if (!isValidObjectKey(objectKey)) {
+    return jsonResponse({ error: 'مسار الملف غير صالح.' }, 400, request, env);
+  }
+
+  if (provider === 'r2' && !env?.MEDIA_BUCKET) {
+    return jsonResponse({ error: 'R2 binding MEDIA_BUCKET غير مهيأ.' }, 500, request, env);
+  }
+  if (provider === 'b2' && !hasB2Credentials(env)) {
+    return jsonResponse(
+      { error: 'خدمة Backblaze B2 غير مهيأة حالياً.', code: 'B2_NOT_CONFIGURED' },
+      503,
+      request,
+      env
+    );
+  }
+
+  const readMode = String(env?.READ_ACCESS_MODE || 'authenticated').trim().toLowerCase();
+  const readerCheck = await checkReaderAccess(request, env, fetchImpl);
+  if (!readerCheck.ok) {
+    return readerCheck.response;
+  }
+
+  let headObj = null;
+  let b2Client = null;
+  try {
+    if (provider === 'b2') {
+      b2Client = createB2S3Client(env, fetchImpl);
+      headObj = await b2Client.headObject(objectKey);
+    } else {
+      headObj = await env.MEDIA_BUCKET.head(objectKey);
+    }
+  } catch (err) {
+    return jsonResponse(
+      {
+        error: provider === 'b2' ? 'تعذر الوصول إلى ملف Backblaze B2.' : 'تعذر الوصول إلى ملف Cloudflare R2.',
+        code: provider === 'b2' ? 'B2_UNAVAILABLE' : 'R2_UNAVAILABLE',
+        detail: err?.message,
+      },
+      503,
+      request,
+      env
+    );
+  }
+
+  const isExplicitPublic =
+    String(headObj?.customMetadata?.accessLevel || '').trim().toLowerCase() === 'public';
+
+  if (readMode === 'authenticated' && !readerCheck.hasToken && !isExplicitPublic) {
+    // Reject unauthenticated access uniformly with 401 whether key exists (private) or not,
+    // preventing both unauthorized student media reads and key enumeration.
+    return jsonResponse({ error: 'يرجى تسجيل الدخول لمشاهدة هذا الملف.' }, 401, request, env);
+  }
+
+  if (!headObj) {
+    return jsonResponse(
+      {
+        error:
+          provider === 'b2'
+            ? 'الملف غير موجود في Backblaze B2.'
+            : 'الملف غير موجود في Cloudflare R2.',
+      },
+      404,
+      request,
+      env
+    );
+  }
+
+  const totalSize = Number(headObj.size || 0);
+  const contentType = guessContentTypeFromKey(objectKey, headObj.httpMetadata?.contentType);
+  const rangeHeader = request.headers.get('Range');
+  const parsedRange = parseHttpRangeHeader(rangeHeader, totalSize);
+
+  if (parsedRange.type === 'invalid' || parsedRange.type === 'unsatisfiable') {
+    const headers = buildCorsHeaders(request, env, true);
+    headers.set('Content-Range', `bytes */${totalSize}`);
+    headers.set('Accept-Ranges', 'bytes');
+    return new Response(null, { status: 416, headers });
+  }
+
+  const headers = buildCorsHeaders(request, env, true);
+  headers.set('Accept-Ranges', 'bytes');
+  headers.set('Content-Type', contentType);
+  headers.set('Cache-Control', isExplicitPublic ? 'public, max-age=3600' : 'private, no-store');
+  if (headObj.httpEtag) {
+    headers.set('ETag', headObj.httpEtag);
+  } else if (headObj.etag) {
+    headers.set('ETag', headObj.etag);
+  }
+
+  if (request.method === 'HEAD') {
+    if (parsedRange.type === 'partial') {
+      headers.set(
+        'Content-Range',
+        `bytes ${parsedRange.offset}-${parsedRange.end}/${parsedRange.totalSize}`
+      );
+      headers.set('Content-Length', String(parsedRange.length));
+      return new Response(null, { status: 206, headers });
+    }
+    headers.set('Content-Length', String(totalSize));
+    return new Response(null, { status: 200, headers });
+  }
+
+  if (provider === 'b2') {
+    const forwardedRange =
+      parsedRange.type === 'partial' ? `bytes=${parsedRange.offset}-${parsedRange.end}` : null;
+    const b2Response = await b2Client.getObject(objectKey, forwardedRange);
+    if (!b2Response) {
+      return jsonResponse({ error: 'الملف غير موجود في Backblaze B2.' }, 404, request, env);
+    }
+    if (b2Response.status === 416) {
+      headers.set('Content-Range', `bytes */${totalSize}`);
+      return new Response(null, { status: 416, headers });
+    }
+    if (parsedRange.type === 'partial') {
+      headers.set(
+        'Content-Range',
+        b2Response.headers.get('Content-Range') ||
+          `bytes ${parsedRange.offset}-${parsedRange.end}/${parsedRange.totalSize}`
+      );
+      headers.set(
+        'Content-Length',
+        b2Response.headers.get('Content-Length') || String(parsedRange.length)
+      );
+      return new Response(b2Response.body, { status: 206, headers });
+    }
+    headers.set('Content-Length', b2Response.headers.get('Content-Length') || String(totalSize));
+    return new Response(b2Response.body, { status: 200, headers });
+  }
+
+  if (parsedRange.type === 'partial') {
+    const rangedObject = await env.MEDIA_BUCKET.get(objectKey, {
+      range: { offset: parsedRange.offset, length: parsedRange.length },
+    });
+    if (!rangedObject) {
+      return jsonResponse({ error: 'تعذر قراءة نطاق الملف المطلوب.' }, 404, request, env);
+    }
+    headers.set(
+      'Content-Range',
+      `bytes ${parsedRange.offset}-${parsedRange.end}/${parsedRange.totalSize}`
+    );
+    headers.set('Content-Length', String(parsedRange.length));
+    return new Response(rangedObject.body, { status: 206, headers });
+  }
+
+  const fullObject = await env.MEDIA_BUCKET.get(objectKey);
+  if (!fullObject) {
+    return jsonResponse({ error: 'الملف غير موجود في Cloudflare R2.' }, 404, request, env);
+  }
+  headers.set('Content-Length', String(totalSize));
+  return new Response(fullObject.body, { status: 200, headers });
+}
+
 export function createWorkerHandler({ fetchImpl = fetch } = {}) {
   return {
     async fetch(request, env) {
       const url = new URL(request.url);
       const path = url.pathname;
-      const isMediaRead = (request.method === 'GET' || request.method === 'HEAD') && path.startsWith('/files/');
+      const isR2Read = (request.method === 'GET' || request.method === 'HEAD') && path.startsWith('/files/');
+      const isB2Read = (request.method === 'GET' || request.method === 'HEAD') && path.startsWith('/b2/files/');
+      const isMediaRead = isR2Read || isB2Read;
 
       if (request.method === 'OPTIONS') {
         return new Response(null, {
@@ -166,17 +387,20 @@ export function createWorkerHandler({ fetchImpl = fetch } = {}) {
         });
       }
 
-      if (!env?.MEDIA_BUCKET && path !== '/health') {
-        return jsonResponse({ error: 'R2 binding MEDIA_BUCKET غير مهيأ.' }, 500, request, env);
-      }
-
       if (request.method === 'GET' && path === '/health') {
+        const limits = normalizeEnvLimits(env);
         return jsonResponse(
           {
             ok: true,
             service: 'midad-r2-worker',
+            provider: 'cloudflare-r2',
+            readAccessMode: String(env?.READ_ACCESS_MODE || 'authenticated').trim().toLowerCase(),
             r2Bound: Boolean(env?.MEDIA_BUCKET),
-            limits: normalizeEnvLimits(env),
+            verified: Boolean(env?.MEDIA_BUCKET),
+            b2Enabled: limits.b2Enabled,
+            b2WorkerConfigured: limits.b2WorkerConfigured,
+            b2Verified: false,
+            limits,
           },
           200,
           request,
@@ -185,103 +409,20 @@ export function createWorkerHandler({ fetchImpl = fetch } = {}) {
       }
 
       // ---------------------------------------------------------
-      // GET / HEAD /files/*  (ExoPlayer, PdfViewer, Admin preview)
-      // Support HTTP Range (206 Partial Content), Accept-Ranges, CORS
+      // GET / HEAD /files/* and /b2/files/*
       // ---------------------------------------------------------
       if (isMediaRead) {
-        const readMode = String(env?.READ_ACCESS_MODE || 'public').toLowerCase();
-        const bearerToken = extractBearerToken(request) || url.searchParams.get('token');
+        return handleMediaRead({
+          request,
+          env,
+          fetchImpl,
+          path,
+          provider: isB2Read ? 'b2' : 'r2',
+        });
+      }
 
-        if (readMode === 'authenticated') {
-          if (!bearerToken) {
-            return jsonResponse({ error: 'يرجى تسجيل الدخول لمشاهدة هذا الملف.' }, 401, request, env);
-          }
-          try {
-            const reader = await verifyReaderNotBanned(env, bearerToken, fetchImpl);
-            if (!reader.allowed) {
-              return jsonResponse({ error: 'حسابك موقوف أو محظور.' }, 403, request, env);
-            }
-          } catch {
-            return jsonResponse({ error: 'رمز الجلسة غير صالح أو منتهي الصلاحية.' }, 401, request, env);
-          }
-        } else if (bearerToken) {
-          // Even in public key mode, if the app forwards an authenticated student token for a banned user, block access
-          try {
-            const reader = await verifyReaderNotBanned(env, bearerToken, fetchImpl);
-            if (!reader.allowed) {
-              return jsonResponse({ error: 'حسابك موقوف أو محظور.' }, 403, request, env);
-            }
-          } catch {
-            // Ignore malformed optional token in public object mode
-          }
-        }
-
-        const objectKey = decodeObjectKeyFromPath(path);
-        if (!isValidObjectKey(objectKey)) {
-          return jsonResponse({ error: 'مسار الملف غير صالح.' }, 400, request, env);
-        }
-
-        const headObj = await env.MEDIA_BUCKET.head(objectKey);
-        if (!headObj) {
-          return jsonResponse({ error: 'الملف غير موجود في Cloudflare R2.' }, 404, request, env);
-        }
-
-        const totalSize = Number(headObj.size || 0);
-        const contentType = guessContentTypeFromKey(objectKey, headObj.httpMetadata?.contentType);
-        const rangeHeader = request.headers.get('Range');
-        const parsedRange = parseHttpRangeHeader(rangeHeader, totalSize);
-
-        if (parsedRange.type === 'invalid' || parsedRange.type === 'unsatisfiable') {
-          const headers = buildCorsHeaders(request, env, true);
-          headers.set('Content-Range', `bytes */${totalSize}`);
-          headers.set('Accept-Ranges', 'bytes');
-          return new Response(null, { status: 416, headers });
-        }
-
-        const headers = buildCorsHeaders(request, env, true);
-        headers.set('Accept-Ranges', 'bytes');
-        headers.set('Content-Type', contentType);
-        headers.set('Cache-Control', 'public, max-age=3600');
-        if (headObj.httpEtag) {
-          headers.set('ETag', headObj.httpEtag);
-        } else if (headObj.etag) {
-          headers.set('ETag', headObj.etag);
-        }
-
-        if (request.method === 'HEAD') {
-          if (parsedRange.type === 'partial') {
-            headers.set(
-              'Content-Range',
-              `bytes ${parsedRange.offset}-${parsedRange.end}/${parsedRange.totalSize}`
-            );
-            headers.set('Content-Length', String(parsedRange.length));
-            return new Response(null, { status: 206, headers });
-          }
-          headers.set('Content-Length', String(totalSize));
-          return new Response(null, { status: 200, headers });
-        }
-
-        if (parsedRange.type === 'partial') {
-          const rangedObject = await env.MEDIA_BUCKET.get(objectKey, {
-            range: { offset: parsedRange.offset, length: parsedRange.length },
-          });
-          if (!rangedObject) {
-            return jsonResponse({ error: 'تعذر قراءة نطاق الملف المطلوب.' }, 404, request, env);
-          }
-          headers.set(
-            'Content-Range',
-            `bytes ${parsedRange.offset}-${parsedRange.end}/${parsedRange.totalSize}`
-          );
-          headers.set('Content-Length', String(parsedRange.length));
-          return new Response(rangedObject.body, { status: 206, headers });
-        }
-
-        const fullObject = await env.MEDIA_BUCKET.get(objectKey);
-        if (!fullObject) {
-          return jsonResponse({ error: 'الملف غير موجود في Cloudflare R2.' }, 404, request, env);
-        }
-        headers.set('Content-Length', String(totalSize));
-        return new Response(fullObject.body, { status: 200, headers });
+      if (!env?.MEDIA_BUCKET) {
+        return jsonResponse({ error: 'R2 binding MEDIA_BUCKET غير مهيأ.' }, 500, request, env);
       }
 
       // ---------------------------------------------------------
@@ -293,21 +434,89 @@ export function createWorkerHandler({ fetchImpl = fetch } = {}) {
       }
       const { idToken, auth } = staffCheck;
       const limits = await resolveDynamicLimits(env, idToken, fetchImpl);
-      const totalLimitBytes = limits.totalStorageLimitGb * 1024 * 1024 * 1024;
+      const r2AllocatedBytes = limits.r2StorageLimitGb * GIB;
+      const b2AllocatedBytes = limits.b2StorageLimitGb * GIB;
 
-      if (request.method === 'GET' && path === '/quota') {
-        const usage = await computeBucketUsage(env.MEDIA_BUCKET);
-        const remainingBytes = Math.max(0, totalLimitBytes - usage.usedBytes);
-        const usedRatio = totalLimitBytes > 0 ? usage.usedBytes / totalLimitBytes : 0;
+      if (request.method === 'GET' && (path === '/quota' || path === '/providers/status')) {
+        let r2Usage = { usedBytes: 0, fileCount: 0 };
+        let r2Verified = false;
+        let r2Error = null;
+        try {
+          r2Usage = await computeBucketUsage(env.MEDIA_BUCKET);
+          r2Verified = true;
+        } catch (err) {
+          r2Error = err?.message || 'فشل التحقق من Cloudflare R2';
+        }
+
+        let b2Usage = { usedBytes: 0, fileCount: 0 };
+        let b2Verified = false;
+        let b2Error = null;
+        if (limits.b2WorkerConfigured) {
+          try {
+            const b2Client = createB2S3Client(env, fetchImpl);
+            b2Usage = await b2Client.computeBucketUsage();
+            b2Verified = true;
+          } catch (err) {
+            b2Error = err?.message || 'فشل التحقق من اتصال Backblaze B2';
+          }
+        }
+
+        const r2ActiveLimitBytes = r2Verified ? r2AllocatedBytes : 0;
+        const r2RemainingBytes = Math.max(0, r2ActiveLimitBytes - r2Usage.usedBytes);
+        const r2UsedRatio = r2ActiveLimitBytes > 0 ? r2Usage.usedBytes / r2ActiveLimitBytes : 0;
+
+        const b2EnabledAndVerified = Boolean(limits.b2Enabled && b2Verified);
+        const b2ActiveLimitBytes = b2EnabledAndVerified ? b2AllocatedBytes : 0;
+        const b2RemainingBytes = Math.max(0, b2ActiveLimitBytes - b2Usage.usedBytes);
+        const b2UsedRatio = b2ActiveLimitBytes > 0 ? b2Usage.usedBytes / b2ActiveLimitBytes : 0;
+
+        const activeTotalLimitBytes = r2ActiveLimitBytes + b2ActiveLimitBytes;
+        const targetTotalBytes = r2AllocatedBytes + b2AllocatedBytes;
+        const combinedUsedBytes =
+          (r2Verified ? r2Usage.usedBytes : 0) + (b2EnabledAndVerified ? b2Usage.usedBytes : 0);
+        const combinedRemainingBytes = Math.max(0, activeTotalLimitBytes - combinedUsedBytes);
+
         return jsonResponse(
           {
-            usedBytes: usage.usedBytes,
-            totalLimitBytes,
-            remainingBytes,
-            fileCount: usage.fileCount,
-            usedPercent: Number((usedRatio * 100).toFixed(2)),
-            nearLimit: usedRatio >= QUOTA_WARNING_RATIO,
+            provider: 'cloudflare-r2',
+            verified: r2Verified,
+            r2Bound: Boolean(env?.MEDIA_BUCKET),
+            usedBytes: r2Usage.usedBytes,
+            totalLimitBytes: activeTotalLimitBytes,
+            targetTotalBytes,
+            remainingBytes: combinedRemainingBytes,
+            fileCount: r2Usage.fileCount,
+            usedPercent: Number((r2UsedRatio * 100).toFixed(2)),
+            nearLimit: r2UsedRatio >= QUOTA_WARNING_RATIO,
             limits,
+            r2: {
+              provider: 'cloudflare-r2',
+              bound: Boolean(env?.MEDIA_BUCKET),
+              verified: r2Verified,
+              usedBytes: r2Usage.usedBytes,
+              allocatedLimitBytes: r2AllocatedBytes,
+              activeLimitBytes: r2ActiveLimitBytes,
+              remainingBytes: r2RemainingBytes,
+              fileCount: r2Usage.fileCount,
+              usedPercent: Number((r2UsedRatio * 100).toFixed(2)),
+              nearLimit: r2UsedRatio >= QUOTA_WARNING_RATIO,
+              error: r2Error,
+            },
+            b2: {
+              provider: 'backblaze-b2',
+              workerConfigured: limits.b2WorkerConfigured,
+              credentialsConfigured: limits.b2CredentialsConfigured,
+              enabled: b2EnabledAndVerified,
+              verified: b2Verified,
+              usedBytes: b2Usage.usedBytes,
+              allocatedLimitBytes: b2AllocatedBytes,
+              activeLimitBytes: b2ActiveLimitBytes,
+              remainingBytes: b2RemainingBytes,
+              fileCount: b2Usage.fileCount,
+              usedPercent: Number((b2UsedRatio * 100).toFixed(2)),
+              nearLimit: b2UsedRatio >= QUOTA_WARNING_RATIO,
+              error: b2Error,
+            },
           },
           200,
           request,
@@ -322,11 +531,17 @@ export function createWorkerHandler({ fetchImpl = fetch } = {}) {
         let folder = 'general';
         let mimeType = '';
         let bodyBytes = null;
+        let providerRaw =
+          request.headers.get('X-Storage-Provider') || url.searchParams.get('provider') || 'r2';
+        let accessLevelRaw =
+          request.headers.get('X-Access-Level') || url.searchParams.get('accessLevel') || '';
 
         if (rawContentType.includes('multipart/form-data')) {
           const form = await request.formData();
           const fileEntry = form.get('file');
           folder = String(form.get('folder') || 'general');
+          providerRaw = String(form.get('provider') || providerRaw);
+          accessLevelRaw = String(form.get('accessLevel') || accessLevelRaw);
           if (!fileEntry || typeof fileEntry === 'string') {
             return jsonResponse({ error: 'لم يتم إرفاق ملف في الطلب.' }, 400, request, env);
           }
@@ -339,6 +554,12 @@ export function createWorkerHandler({ fetchImpl = fetch } = {}) {
           mimeType = rawContentType;
           bodyBytes = await request.arrayBuffer();
         }
+
+        const provider = resolveProviderParam(providerRaw);
+        if (!provider) {
+          return jsonResponse({ error: 'مزود التخزين غير صالح (المسموح: r2 أو b2).' }, 400, request, env);
+        }
+        const accessLevel = resolveAccessLevelParam(accessLevelRaw, folder);
 
         const sizeBytes = bodyBytes.byteLength;
         if (!fileName || sizeBytes <= 0) {
@@ -374,11 +595,80 @@ export function createWorkerHandler({ fetchImpl = fetch } = {}) {
           );
         }
 
-        const usage = await computeBucketUsage(env.MEDIA_BUCKET);
-        if (usage.usedBytes + sizeBytes > totalLimitBytes) {
+        if (provider === 'b2') {
+          if (!limits.b2Enabled) {
+            return jsonResponse(
+              {
+                error: 'خدمة Backblaze B2 غير مفعّلة أو لم تُربط مفاتيحها في Worker بعد.',
+                code: 'B2_NOT_CONFIGURED',
+              },
+              503,
+              request,
+              env
+            );
+          }
+          const b2Client = createB2S3Client(env, fetchImpl);
+          let b2Usage;
+          try {
+            b2Usage = await b2Client.computeBucketUsage();
+          } catch (err) {
+            return jsonResponse(
+              {
+                error: 'تعذر الاتصال بحساب Backblaze B2 للتحقق من السعة.',
+                code: 'B2_UNAVAILABLE',
+                detail: err?.message,
+              },
+              503,
+              request,
+              env
+            );
+          }
+          if (b2Usage.usedBytes + sizeBytes > b2AllocatedBytes) {
+            return jsonResponse(
+              {
+                error: `حصة Backblaze B2 (${limits.b2StorageLimitGb} GB) ممتلئة ولا تكفي لرفع هذا الملف.`,
+                code: 'QUOTA_EXCEEDED',
+              },
+              507,
+              request,
+              env
+            );
+          }
+
+          const objectKey = buildSafeObjectKey(folder, fileName);
+          await b2Client.putObject(objectKey, bodyBytes, {
+            httpMetadata: { contentType: descriptor.contentType },
+            customMetadata: {
+              uploadedBy: auth.uid,
+              mediaKind: descriptor.mediaKind,
+              originalName: fileName.slice(0, 120),
+              accessLevel,
+            },
+          });
+
+          const publicUrl = buildPublicMediaUrl(url.origin, 'b2', objectKey);
           return jsonResponse(
             {
-              error: 'المساحة التخزينية الإجمالية (Quota) ممتلئة ولا تكفي لرفع هذا الملف.',
+              ok: true,
+              storageProvider: 'b2',
+              accessLevel,
+              objectKey,
+              publicUrl,
+              sizeBytes,
+              contentType: descriptor.contentType,
+              mediaKind: descriptor.mediaKind,
+            },
+            201,
+            request,
+            env
+          );
+        }
+
+        const usage = await computeBucketUsage(env.MEDIA_BUCKET);
+        if (usage.usedBytes + sizeBytes > r2AllocatedBytes) {
+          return jsonResponse(
+            {
+              error: `حصة Cloudflare R2 (${limits.r2StorageLimitGb} GB) ممتلئة ولا تكفي لرفع هذا الملف.`,
               code: 'QUOTA_EXCEEDED',
             },
             507,
@@ -396,13 +686,16 @@ export function createWorkerHandler({ fetchImpl = fetch } = {}) {
             uploadedBy: auth.uid,
             mediaKind: descriptor.mediaKind,
             originalName: fileName.slice(0, 120),
+            accessLevel,
           },
         });
 
-        const publicUrl = `${url.origin}/files/${encodeObjectKeySegments(objectKey)}`;
+        const publicUrl = buildPublicMediaUrl(url.origin, 'r2', objectKey);
         return jsonResponse(
           {
             ok: true,
+            storageProvider: 'r2',
+            accessLevel,
             objectKey,
             publicUrl,
             sizeBytes,
@@ -428,7 +721,12 @@ export function createWorkerHandler({ fetchImpl = fetch } = {}) {
         const contentType = String(body?.contentType || '').trim();
         const folder = String(body?.folder || 'general');
         const sizeBytes = Number(body?.sizeBytes || 0);
+        const provider = resolveProviderParam(body?.provider || url.searchParams.get('provider') || 'r2');
+        const accessLevel = resolveAccessLevelParam(body?.accessLevel, folder);
 
+        if (!provider) {
+          return jsonResponse({ error: 'مزود التخزين غير صالح (المسموح: r2 أو b2).' }, 400, request, env);
+        }
         if (!fileName || !Number.isFinite(sizeBytes) || sizeBytes <= 0) {
           return jsonResponse({ error: 'بيانات الملف أو الحجم غير صالحة.' }, 400, request, env);
         }
@@ -451,11 +749,79 @@ export function createWorkerHandler({ fetchImpl = fetch } = {}) {
           );
         }
 
-        const usage = await computeBucketUsage(env.MEDIA_BUCKET);
-        if (usage.usedBytes + sizeBytes > totalLimitBytes) {
+        if (provider === 'b2') {
+          if (!limits.b2Enabled) {
+            return jsonResponse(
+              {
+                error: 'خدمة Backblaze B2 غير مفعّلة أو لم تُربط مفاتيحها في Worker بعد.',
+                code: 'B2_NOT_CONFIGURED',
+              },
+              503,
+              request,
+              env
+            );
+          }
+          const b2Client = createB2S3Client(env, fetchImpl);
+          let b2Usage;
+          try {
+            b2Usage = await b2Client.computeBucketUsage();
+          } catch (err) {
+            return jsonResponse(
+              {
+                error: 'تعذر الاتصال بحساب Backblaze B2 للتحقق من السعة.',
+                code: 'B2_UNAVAILABLE',
+                detail: err?.message,
+              },
+              503,
+              request,
+              env
+            );
+          }
+          if (b2Usage.usedBytes + sizeBytes > b2AllocatedBytes) {
+            return jsonResponse(
+              {
+                error: `المساحة التخزينية المخصصة لـ Backblaze B2 (${limits.b2StorageLimitGb} GB) لا تكفي لهذا الملف.`,
+                code: 'QUOTA_EXCEEDED',
+              },
+              507,
+              request,
+              env
+            );
+          }
+
+          const objectKey = buildSafeObjectKey(folder, fileName);
+          const multipartUpload = await b2Client.createMultipartUpload(objectKey, {
+            httpMetadata: { contentType: descriptor.contentType },
+            customMetadata: {
+              uploadedBy: auth.uid,
+              mediaKind: descriptor.mediaKind,
+              originalName: fileName.slice(0, 120),
+              accessLevel,
+            },
+          });
+
           return jsonResponse(
             {
-              error: 'المساحة التخزينية الإجمالية (25 GB أو الحد المحدد) لا تكفي لهذا الملف.',
+              ok: true,
+              storageProvider: 'b2',
+              accessLevel,
+              uploadId: multipartUpload.uploadId,
+              objectKey: multipartUpload.key,
+              partSizeBytes: PART_SIZE_BYTES,
+              contentType: descriptor.contentType,
+              mediaKind: descriptor.mediaKind,
+            },
+            201,
+            request,
+            env
+          );
+        }
+
+        const usage = await computeBucketUsage(env.MEDIA_BUCKET);
+        if (usage.usedBytes + sizeBytes > r2AllocatedBytes) {
+          return jsonResponse(
+            {
+              error: `المساحة التخزينية المخصصة لـ Cloudflare R2 (${limits.r2StorageLimitGb} GB) لا تكفي لهذا الملف.`,
               code: 'QUOTA_EXCEEDED',
             },
             507,
@@ -473,12 +839,15 @@ export function createWorkerHandler({ fetchImpl = fetch } = {}) {
             uploadedBy: auth.uid,
             mediaKind: descriptor.mediaKind,
             originalName: fileName.slice(0, 120),
+            accessLevel,
           },
         });
 
         return jsonResponse(
           {
             ok: true,
+            storageProvider: 'r2',
+            accessLevel,
             uploadId: multipartUpload.uploadId,
             objectKey: multipartUpload.key,
             partSizeBytes: PART_SIZE_BYTES,
@@ -496,7 +865,13 @@ export function createWorkerHandler({ fetchImpl = fetch } = {}) {
         const objectKey = url.searchParams.get('key') || '';
         const uploadId = url.searchParams.get('uploadId') || '';
         const partNumber = Number(url.searchParams.get('partNumber'));
+        const provider = resolveProviderParam(
+          url.searchParams.get('provider') || request.headers.get('X-Storage-Provider') || 'r2'
+        );
 
+        if (!provider) {
+          return jsonResponse({ error: 'مزود التخزين غير صالح.' }, 400, request, env);
+        }
         if (!isValidObjectKey(objectKey) || !uploadId || !Number.isInteger(partNumber) || partNumber < 1 || partNumber > 10000) {
           return jsonResponse({ error: 'معاملات جزء الرفع (key/uploadId/partNumber) غير صالحة.' }, 400, request, env);
         }
@@ -506,12 +881,32 @@ export function createWorkerHandler({ fetchImpl = fetch } = {}) {
           return jsonResponse({ error: 'حجم الجزء المرفوع غير صالح.' }, 400, request, env);
         }
 
+        if (provider === 'b2') {
+          if (!limits.b2Enabled) {
+            return jsonResponse({ error: 'خدمة Backblaze B2 غير مفعّلة.', code: 'B2_NOT_CONFIGURED' }, 503, request, env);
+          }
+          const b2Client = createB2S3Client(env, fetchImpl);
+          const uploadedPart = await b2Client.uploadPart(objectKey, uploadId, partNumber, chunkBuffer);
+          return jsonResponse(
+            {
+              ok: true,
+              storageProvider: 'b2',
+              partNumber: uploadedPart.partNumber,
+              etag: uploadedPart.etag,
+            },
+            200,
+            request,
+            env
+          );
+        }
+
         const multipartUpload = env.MEDIA_BUCKET.resumeMultipartUpload(objectKey, uploadId);
         const uploadedPart = await multipartUpload.uploadPart(partNumber, chunkBuffer);
 
         return jsonResponse(
           {
             ok: true,
+            storageProvider: 'r2',
             partNumber: uploadedPart.partNumber,
             etag: uploadedPart.etag,
           },
@@ -533,7 +928,11 @@ export function createWorkerHandler({ fetchImpl = fetch } = {}) {
         const objectKey = String(body?.objectKey || '').trim();
         const uploadId = String(body?.uploadId || '').trim();
         const parts = Array.isArray(body?.parts) ? body.parts : [];
+        const provider = resolveProviderParam(body?.provider || url.searchParams.get('provider') || 'r2');
 
+        if (!provider) {
+          return jsonResponse({ error: 'مزود التخزين غير صالح.' }, 400, request, env);
+        }
         if (!isValidObjectKey(objectKey) || !uploadId || parts.length === 0) {
           return jsonResponse({ error: 'بيانات إتمام الرفع غير مكتملة.' }, 400, request, env);
         }
@@ -550,12 +949,54 @@ export function createWorkerHandler({ fetchImpl = fetch } = {}) {
           return jsonResponse({ error: 'بعض أجزاء الملف غير صالحة.' }, 400, request, env);
         }
 
+        if (provider === 'b2') {
+          if (!limits.b2Enabled) {
+            return jsonResponse({ error: 'خدمة Backblaze B2 غير مفعّلة.', code: 'B2_NOT_CONFIGURED' }, 503, request, env);
+          }
+          const b2Client = createB2S3Client(env, fetchImpl);
+          const finalObj = await b2Client.completeMultipartUpload(objectKey, uploadId, normalizedParts);
+          const finalSize = Number(finalObj?.size || 0);
+          const contentType = guessContentTypeFromKey(objectKey, finalObj?.httpMetadata?.contentType);
+          const descriptor = inferMediaDescriptor(objectKey, contentType);
+          const maxAllowed = descriptor ? getMaxBytesForKind(descriptor.mediaKind, limits) : b2AllocatedBytes;
+
+          if (finalSize > maxAllowed) {
+            await b2Client.deleteObject(objectKey);
+            return jsonResponse(
+              {
+                error: `الحجم النهائي للملف (${formatSizeMb(finalSize)} MB) يتجاوز الحد الأقصى المسموح وتم إلغاؤه.`,
+                code: 'FILE_TOO_LARGE',
+              },
+              413,
+              request,
+              env
+            );
+          }
+
+          const publicUrl = buildPublicMediaUrl(url.origin, 'b2', objectKey);
+          return jsonResponse(
+            {
+              ok: true,
+              storageProvider: 'b2',
+              accessLevel: finalObj?.customMetadata?.accessLevel || 'private',
+              objectKey,
+              publicUrl,
+              sizeBytes: finalSize,
+              contentType,
+              mediaKind: descriptor?.mediaKind || 'ATTACHMENT',
+            },
+            200,
+            request,
+            env
+          );
+        }
+
         const multipartUpload = env.MEDIA_BUCKET.resumeMultipartUpload(objectKey, uploadId);
         const finalObj = await multipartUpload.complete(normalizedParts);
         const finalSize = Number(finalObj?.size || 0);
         const contentType = guessContentTypeFromKey(objectKey, finalObj?.httpMetadata?.contentType);
         const descriptor = inferMediaDescriptor(objectKey, contentType);
-        const maxAllowed = descriptor ? getMaxBytesForKind(descriptor.mediaKind, limits) : totalLimitBytes;
+        const maxAllowed = descriptor ? getMaxBytesForKind(descriptor.mediaKind, limits) : r2AllocatedBytes;
 
         if (finalSize > maxAllowed) {
           await env.MEDIA_BUCKET.delete(objectKey);
@@ -570,10 +1011,12 @@ export function createWorkerHandler({ fetchImpl = fetch } = {}) {
           );
         }
 
-        const publicUrl = `${url.origin}/files/${encodeObjectKeySegments(objectKey)}`;
+        const publicUrl = buildPublicMediaUrl(url.origin, 'r2', objectKey);
         return jsonResponse(
           {
             ok: true,
+            storageProvider: 'r2',
+            accessLevel: finalObj?.customMetadata?.accessLevel || 'private',
             objectKey,
             publicUrl,
             sizeBytes: finalSize,
@@ -590,22 +1033,44 @@ export function createWorkerHandler({ fetchImpl = fetch } = {}) {
       if (request.method === 'DELETE' && path === '/multipart/abort') {
         const objectKey = url.searchParams.get('key') || '';
         const uploadId = url.searchParams.get('uploadId') || '';
+        const provider = resolveProviderParam(url.searchParams.get('provider') || 'r2');
+        if (!provider) {
+          return jsonResponse({ error: 'مزود التخزين غير صالح.' }, 400, request, env);
+        }
         if (!isValidObjectKey(objectKey) || !uploadId) {
           return jsonResponse({ error: 'بيانات الإلغاء غير مكتملة.' }, 400, request, env);
         }
+        if (provider === 'b2') {
+          if (!hasB2Credentials(env)) {
+            return jsonResponse({ error: 'خدمة Backblaze B2 غير مهيأة.', code: 'B2_NOT_CONFIGURED' }, 503, request, env);
+          }
+          await createB2S3Client(env, fetchImpl).abortMultipartUpload(objectKey, uploadId);
+          return jsonResponse({ ok: true, storageProvider: 'b2', aborted: true }, 200, request, env);
+        }
         const multipartUpload = env.MEDIA_BUCKET.resumeMultipartUpload(objectKey, uploadId);
         await multipartUpload.abort();
-        return jsonResponse({ ok: true, aborted: true }, 200, request, env);
+        return jsonResponse({ ok: true, storageProvider: 'r2', aborted: true }, 200, request, env);
       }
 
-      // Delete stored R2 object (content/admin cleanup)
+      // Delete stored R2 or B2 object independently (never touches other provider)
       if (request.method === 'DELETE' && path === '/object') {
         const objectKey = url.searchParams.get('key') || '';
+        const provider = resolveProviderParam(url.searchParams.get('provider') || 'r2');
+        if (!provider) {
+          return jsonResponse({ error: 'مزود التخزين غير صالح.' }, 400, request, env);
+        }
         if (!isValidObjectKey(objectKey)) {
           return jsonResponse({ error: 'مفتاح الملف غير صالح.' }, 400, request, env);
         }
+        if (provider === 'b2') {
+          if (!hasB2Credentials(env)) {
+            return jsonResponse({ error: 'خدمة Backblaze B2 غير مهيأة.', code: 'B2_NOT_CONFIGURED' }, 503, request, env);
+          }
+          await createB2S3Client(env, fetchImpl).deleteObject(objectKey);
+          return jsonResponse({ ok: true, storageProvider: 'b2', deletedKey: objectKey }, 200, request, env);
+        }
         await env.MEDIA_BUCKET.delete(objectKey);
-        return jsonResponse({ ok: true, deletedKey: objectKey }, 200, request, env);
+        return jsonResponse({ ok: true, storageProvider: 'r2', deletedKey: objectKey }, 200, request, env);
       }
 
       return jsonResponse({ error: 'المسار غير موجود.' }, 404, request, env);

@@ -1,0 +1,258 @@
+name: Verify or Grant Firebase Admin (Phone Safe)
+
+on:
+  workflow_dispatch:
+    inputs:
+      admin_email:
+        description: 'البريد الإلكتروني لحساب المسؤول في Firebase Auth (مطلوب)'
+        required: true
+        type: string
+      action:
+        description: 'اختر verify_only للفحص فقط أولاً، أو grant_super_admin لمنح SUPER_ADMIN'
+        required: true
+        type: choice
+        default: verify_only
+        options:
+          - verify_only
+          - grant_super_admin
+      confirm_grant_phrase:
+        description: 'مطلوب فقط عند اختيار grant_super_admin: اكتب CONFIRM_SUPER_ADMIN للتأكيد'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT_ID: gen-lang-client-0343268738
+  DATABASE_ID: ai-studio-android-abk-452af8d1-cf14-40e7-aead-48a40e7f239d
+
+jobs:
+  verify-or-grant-admin:
+    name: Firebase Admin Verification & Safe Grant
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      github.repository == 'karimaeti52-oss/ABK-Educational-App' &&
+      github.actor == github.repository_owner &&
+      github.repository_owner == 'karimaeti52-oss'
+    steps:
+      - name: Validate execution guards, WIF config, and manual inputs
+        env:
+          INPUT_EMAIL: ${{ inputs.admin_email }}
+          INPUT_ACTION: ${{ inputs.action }}
+          CONFIRM_PHRASE: ${{ inputs.confirm_grant_phrase }}
+          WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER || secrets.GCP_WIF_PROVIDER }}
+          WIF_SERVICE_ACCOUNT: ${{ vars.GCP_WIF_SERVICE_ACCOUNT || secrets.GCP_WIF_SERVICE_ACCOUNT }}
+        run: |
+          set -euo pipefail
+
+          # 1. Defense-in-depth runtime context validation
+          if [ "${GITHUB_EVENT_NAME:-}" != "workflow_dispatch" ]; then
+            echo "::error::ممنوع التشغيل التلقائي؛ هذا المسار يعمل يدوياً فقط عبر workflow_dispatch."
+            exit 1
+          fi
+          if [ "${GITHUB_REF:-}" != "refs/heads/main" ]; then
+            echo "::error::ممنوع التشغيل من أي فرع غير refs/heads/main."
+            exit 1
+          fi
+          if [ "${GITHUB_REPOSITORY:-}" != "karimaeti52-oss/ABK-Educational-App" ] || [ "${GITHUB_REPOSITORY_OWNER:-}" != "karimaeti52-oss" ] || [ "${GITHUB_ACTOR:-}" != "${GITHUB_REPOSITORY_OWNER:-}" ]; then
+            echo "::error::التشغيل مسموح فقط لمالك المستودع (karimaeti52-oss)."
+            exit 1
+          fi
+
+          # 2. Validate email & confirmation phrase before requesting any OIDC token
+          CLEAN_EMAIL=$(printf '%s' "$INPUT_EMAIL" | tr -d '[:space:]')
+          if ! printf '%s' "$CLEAN_EMAIL" | grep -Eq '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$'; then
+            echo "::error::البريد الإلكتروني المدخل غير صالح."
+            exit 1
+          fi
+          echo "::add-mask::$CLEAN_EMAIL"
+
+          if [ "$INPUT_ACTION" != "verify_only" ] && [ "$INPUT_ACTION" != "grant_super_admin" ]; then
+            echo "::error::إجراء غير معروف."
+            exit 1
+          fi
+
+          if [ "$INPUT_ACTION" = "grant_super_admin" ] && [ "$CONFIRM_PHRASE" != "CONFIRM_SUPER_ADMIN" ]; then
+            echo "::error::لمنح SUPER_ADMIN يجب كتابة عبارة التأكيد CONFIRM_SUPER_ADMIN بدقة في حقل confirm_grant_phrase."
+            exit 1
+          fi
+
+          # 3. Validate Workload Identity Federation configuration (without assuming/guessing unknown IDs)
+          CLEAN_WIF_PROVIDER=$(printf '%s' "${WIF_PROVIDER:-}" | tr -d '[:space:]')
+          CLEAN_WIF_SA=$(printf '%s' "${WIF_SERVICE_ACCOUNT:-}" | tr -d '[:space:]')
+          if [ -z "$CLEAN_WIF_PROVIDER" ] || [ -z "$CLEAN_WIF_SA" ]; then
+            {
+              echo "### إعداد Workload Identity Federation مطلوب على GitHub"
+              echo "يعتمد هذا المسار على مصادقة **GitHub OIDC** بدون ملفات Service Account JSON دائمة."
+              echo ""
+              echo "أضف القيمتين التاليتين في **Settings → Secrets and variables → Actions** (Variables أو Secrets):"
+              echo "- \`GCP_WIF_PROVIDER\`: مسار موفر الهوية الموجود في Google Cloud بصيغة:"
+              echo "  \`projects/<PROJECT_NUMBER>/locations/global/workloadIdentityPools/<POOL_ID>/providers/<PROVIDER_ID>\`"
+              echo "- \`GCP_WIF_SERVICE_ACCOUNT\`: بريد حساب الخدمة المحدود الصلاحيات في المشروع نفسه (\`...iam.gserviceaccount.com\`)."
+              echo ""
+              echo "تأكد في Google Cloud أن مزود WIF مقيد بالمستودع \`karimaeti52-oss/ABK-Educational-App\` والفرع \`refs/heads/main\` وأن حساب الخدمة يملك أقل صلاحيات لازمة (\`roles/firebaseauth.admin\` و \`roles/datastore.user\` فقط)."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Missing GCP_WIF_PROVIDER or GCP_WIF_SERVICE_ACCOUNT in GitHub Actions Variables/Secrets."
+            exit 1
+          fi
+
+          if ! printf '%s' "$CLEAN_WIF_PROVIDER" | grep -Eq '^projects/[0-9]+/locations/[a-z0-9-]+/workloadIdentityPools/[A-Za-z0-9._-]+/providers/[A-Za-z0-9._-]+$'; then
+            echo "::error::تنسيق GCP_WIF_PROVIDER غير صالح. الصيغة المطلوبة: projects/<PROJECT_NUMBER>/locations/global/workloadIdentityPools/<POOL_ID>/providers/<PROVIDER_ID>"
+            exit 1
+          fi
+
+          if ! printf '%s' "$CLEAN_WIF_SA" | grep -Eq '^[^@[:space:]]+@[^@[:space:]]+\.iam\.gserviceaccount\.com$'; then
+            echo "::error::تنسيق GCP_WIF_SERVICE_ACCOUNT غير صالح. يجب أن يكون بريد Service Account بصيغة ...@....iam.gserviceaccount.com"
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud via GitHub OIDC (Workload Identity Federation)
+        id: gcp_auth
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER || secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_WIF_SERVICE_ACCOUNT || secrets.GCP_WIF_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+          export_environment_variables: true
+          cleanup_credentials: true
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: admin-portal/package-lock.json
+
+      - name: Install admin-portal dependencies
+        working-directory: admin-portal
+        run: npm ci
+
+      - name: Verify WIF/ADC runtime credentials (without permanent private keys)
+        run: |
+          set -euo pipefail
+          if [ -z "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] || [ ! -f "$GOOGLE_APPLICATION_CREDENTIALS" ]; then
+            echo "::error::لم يتم توليد ملف اعتماد Workload Identity المؤقت (GOOGLE_APPLICATION_CREDENTIALS)."
+            exit 1
+          fi
+          python3 - <<'PY' "$GOOGLE_APPLICATION_CREDENTIALS"
+          import json, sys
+          with open(sys.argv[1], "r", encoding="utf-8") as f:
+              cred = json.load(f)
+          cred_type = cred.get("type")
+          if cred_type != "external_account" or "private_key" in cred:
+              print("::error::Unexpected credential type; expected external_account WIF credential without private_key.", file=sys.stderr)
+              sys.exit(1)
+          print("Verified ephemeral OIDC external_account ADC credential (no private_key stored).")
+          PY
+
+      - name: Run Firebase Admin verification / grant and publish Arabic summary
+        env:
+          FIREBASE_PROJECT_ID: ${{ env.PROJECT_ID }}
+          FIREBASE_FIRESTORE_DATABASE_ID: ${{ env.DATABASE_ID }}
+          INPUT_EMAIL: ${{ inputs.admin_email }}
+          INPUT_ACTION: ${{ inputs.action }}
+        run: |
+          set -euo pipefail
+          CLEAN_EMAIL=$(printf '%s' "$INPUT_EMAIL" | tr -d '[:space:]')
+          BEFORE_JSON="${RUNNER_TEMP}/admin-before.json"
+          AFTER_JSON="${RUNNER_TEMP}/admin-after.json"
+
+          # Always run read-only verification first (exit code 2 only means admin permissions not yet complete)
+          set +e
+          node admin-portal/server/scripts/manageAdminAccount.js --verify --email "$CLEAN_EMAIL" --json > "$BEFORE_JSON"
+          VERIFY_EXIT=$?
+          set -e
+
+          if [ "$VERIFY_EXIT" -ne 0 ] && [ "$VERIFY_EXIT" -ne 2 ]; then
+            echo "::error::فشل التحقق من الحساب في Firebase Auth أو Firestore. تأكد من وجود الحساب في Firebase Auth وأنه سجل الدخول مرة واحدة على الأقل، ومن صلاحيات Workload Identity SA."
+            exit "$VERIFY_EXIT"
+          fi
+
+          if [ "$INPUT_ACTION" = "grant_super_admin" ]; then
+            python3 - <<'PY' "$BEFORE_JSON"
+          import json, sys
+          with open(sys.argv[1], "r", encoding="utf-8") as f:
+              data = json.load(f)
+          if not data.get("uid"):
+              print("::error::الحساب غير موجود في Firebase Auth.", file=sys.stderr)
+              sys.exit(1)
+          if not data.get("emailVerified"):
+              print("::error::لن يتم منح SUPER_ADMIN لأن البريد الإلكتروني غير موثق في Firebase Auth (emailVerified=false).", file=sys.stderr)
+              sys.exit(1)
+          if data.get("authDisabled"):
+              print("::error::لن يتم منح SUPER_ADMIN لأن الحساب معطل في Firebase Auth.", file=sys.stderr)
+              sys.exit(1)
+          PY
+            node admin-portal/server/scripts/manageAdminAccount.js --grant --email "$CLEAN_EMAIL" --role SUPER_ADMIN --json > "$AFTER_JSON"
+            FINAL_JSON="$AFTER_JSON"
+          else
+            FINAL_JSON="$BEFORE_JSON"
+          fi
+
+          python3 - <<'PY' "$BEFORE_JSON" "$FINAL_JSON" "$INPUT_ACTION"
+          import json, os, sys
+
+          with open(sys.argv[1], "r", encoding="utf-8") as f:
+              before = json.load(f)
+          with open(sys.argv[2], "r", encoding="utf-8") as f:
+              final = json.load(f)
+          action = sys.argv[3]
+
+          def bool_ar(val):
+              return "نعم" if val else "لا"
+
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          lines = [
+              "## تقرير فحص حساب المسؤول على Firebase (OIDC / WIF)",
+              f"- **الإجراء المنفذ:** `{action}`",
+              "- **طريقة المصادقة:** GitHub OIDC + Google Cloud Workload Identity Federation (بدون مفاتيح JSON دائمة)",
+              f"- **المشروع:** `{final.get('projectId')}`",
+              f"- **قاعدة البيانات المسماة:** `{final.get('databaseId')}`",
+              f"- **UID:** `{final.get('uid')}`",
+              f"- **البريد موثق في Auth:** {bool_ar(final.get('emailVerified'))}",
+              f"- **حساب Auth معطل:** {bool_ar(final.get('authDisabled'))}",
+              "",
+              "### حالة الصلاحيات الحالية:",
+              f"- **Custom Claim (`abkRole`):** `{final.get('customClaims', {}).get('abkRole') or 'غير مضبوط'}`",
+              f"- **وثيقة `/admins/{uid}` موجودة:** {bool_ar(final.get('adminsDoc', {}).get('exists'))}",
+              f"- **وثيقة `/admins/{uid}` نشطة:** {bool_ar(final.get('adminsDoc', {}).get('active'))}",
+              f"- **الدور في `/admins/{uid}`:** `{final.get('adminsDoc', {}).get('role') or 'غير مضبوط'}`",
+              f"- **عدد المسؤولين الفعالين في `/admins`:** {final.get('counts', {}).get('activeAdminCount', 0)} (SUPER_ADMIN: {final.get('counts', {}).get('activeSuperAdminCount', 0)})",
+              "",
+              "### الجاهزية:",
+              f"- **Firestore Rules:** {'جاهز' if final.get('checks', {}).get('readyForFirestore') else 'غير جاهز'}",
+              f"- **Storage Rules (`abkRole`):** {'جاهز' if final.get('checks', {}).get('readyForStorage') else 'غير جاهز'}",
+              f"- **الصلاحية الكاملة للإدارة:** {'جاهز' if final.get('checks', {}).get('readyForFullAdmin') else 'غير مكتمل'}",
+          ]
+
+          if action == "verify_only" and not final.get("checks", {}).get("readyForFullAdmin"):
+              lines.extend([
+                  "",
+                  "> **الخطوة التالية:** يمكنك الآن تشغيل نفس الـ Workflow مع اختيار `grant_super_admin` وكتابة `CONFIRM_SUPER_ADMIN` لمنح الصلاحية الكاملة بأمان.",
+              ])
+          elif action == "grant_super_admin":
+              lines.extend([
+                  "",
+                  f"> تم التحديث بنجاح (قبل: `abkRole={before.get('customClaims', {}).get('abkRole')}` → بعد: `abkRole={final.get('customClaims', {}).get('abkRole')}`). يرجى تسجيل الخروج ثم إعادة الدخول في لوحة الإدارة وتطبيق Android لتحديث التوكن.",
+              ])
+
+          output = "\n".join(lines) + "\n"
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as sf:
+                  sf.write(output)
+          print(output)
+          PY
+
+      - name: Clean up temporary verification outputs
+        if: always()
+        run: |
+          rm -f "${RUNNER_TEMP}/admin-before.json" "${RUNNER_TEMP}/admin-after.json"

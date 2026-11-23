@@ -8,6 +8,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --port 4173",
     "server": "node server/index.js",
+    "admin:verify": "node server/scripts/manageAdminAccount.js --verify",
+    "admin:grant": "node server/scripts/manageAdminAccount.js --grant",
     "test": "node --test server/tests/*.test.js && node --experimental-strip-types --test src/utils/*.test.ts"
   },
   "dependencies": {

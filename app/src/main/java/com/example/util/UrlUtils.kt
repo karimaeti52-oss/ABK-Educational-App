@@ -102,11 +102,12 @@ object UrlUtils {
             ".mp4", ".m4v", ".webm", ".m3u8", ".mov", ".mkv", ".mpd"
         ).any { ext -> pathOnly.endsWith(ext) }
 
-        val isKnownMediaCdn = pathOnly.contains("/files/") &&
+        val isKnownMediaCdn = (pathOnly.contains("/files/") || pathOnly.contains("/b2/files/")) &&
             (lower.contains("workers.dev") || lower.contains("r2.dev") || declaredType == VideoSourceType.MP4)
 
         val isFirebaseOrR2Direct = (lower.contains(".r2.dev/") ||
             lower.contains(".workers.dev/files/") ||
+            lower.contains(".workers.dev/b2/files/") ||
             lower.contains("firebasestorage.googleapis.com/") ||
             lower.contains("storage.googleapis.com/")) &&
             !pathOnly.endsWith(".html") &&

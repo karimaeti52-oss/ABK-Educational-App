@@ -39,6 +39,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -117,8 +118,12 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.firestoreSettings
 import com.google.firebase.firestore.persistentCacheSettings
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.tasks.await
+import okhttp3.OkHttpClient
 import java.io.File
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 object NavRoutes {
     const val HOME = "home"
@@ -167,11 +172,40 @@ private var coilInitialized = false
 @Volatile
 private var firestoreConfigured = false
 
+private val activeWorkerBaseUrlRef = AtomicReference("")
+
 private fun ensureBoundedCoilImageLoader(appContext: android.content.Context) {
     if (coilInitialized) return
     synchronized(NavRoutes) {
         if (coilInitialized) return
+        val imageHttpClient = OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .addInterceptor { chain ->
+                val original = chain.request()
+                val targetUrl = original.url.toString()
+                val workerBaseUrl = activeWorkerBaseUrlRef.get()
+                val shouldAttachAuth = original.header("Authorization").isNullOrBlank() &&
+                    UrlUtils.isSameOriginAsBaseUrl(targetUrl, workerBaseUrl)
+                val finalRequest = if (shouldAttachAuth) {
+                    val token = runCatching {
+                        runBlocking { Firebase.auth.currentUser?.getIdToken(false)?.await()?.token }
+                    }.getOrNull()
+                    if (!token.isNullOrBlank()) {
+                        original.newBuilder()
+                            .header("Authorization", "Bearer $token")
+                            .build()
+                    } else {
+                        original
+                    }
+                } else {
+                    original
+                }
+                chain.proceed(finalRequest)
+            }
+            .build()
         val imageLoader = ImageLoader.Builder(appContext)
+            .okHttpClient(imageHttpClient)
             .memoryCache {
                 MemoryCache.Builder(appContext)
                     .maxSizePercent(0.15)
@@ -304,6 +338,10 @@ private fun AuthenticatedAbkApp(
     val isAdmin by mainViewModel.isAdmin.collectAsStateWithLifecycle()
     val platformConfig by mainViewModel.platformConfig.collectAsStateWithLifecycle()
     val isOnline by NetworkMonitor.observeIsOnline(context).collectAsStateWithLifecycle(initialValue = true)
+
+    SideEffect {
+        activeWorkerBaseUrlRef.set(platformConfig.r2WorkerBaseUrl.trim())
+    }
 
     MidadTheme(darkTheme = darkTheme, platformConfig = platformConfig) {
         val currentStatus = userProfile?.parsedStatus()

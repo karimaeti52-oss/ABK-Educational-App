@@ -10,17 +10,9 @@ service firebase.storage {
       return request.auth != null;
     }
 
-    function isBootstrappedAdmin() {
-      return isSignedIn() &&
-             request.auth.token.email_verified == true &&
-             request.auth.token.email == 'karimaeti07@gmail.com';
-    }
-
     function isStaffUploader() {
-      return isBootstrappedAdmin() || (
-        isSignedIn() &&
-        request.auth.token.abkRole in ['SUPER_ADMIN', 'ADMIN', 'CONTENT_MANAGER', 'TEACHER']
-      );
+      return isSignedIn() &&
+             request.auth.token.abkRole in ['SUPER_ADMIN', 'ADMIN', 'CONTENT_MANAGER', 'TEACHER'];
     }
 
     function isImageFile() {

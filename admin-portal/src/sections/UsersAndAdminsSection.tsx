@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Ban,
   CheckCircle2,
+  Copy,
   Eye,
   Plus,
   RefreshCw,
@@ -29,7 +30,7 @@ import {
   type UserAccountStatus,
 } from '../types';
 import { deleteField, doc, serverTimestamp, updateDoc } from 'firebase/firestore';
-import { firestoreDb } from '../firebase';
+import { firebaseAuth, firestoreDb } from '../firebase';
 
 type StatusFilter = 'ALL' | UserAccountStatus;
 type SortKey = 'lastSignIn' | 'createdAt' | 'name';
@@ -340,8 +341,8 @@ export function StudentsSection({
           {visibleUsers.map((u) => {
             const badge = statusBadgeProps(u.accountStatus);
             const isSelf = u.uid === staff.uid;
-            const isSuperEmail = u.email.trim().toLowerCase() === 'karimaeti07@gmail.com';
-            const locked = isSelf || isSuperEmail || busyUid === u.uid;
+            const isProtectedSuper = String(u.role || '').toUpperCase() === 'SUPER_ADMIN';
+            const locked = isSelf || isProtectedSuper || busyUid === u.uid;
 
             return (
               <div
@@ -649,8 +650,60 @@ export function AdminsRbacSection({
   const [role, setRole] = useState<StaffRole>('CONTENT_MANAGER');
   const [teacherId, setTeacherId] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [claimRole, setClaimRole] = useState<string | null>(null);
+  const [emailVerified, setEmailVerified] = useState<boolean>(false);
+  const [checkingToken, setCheckingToken] = useState(false);
 
   const isSuper = staff.role === 'SUPER_ADMIN';
+
+  const refreshClaimDiagnostic = useCallback(async (forceRefresh = false) => {
+    const user = firebaseAuth.currentUser;
+    if (!user) return;
+    setCheckingToken(true);
+    try {
+      const tokenRes = await user.getIdTokenResult(forceRefresh);
+      const rawClaim = tokenRes.claims.abkRole;
+      setClaimRole(typeof rawClaim === 'string' ? rawClaim : null);
+      setEmailVerified(Boolean(user.emailVerified));
+      if (forceRefresh) {
+        onToast('تم تحديث التوكن وإعادة قراءة Custom Claims بنجاح');
+      }
+    } catch (err) {
+      if (forceRefresh) {
+        onToast(err instanceof Error ? err.message : 'تعذر تحديث فحص التوكن', true);
+      }
+    } finally {
+      setCheckingToken(false);
+    }
+  }, [onToast]);
+
+  useEffect(() => {
+    void refreshClaimDiagnostic(false);
+  }, [refreshClaimDiagnostic]);
+
+  const selfAdminDoc = useMemo(
+    () => store.admins.find((a) => a.uid === staff.uid || a.id === staff.uid) || null,
+    [store.admins, staff.uid]
+  );
+  const activeAdminsCount = useMemo(
+    () =>
+      store.admins.filter(
+        (a) => a.active !== false && (!a.role || a.role === 'SUPER_ADMIN' || a.role === 'ADMIN')
+      ).length,
+    [store.admins]
+  );
+  const storageReady = Boolean(
+    claimRole && ['SUPER_ADMIN', 'ADMIN', 'CONTENT_MANAGER', 'TEACHER'].includes(claimRole)
+  );
+
+  async function handleCopySelfUid() {
+    try {
+      await navigator.clipboard.writeText(staff.uid);
+      onToast('تم نسخ UID بنجاح');
+    } catch {
+      onToast('تعذر النسخ التلقائي — حدد UID وانسخه يدوياً.', true);
+    }
+  }
 
   async function handleGrant(e: React.FormEvent) {
     e.preventDefault();
@@ -701,6 +754,85 @@ export function AdminsRbacSection({
         title="إدارة المشرفين والصلاحيات (RBAC + Custom Claims)"
         subtitle="إضافة وتعديل أدوار فريق الإدارة عبر الخادم الموثوق باستخدام Firebase Admin SDK."
       />
+
+      {/* Current Admin Account Diagnostics (Safe Read-Only Verification) */}
+      <div className="space-y-3 rounded-2xl border border-slate-200 bg-white p-5">
+        <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+          <div className="flex items-center gap-2.5">
+            <ShieldCheck className="h-5 w-5 text-emerald-600" />
+            <div>
+              <h3 className="text-sm font-bold text-[#0F294A]">فحص صلاحيات الحساب الإداري الحالي</h3>
+              <p className="text-xs text-slate-500">
+                يعرض حالة Custom Claims في الجلسة وحالة وثيقة <code dir="ltr">/admins/{staff.uid}</code> الحالية.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            disabled={checkingToken}
+            onClick={() => void refreshClaimDiagnostic(true)}
+            className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-[#0F294A] hover:bg-slate-100 disabled:opacity-50"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${checkingToken ? 'animate-spin' : ''}`} />
+            {checkingToken ? 'جاري التحديث...' : 'تحديث فحص التوكن الآن'}
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
+          <div className="rounded-xl bg-slate-50 p-3">
+            <div className="mb-1 text-[11px] font-semibold text-slate-500">البريد ومعرف UID</div>
+            <div className="truncate font-bold text-[#0F294A]" dir="ltr">{staff.email}</div>
+            <div className="mt-1 flex items-center justify-between gap-1">
+              <span className="select-all truncate font-mono text-[11px] text-slate-600" dir="ltr">{staff.uid}</span>
+              <button
+                type="button"
+                onClick={() => void handleCopySelfUid()}
+                className="inline-flex shrink-0 items-center gap-1 rounded-md border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] font-bold text-slate-700"
+              >
+                <Copy className="h-3 w-3" />
+                نسخ
+              </button>
+            </div>
+            <div className="mt-1 text-[11px] text-slate-600">
+              توثيق البريد: <strong>{emailVerified ? 'موثق' : 'غير موثق'}</strong>
+            </div>
+          </div>
+
+          <div className="rounded-xl bg-slate-50 p-3">
+            <div className="mb-1 text-[11px] font-semibold text-slate-500">Firebase Custom Claim</div>
+            <div className="font-bold text-[#0F294A]" dir="ltr">
+              abkRole: {claimRole || 'غير مضبوط'}
+            </div>
+            <div className={`mt-1 text-[11px] font-semibold ${storageReady ? 'text-emerald-700' : 'text-amber-700'}`}>
+              {storageReady
+                ? 'جاهز لقواعد Storage وFirestore'
+                : 'ملاحظة: قواعد Storage تتطلب ضبط abkRole Claim عبر Admin SDK'}
+            </div>
+          </div>
+
+          <div className="rounded-xl bg-slate-50 p-3">
+            <div className="mb-1 text-[11px] font-semibold text-slate-500">وثيقة Firestore (/admins)</div>
+            <div className="font-bold text-[#0F294A]">
+              {selfAdminDoc ? `موجودة (${selfAdminDoc.role || 'ADMIN'})` : 'غير موجودة'}
+            </div>
+            <div className={`mt-1 text-[11px] font-semibold ${selfAdminDoc && selfAdminDoc.active !== false ? 'text-emerald-700' : 'text-amber-700'}`}>
+              الحالة: {selfAdminDoc ? (selfAdminDoc.active !== false ? 'نشطة (active=true)' : 'معطلة') : 'يعتمد على Custom Claim فقط'}
+            </div>
+          </div>
+
+          <div className="rounded-xl bg-slate-50 p-3">
+            <div className="mb-1 text-[11px] font-semibold text-slate-500">أمان الإدارة الكلية</div>
+            <div className="font-bold text-[#0F294A]">
+              المديرون الفعالون: {activeAdminsCount}
+            </div>
+            <div className={`mt-1 text-[11px] font-semibold ${activeAdminsCount >= 1 ? 'text-emerald-700' : 'text-amber-700'}`}>
+              {activeAdminsCount >= 1
+                ? 'الحماية من حذف آخر مسؤول مفعّلة'
+                : 'يُوصى بإضافة وثيقة /admins/{uid} لثبات الصلاحية'}
+            </div>
+          </div>
+        </div>
+      </div>
 
       {!staff.backendOnline && (
         <div className="flex items-start gap-3 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-xs text-amber-900">
@@ -795,7 +927,7 @@ export function AdminsRbacSection({
                 </p>
               </div>
             </div>
-            {isSuper && adm.uid !== staff.uid && adm.email.toLowerCase() !== 'karimaeti07@gmail.com' && (
+            {isSuper && adm.uid !== staff.uid && adm.role !== 'SUPER_ADMIN' && (
               <button
                 type="button"
                 onClick={() => handleRevoke(adm.uid)}

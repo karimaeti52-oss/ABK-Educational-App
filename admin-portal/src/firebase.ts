@@ -26,8 +26,6 @@ export const FIRESTORE_DATABASE_ID =
   viteEnv.VITE_FIREBASE_DATABASE_ID ||
   'ai-studio-android-abk-452af8d1-cf14-40e7-aead-48a40e7f239d';
 
-export const SUPER_ADMIN_EMAIL = 'karimaeti07@gmail.com';
-
 const app = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
 
 const recaptchaKey = viteEnv.VITE_RECAPTCHA_SITE_KEY;

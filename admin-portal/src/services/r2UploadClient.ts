@@ -1,5 +1,5 @@
 import { firebaseAuth } from '../firebase';
-import type { PlatformConfig, R2QuotaStatus } from '../types';
+import type { MediaAccessLevel, PlatformConfig, R2QuotaStatus, StorageProviderId } from '../types';
 import {
   buildFileFingerprint,
   clearSavedUploadSession,
@@ -42,38 +42,78 @@ export async function fetchR2QuotaStatus(
   });
   if (!res.ok) {
     const json = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(json.error || `تعذر جلب حالة مساحة R2 (HTTP ${res.status})`);
+    throw new Error(json.error || `تعذر التحقق من حساب التخزين (HTTP ${res.status})`);
   }
-  return (await res.json()) as R2QuotaStatus;
+  const raw = (await res.json()) as Partial<R2QuotaStatus>;
+  const r2Bound = raw.r2Bound === true;
+  const verified = raw.verified === true && r2Bound;
+  return {
+    provider: 'cloudflare-r2',
+    verified,
+    r2Bound,
+    usedBytes: Number(raw.usedBytes || 0),
+    totalLimitBytes: Number(raw.totalLimitBytes || 0),
+    targetTotalBytes: raw.targetTotalBytes !== undefined ? Number(raw.targetTotalBytes) : undefined,
+    remainingBytes: Number(raw.remainingBytes || 0),
+    fileCount: Number(raw.fileCount || 0),
+    usedPercent: Number(raw.usedPercent || 0),
+    nearLimit: Boolean(raw.nearLimit),
+    limits: raw.limits || resolveR2StorageLimits(platformConfig),
+    r2: raw.r2,
+    b2: raw.b2,
+  };
+}
+
+export function inferStorageProviderFromUrl(
+  fileUrl?: string | null,
+  explicitProvider?: StorageProviderId
+): StorageProviderId {
+  if (explicitProvider === 'b2') return 'b2';
+  if (fileUrl && fileUrl.includes('/b2/files/')) return 'b2';
+  return 'r2';
 }
 
 export async function deleteR2ObjectIfConfigured(
   objectKey: string | undefined | null,
-  platformConfig?: Partial<PlatformConfig> | null
+  platformConfig?: Partial<PlatformConfig> | null,
+  provider?: StorageProviderId,
+  fileUrl?: string | null
 ): Promise<boolean> {
   if (!objectKey) return false;
   const baseUrl = resolveActiveR2WorkerUrl(platformConfig);
   if (!baseUrl) return false;
+  const targetProvider = inferStorageProviderFromUrl(fileUrl, provider);
   const token = await getCurrentIdToken();
-  const res = await fetch(`${baseUrl}/object?key=${encodeURIComponent(objectKey)}`, {
-    method: 'DELETE',
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const res = await fetch(
+    `${baseUrl}/object?key=${encodeURIComponent(objectKey)}&provider=${targetProvider}`,
+    {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    }
+  );
   return res.ok;
 }
 
-export function checkSavedResumableR2Session(file: File, folderPath: string) {
+export function checkSavedResumableR2Session(
+  file: File,
+  folderPath: string,
+  storageProvider: StorageProviderId = 'r2'
+) {
   if (typeof window === 'undefined' || !window.localStorage) return null;
-  return loadSavedUploadSession(window.localStorage, buildFileFingerprint(file, folderPath));
+  return loadSavedUploadSession(
+    window.localStorage,
+    buildFileFingerprint(file, folderPath, storageProvider)
+  );
 }
 
 export async function abortSavedResumableR2Session(
   file: File,
   folderPath: string,
-  platformConfig?: Partial<PlatformConfig> | null
+  platformConfig?: Partial<PlatformConfig> | null,
+  storageProvider: StorageProviderId = 'r2'
 ): Promise<void> {
   if (typeof window === 'undefined' || !window.localStorage) return;
-  const fp = buildFileFingerprint(file, folderPath);
+  const fp = buildFileFingerprint(file, folderPath, storageProvider);
   const saved = loadSavedUploadSession(window.localStorage, fp);
   clearSavedUploadSession(window.localStorage, fp);
   if (!saved) return;
@@ -82,8 +122,9 @@ export async function abortSavedResumableR2Session(
   if (!baseUrl || !firebaseAuth.currentUser) return;
   try {
     const token = await firebaseAuth.currentUser.getIdToken();
+    const resolvedProvider = saved.storageProvider === 'b2' ? 'b2' : storageProvider;
     await fetch(
-      `${baseUrl}/multipart/abort?key=${encodeURIComponent(saved.objectKey)}&uploadId=${encodeURIComponent(saved.uploadId)}`,
+      `${baseUrl}/multipart/abort?key=${encodeURIComponent(saved.objectKey)}&uploadId=${encodeURIComponent(saved.uploadId)}&provider=${resolvedProvider}`,
       { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }
     );
   } catch {
@@ -103,12 +144,15 @@ export function startR2ResumableUpload(
   options: {
     platformConfig?: Partial<PlatformConfig> | null;
     quotaStatus?: R2QuotaStatus | null;
+    storageProvider?: StorageProviderId;
+    accessLevel?: MediaAccessLevel;
     imageOnly?: boolean;
     videoOnly?: boolean;
     onProgress?: (progress: R2UploadProgress) => void;
   } = {}
 ): ActiveR2UploadController {
   const abortController = new AbortController();
+  const storageProvider: StorageProviderId = options.storageProvider === 'b2' ? 'b2' : 'r2';
   let pausedFlag = false;
 
   const promise = executeResumableR2Upload({
@@ -116,6 +160,8 @@ export function startR2ResumableUpload(
     file,
     folder: folderPath,
     getAuthToken: getCurrentIdToken,
+    storageProvider,
+    accessLevel: options.accessLevel,
     limits: resolveR2StorageLimits(options.platformConfig),
     quotaStatus: options.quotaStatus,
     imageOnly: options.imageOnly,
@@ -133,7 +179,7 @@ export function startR2ResumableUpload(
     },
     cancel: async () => {
       abortController.abort();
-      await abortSavedResumableR2Session(file, folderPath, options.platformConfig);
+      await abortSavedResumableR2Session(file, folderPath, options.platformConfig, storageProvider);
     },
   };
 }

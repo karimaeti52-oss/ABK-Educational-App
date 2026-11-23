@@ -10,10 +10,19 @@ bucket_name = "midad-edu-media"
 [vars]
 FIREBASE_PROJECT_ID = "gen-lang-client-0343268738"
 FIREBASE_DATABASE_ID = "ai-studio-android-abk-452af8d1-cf14-40e7-aead-48a40e7f239d"
-SUPER_ADMIN_EMAIL = "karimaeti07@gmail.com"
 ALLOWED_ORIGINS = "https://gen-lang-client-0343268738.web.app,https://abk-admin-portal.pages.dev,http://localhost:5173,http://localhost:4173"
-READ_ACCESS_MODE = "public"
+READ_ACCESS_MODE = "authenticated"
 DEFAULT_MAX_VIDEO_MB = "200"
 DEFAULT_MAX_PDF_MB = "100"
 DEFAULT_MAX_IMAGE_MB = "20"
-DEFAULT_TOTAL_LIMIT_GB = "25"
+DEFAULT_R2_LIMIT_GB = "10"
+DEFAULT_TOTAL_LIMIT_GB = "10"
+DEFAULT_B2_LIMIT_GB = "10"
+B2_ENABLED = "false"
+# Backblaze B2 & optional SUPER_ADMIN_EMAIL must be configured via `npx wrangler secret put`:
+# - SUPER_ADMIN_EMAIL (optional bootstrap email fallback; primary RBAC uses Firebase custom claim `abkRole` and `/admins/{uid}`)
+# - B2_ENDPOINT (e.g. https://s3.us-west-004.backblazeb2.com)
+# - B2_REGION (e.g. us-west-004)
+# - B2_BUCKET_NAME
+# - B2_KEY_ID
+# - B2_APPLICATION_KEY

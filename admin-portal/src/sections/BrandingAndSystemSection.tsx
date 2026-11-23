@@ -200,6 +200,7 @@ export function BrandingSection({
             value={draft.logoUrl || ''}
             onChange={(url) => setDraft({ ...draft, logoUrl: url })}
             folderPath="branding"
+            accessLevel="public"
             imageOnly
             platformConfig={store.platformConfig}
             onToast={onToast}
@@ -209,6 +210,7 @@ export function BrandingSection({
             value={draft.heroBannerUrl || ''}
             onChange={(url) => setDraft({ ...draft, heroBannerUrl: url })}
             folderPath="branding"
+            accessLevel="public"
             imageOnly
             platformConfig={store.platformConfig}
             onToast={onToast}
@@ -671,7 +673,15 @@ export function PlatformSettingsSection({
   }, []);
 
   async function saveToggles() {
-    const limits = resolveR2StorageLimits(cfg);
+    const nextR2 = Math.max(1, Math.round(Number(cfg.r2StorageLimitGb ?? 10)));
+    const nextB2 = Math.max(0, Math.round(Number(cfg.b2StorageLimitGb ?? 10)));
+    const limits = resolveR2StorageLimits({
+      ...cfg,
+      r2StorageLimitGb: nextR2,
+      b2StorageLimitGb: nextB2,
+      b2Enabled: false,
+      totalStorageLimitGb: nextR2,
+    });
     await savePlatformConfig(
       {
         ...cfg,
@@ -679,11 +689,16 @@ export function PlatformSettingsSection({
         maxVideoSizeMb: limits.maxVideoSizeMb,
         maxPdfSizeMb: limits.maxPdfSizeMb,
         maxImageSizeMb: limits.maxImageSizeMb,
+        r2StorageLimitGb: limits.r2StorageLimitGb,
+        b2StorageLimitGb: limits.b2StorageLimitGb,
+        b2Enabled: false,
         totalStorageLimitGb: limits.totalStorageLimitGb,
       },
       staff
     );
-    onToast('تم حفظ إعدادات المنصة وحدود التخزين السحابي بنجاح');
+    onToast(
+      `تم حفظ الإعدادات: السعة الفعالة حالياً ${limits.r2StorageLimitGb} GB (R2) • B2 (${limits.b2StorageLimitGb} GB) غير مفعّل بعد التحقق`
+    );
   }
 
   async function handleTestR2Connection() {
@@ -692,14 +707,25 @@ export function PlatformSettingsSection({
     try {
       const q = await fetchR2QuotaStatus(cfg);
       if (!q) {
-        setR2HealthMsg('يرجى إدخال رابط Cloudflare Worker يبدأ بـ https:// ثم المحاولة.');
+        setR2HealthMsg('بانتظار إدخال رابط Storage Worker يبدأ بـ https:// لإجراء التحقق الفعلي.');
+      } else if (!q.verified || !q.r2Bound) {
+        setR2HealthMsg('تحذير: تم الوصول للخادم لكن R2 Bucket (MEDIA_BUCKET) غير مربوط أو غير متحقق منه فعلياً.');
       } else {
-        const usedGb = (q.usedBytes / (1024 * 1024 * 1024)).toFixed(2);
-        const totalGb = (q.totalLimitBytes / (1024 * 1024 * 1024)).toFixed(1);
-        setR2HealthMsg(`متصل بنجاح • عدد الملفات: ${q.fileCount} • المستخدم: ${usedGb} / ${totalGb} GB (${q.usedPercent}%)`);
+        const r2UsedGb = ((q.r2?.usedBytes ?? q.usedBytes) / (1024 * 1024 * 1024)).toFixed(2);
+        const r2LimitGb = ((q.r2?.allocatedLimitBytes ?? q.totalLimitBytes) / (1024 * 1024 * 1024)).toFixed(1);
+        const r2Files = q.r2?.fileCount ?? q.fileCount;
+        const b2Ready = Boolean(q.b2?.enabled && q.b2?.verified);
+        const b2UsedGb = ((q.b2?.usedBytes ?? 0) / (1024 * 1024 * 1024)).toFixed(2);
+        const b2LimitGb = ((q.b2?.allocatedLimitBytes ?? 0) / (1024 * 1024 * 1024)).toFixed(1);
+        const b2Summary = b2Ready
+          ? `Backblaze B2: مفعّل ومتحقق (${b2UsedGb} / ${b2LimitGb} GB • ${q.b2?.fileCount ?? 0} ملف)`
+          : `Backblaze B2: غير مفعّل (${q.b2?.error ? `فشل الفحص: ${q.b2.error}` : 'بانتظار ربط الحساب والأسرار'})`;
+        setR2HealthMsg(
+          `Cloudflare R2: متحقق (${r2UsedGb} / ${r2LimitGb} GB • ${r2Files} ملف) | ${b2Summary}`
+        );
       }
     } catch (err) {
-      setR2HealthMsg(err instanceof Error ? err.message : 'تعذر الاتصال بخادم Cloudflare R2 Worker');
+      setR2HealthMsg(err instanceof Error ? err.message : 'تعذر التحقق الفعلي من حساب Cloudflare R2 Worker');
     } finally {
       setTestingR2(false);
     }
@@ -782,13 +808,15 @@ export function PlatformSettingsSection({
           />
         </label>
 
-        {/* Cloudflare R2 Worker & Configurable Upload Limits */}
+        {/* Multi-Provider Storage (20 GB target: 10 GB R2 + 10 GB B2 disabled until linked) */}
         <div className="mt-4 space-y-3 rounded-2xl border border-sky-200 bg-sky-50/50 p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
-              <h4 className="font-bold text-[#142A43]">تخزين Cloudflare R2 وحدود الرفع القابلة للتعديل</h4>
+              <h4 className="font-bold text-[#142A43]">
+                تخزين الوسائط السحابي (السعة المستهدفة 20 GB: 10 GB لـ Cloudflare R2 + 10 GB لـ Backblaze B2)
+              </h4>
               <p className="text-xs text-slate-500">
-                لا تُحفظ أي مفاتيح R2 في المتصفح أو التطبيق؛ يتم الرفع والبث عبر Cloudflare Worker محمي بالتحقق من المشرف.
+                لا تُحتسب أي مساحة أو حصة مجانية على أنها مفعّلة إلا بعد التحقق الفعلي من حساب الخدمة وربطه.
               </p>
             </div>
             <button
@@ -797,7 +825,7 @@ export function PlatformSettingsSection({
               disabled={testingR2}
               className="rounded-xl border border-sky-300 bg-white px-3 py-1.5 text-xs font-bold text-sky-800 hover:bg-sky-50 disabled:opacity-50"
             >
-              {testingR2 ? 'جاري الفحص...' : 'اختبار اتصال R2 Worker'}
+              {testingR2 ? 'جاري التحقق...' : 'التحقق الفعلي من حساب R2'}
             </button>
           </div>
 
@@ -813,7 +841,7 @@ export function PlatformSettingsSection({
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
             <div>
               <label className="mb-1 block text-xs font-semibold text-slate-600">الحد الأقصى للفيديو (MB)</label>
               <input
@@ -851,17 +879,68 @@ export function PlatformSettingsSection({
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-semibold text-slate-600">الحصة الإجمالية (GB)</label>
+              <label className="mb-1 block text-xs font-semibold text-slate-600">حصة Cloudflare R2 المخصصة (GB)</label>
               <input
                 type="number"
                 min={1}
-                max={1000}
+                max={500}
                 dir="ltr"
-                value={cfg.totalStorageLimitGb ?? 25}
-                onChange={(e) => setCfg({ ...cfg, totalStorageLimitGb: Number(e.target.value) })}
+                value={cfg.r2StorageLimitGb ?? 10}
+                onChange={(e) => {
+                  const nextR2 = Math.max(1, Number(e.target.value) || 10);
+                  setCfg({
+                    ...cfg,
+                    r2StorageLimitGb: nextR2,
+                    totalStorageLimitGb: nextR2,
+                  });
+                }}
                 className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-sm"
               />
             </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-600">حصة Backblaze B2 المخصصة (GB)</label>
+              <input
+                type="number"
+                min={0}
+                max={500}
+                dir="ltr"
+                value={cfg.b2StorageLimitGb ?? 10}
+                onChange={(e) => {
+                  const nextB2 = Math.max(0, Number(e.target.value) || 0);
+                  const currentR2 = cfg.r2StorageLimitGb ?? 10;
+                  setCfg({
+                    ...cfg,
+                    b2StorageLimitGb: nextB2,
+                    totalStorageLimitGb: currentR2,
+                  });
+                }}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-sm"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-600">الهدف الإجمالي عند تفعيل B2 (الحالي: {cfg.r2StorageLimitGb ?? 10} GB)</label>
+              <input
+                type="number"
+                readOnly
+                dir="ltr"
+                value={(cfg.r2StorageLimitGb ?? 10) + (cfg.b2StorageLimitGb ?? 10)}
+                className="w-full rounded-xl border border-slate-200 bg-slate-100 px-3 py-2 text-left text-sm font-bold text-slate-700"
+              />
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs text-amber-900">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="font-bold">
+                حالة Backblaze B2 ({cfg.b2StorageLimitGb ?? 10} GB): غير مفعّل
+              </span>
+              <span className="rounded-full bg-amber-100 px-2.5 py-0.5 text-[11px] font-bold text-amber-900">
+                بانتظار تجهيز الحساب والربط الفعلي
+              </span>
+            </div>
+            <p className="mt-1 text-[11px] text-amber-800">
+              يظل مزود Backblaze B2 مُعطّلاً (b2Enabled = false) ولن تُحتسب مساحته ضمن السعة المتاحة إلا بعد إنشاء الحساب وتوصيله والتحقق منه فعلياً.
+            </p>
           </div>
 
           {r2HealthMsg && (

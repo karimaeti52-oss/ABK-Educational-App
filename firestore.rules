@@ -24,14 +24,6 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function isBootstrappedAdmin() {
-      return isSignedIn() &&
-             'email_verified' in request.auth.token &&
-             request.auth.token.email_verified == true &&
-             'email' in request.auth.token &&
-             request.auth.token.email == 'karimaeti07@gmail.com';
-    }
-
     function adminDocExists() {
       return isSignedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
     }
@@ -45,23 +37,21 @@ service cloud.firestore {
     }
 
     function effectiveRole() {
-      return isBootstrappedAdmin()
-        ? 'SUPER_ADMIN'
+      return (
+          isSignedIn() &&
+          'abkRole' in request.auth.token &&
+          request.auth.token.abkRole in ['SUPER_ADMIN', 'ADMIN', 'CONTENT_MANAGER', 'TEACHER', 'VIEWER']
+        )
+        ? request.auth.token.abkRole
         : (
-            isSignedIn() &&
-            'abkRole' in request.auth.token &&
-            request.auth.token.abkRole in ['SUPER_ADMIN', 'ADMIN', 'CONTENT_MANAGER', 'TEACHER', 'VIEWER']
-          )
-          ? request.auth.token.abkRole
-          : (
-              isAdminDocActive()
-              ? (
-                  ('role' in adminDocData() && adminDocData().role in ['SUPER_ADMIN', 'ADMIN', 'CONTENT_MANAGER', 'TEACHER', 'VIEWER'])
-                    ? adminDocData().role
-                    : 'ADMIN'
-                )
-              : 'STUDENT'
-            );
+            isAdminDocActive()
+            ? (
+                ('role' in adminDocData() && adminDocData().role in ['SUPER_ADMIN', 'ADMIN', 'CONTENT_MANAGER', 'TEACHER', 'VIEWER'])
+                  ? adminDocData().role
+                  : 'ADMIN'
+              )
+            : 'STUDENT'
+          );
     }
 
     function isSuperAdmin() {
@@ -109,6 +99,10 @@ service cloud.firestore {
 
     function isOptionalStringList(data, key, maxItems) {
       return !(key in data) || (data[key] is list && data[key].size() <= maxItems);
+    }
+
+    function isOptionalStorageProvider(data) {
+      return !('storageProvider' in data) || data.storageProvider == null || data.storageProvider in ['r2', 'b2'];
     }
 
     function isValidStatusFields(data) {
@@ -231,7 +225,7 @@ service cloud.firestore {
 
     function isValidLesson(data) {
       return data.keys().hasAll(['subjectId', 'subjectName', 'unitTitle', 'unitOrder', 'lessonOrder', 'title', 'description', 'videoUrl', 'videoSourceType', 'published', 'createdBy', 'createdAt', 'updatedAt']) &&
-             data.keys().hasOnly(['subjectId', 'subjectName', 'unitId', 'unitTitle', 'unitOrder', 'lessonOrder', 'title', 'description', 'teacherName', 'durationLabel', 'thumbnailUrl', 'videoUrl', 'videoSourceType', 'r2ObjectKey', 'sizeBytes', 'published', 'status', 'deletedAt', 'createdBy', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['subjectId', 'subjectName', 'unitId', 'unitTitle', 'unitOrder', 'lessonOrder', 'title', 'description', 'teacherName', 'durationLabel', 'thumbnailUrl', 'videoUrl', 'videoSourceType', 'r2ObjectKey', 'storageProvider', 'sizeBytes', 'published', 'status', 'deletedAt', 'createdBy', 'createdAt', 'updatedAt']) &&
              isValidId(data.subjectId) &&
              data.subjectName is string && data.subjectName.size() >= 1 && data.subjectName.size() <= 80 &&
              isOptionalString(data, 'unitId', 128) &&
@@ -246,6 +240,7 @@ service cloud.firestore {
              data.videoUrl is string && data.videoUrl.size() <= 1000 &&
              data.videoSourceType in ['YOUTUBE', 'MP4', 'EXTERNAL'] &&
              isOptionalString(data, 'r2ObjectKey', 500) &&
+             isOptionalStorageProvider(data) &&
              (!('sizeBytes' in data) || data.sizeBytes == null || (data.sizeBytes is int && data.sizeBytes >= 0)) &&
              isValidStatusFields(data) &&
              data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128 &&
@@ -275,7 +270,7 @@ service cloud.firestore {
 
     function isValidContentBlock(data) {
       return data.keys().hasAll(['explanationId', 'lessonId', 'subjectId', 'teacherId', 'blockType', 'title', 'sortOrder', 'published', 'createdBy', 'createdAt', 'updatedAt']) &&
-             data.keys().hasOnly(['explanationId', 'lessonId', 'subjectId', 'teacherId', 'teacherUid', 'blockType', 'customTypeKey', 'title', 'subtitle', 'bodyText', 'mediaUrl', 'thumbnailUrl', 'durationLabel', 'fileSizeLabel', 'r2ObjectKey', 'sizeBytes', 'qaItems', 'quizQuestions', 'sortOrder', 'published', 'status', 'deletedAt', 'createdBy', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['explanationId', 'lessonId', 'subjectId', 'teacherId', 'teacherUid', 'blockType', 'customTypeKey', 'title', 'subtitle', 'bodyText', 'mediaUrl', 'thumbnailUrl', 'durationLabel', 'fileSizeLabel', 'r2ObjectKey', 'storageProvider', 'sizeBytes', 'qaItems', 'quizQuestions', 'sortOrder', 'published', 'status', 'deletedAt', 'createdBy', 'createdAt', 'updatedAt']) &&
              isValidId(data.explanationId) &&
              isValidId(data.lessonId) &&
              isValidId(data.subjectId) &&
@@ -291,6 +286,7 @@ service cloud.firestore {
              isOptionalString(data, 'durationLabel', 40) &&
              isOptionalString(data, 'fileSizeLabel', 40) &&
              isOptionalString(data, 'r2ObjectKey', 500) &&
+             isOptionalStorageProvider(data) &&
              (!('sizeBytes' in data) || data.sizeBytes == null || (data.sizeBytes is int && data.sizeBytes >= 0)) &&
              (!('qaItems' in data) || (data.qaItems is list && data.qaItems.size() <= 100)) &&
              (!('quizQuestions' in data) || (data.quizQuestions is list && data.quizQuestions.size() <= 100)) &&
@@ -317,7 +313,7 @@ service cloud.firestore {
 
     function isValidPlatformConfig(data) {
       return data.keys().hasAll(['platformName', 'homeHeadline', 'primaryColorHex', 'secondaryColorHex', 'updatedBy', 'updatedAt']) &&
-             data.keys().hasOnly(['platformName', 'platformTagline', 'homeHeadline', 'welcomeTitle', 'welcomeSubtitle', 'logoUrl', 'heroBannerUrl', 'primaryColorHex', 'secondaryColorHex', 'accentColorHex', 'bottomNavItems', 'allowOfflinePdf', 'showAnnouncements', 'showContinueWatching', 'maintenanceMode', 'r2WorkerBaseUrl', 'maxVideoSizeMb', 'maxPdfSizeMb', 'maxImageSizeMb', 'totalStorageLimitGb', 'updatedBy', 'updatedAt']) &&
+             data.keys().hasOnly(['platformName', 'platformTagline', 'homeHeadline', 'welcomeTitle', 'welcomeSubtitle', 'logoUrl', 'heroBannerUrl', 'primaryColorHex', 'secondaryColorHex', 'accentColorHex', 'bottomNavItems', 'allowOfflinePdf', 'showAnnouncements', 'showContinueWatching', 'maintenanceMode', 'r2WorkerBaseUrl', 'maxVideoSizeMb', 'maxPdfSizeMb', 'maxImageSizeMb', 'r2StorageLimitGb', 'b2StorageLimitGb', 'b2Enabled', 'totalStorageLimitGb', 'updatedBy', 'updatedAt']) &&
              data.platformName is string && data.platformName.size() >= 1 && data.platformName.size() <= 60 &&
              isOptionalString(data, 'platformTagline', 100) &&
              data.homeHeadline is string && data.homeHeadline.size() >= 1 && data.homeHeadline.size() <= 100 &&
@@ -337,6 +333,9 @@ service cloud.firestore {
              (!('maxVideoSizeMb' in data) || (data.maxVideoSizeMb is int && data.maxVideoSizeMb >= 1 && data.maxVideoSizeMb <= 2048)) &&
              (!('maxPdfSizeMb' in data) || (data.maxPdfSizeMb is int && data.maxPdfSizeMb >= 1 && data.maxPdfSizeMb <= 1024)) &&
              (!('maxImageSizeMb' in data) || (data.maxImageSizeMb is int && data.maxImageSizeMb >= 1 && data.maxImageSizeMb <= 256)) &&
+             (!('r2StorageLimitGb' in data) || (data.r2StorageLimitGb is int && data.r2StorageLimitGb >= 1 && data.r2StorageLimitGb <= 500)) &&
+             (!('b2StorageLimitGb' in data) || (data.b2StorageLimitGb is int && data.b2StorageLimitGb >= 0 && data.b2StorageLimitGb <= 500)) &&
+             isOptionalBool(data, 'b2Enabled') &&
              (!('totalStorageLimitGb' in data) || (data.totalStorageLimitGb is int && data.totalStorageLimitGb >= 1 && data.totalStorageLimitGb <= 1000)) &&
              data.updatedBy is string && data.updatedBy.size() >= 1 && data.updatedBy.size() <= 128 &&
              data.updatedAt is timestamp && data.updatedAt <= request.time;
@@ -344,7 +343,7 @@ service cloud.firestore {
 
     function isValidMaterial(data) {
       return data.keys().hasAll(['subjectId', 'subjectName', 'materialType', 'title', 'description', 'fileUrl', 'published', 'createdBy', 'createdAt', 'updatedAt']) &&
-             data.keys().hasOnly(['subjectId', 'subjectName', 'lessonId', 'lessonTitle', 'teacherId', 'teacherUid', 'nodeIds', 'materialType', 'title', 'description', 'coverUrl', 'fileUrl', 'r2ObjectKey', 'sizeBytes', 'published', 'status', 'deletedAt', 'createdBy', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['subjectId', 'subjectName', 'lessonId', 'lessonTitle', 'teacherId', 'teacherUid', 'nodeIds', 'materialType', 'title', 'description', 'coverUrl', 'fileUrl', 'r2ObjectKey', 'storageProvider', 'sizeBytes', 'published', 'status', 'deletedAt', 'createdBy', 'createdAt', 'updatedAt']) &&
              isValidId(data.subjectId) &&
              data.subjectName is string && data.subjectName.size() >= 1 && data.subjectName.size() <= 80 &&
              isOptionalString(data, 'lessonId', 128) &&
@@ -358,6 +357,7 @@ service cloud.firestore {
              isOptionalString(data, 'coverUrl', 1000) &&
              data.fileUrl is string && data.fileUrl.size() >= 1 && data.fileUrl.size() <= 1000 &&
              isOptionalString(data, 'r2ObjectKey', 500) &&
+             isOptionalStorageProvider(data) &&
              (!('sizeBytes' in data) || data.sizeBytes == null || (data.sizeBytes is int && data.sizeBytes >= 0)) &&
              isValidStatusFields(data) &&
              data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128 &&
@@ -367,11 +367,12 @@ service cloud.firestore {
 
     function isValidMediaAsset(data) {
       return data.keys().hasAll(['title', 'fileName', 'objectKey', 'fileUrl', 'contentType', 'mediaKind', 'sizeBytes', 'published', 'createdBy', 'createdAt', 'updatedAt']) &&
-             data.keys().hasOnly(['title', 'description', 'fileName', 'objectKey', 'fileUrl', 'contentType', 'mediaKind', 'sizeBytes', 'durationLabel', 'nodeIds', 'subjectId', 'unitId', 'lessonId', 'published', 'status', 'deletedAt', 'createdBy', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['title', 'description', 'fileName', 'objectKey', 'storageProvider', 'fileUrl', 'contentType', 'mediaKind', 'sizeBytes', 'durationLabel', 'nodeIds', 'subjectId', 'unitId', 'lessonId', 'published', 'status', 'deletedAt', 'createdBy', 'createdAt', 'updatedAt']) &&
              data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
              isOptionalString(data, 'description', 1000) &&
              data.fileName is string && data.fileName.size() >= 1 && data.fileName.size() <= 255 &&
              data.objectKey is string && data.objectKey.size() >= 1 && data.objectKey.size() <= 500 &&
+             isOptionalStorageProvider(data) &&
              data.fileUrl is string && data.fileUrl.matches('^https://.*') && data.fileUrl.size() <= 1000 &&
              data.contentType is string && data.contentType.size() >= 3 && data.contentType.size() <= 120 &&
              data.mediaKind in ['VIDEO', 'PDF', 'IMAGE', 'ATTACHMENT'] &&
@@ -472,8 +473,29 @@ service cloud.firestore {
     match /admins/{adminUid} {
       allow get: if isSignedIn() && isValidId(adminUid) && (request.auth.uid == adminUid || isAnyStaffReader());
       allow list: if isAdmin();
-      allow create, update: if isAdmin() && isValidId(adminUid) && isValidAdminEntry(incoming()) && incoming().uid == adminUid;
-      allow delete: if isAdmin() && isValidId(adminUid);
+      allow create: if isAdmin() &&
+                       isValidId(adminUid) &&
+                       isValidAdminEntry(incoming()) &&
+                       incoming().uid == adminUid &&
+                       (!('role' in incoming()) || incoming().role != 'SUPER_ADMIN' || isSuperAdmin());
+      allow update: if isAdmin() &&
+                       isValidId(adminUid) &&
+                       isValidAdminEntry(incoming()) &&
+                       incoming().uid == adminUid &&
+                       incoming().createdAt == existing().createdAt &&
+                       (!('role' in existing()) || existing().role != 'SUPER_ADMIN' || isSuperAdmin()) &&
+                       (!('role' in incoming()) || incoming().role != 'SUPER_ADMIN' || isSuperAdmin()) &&
+                       (
+                         request.auth.uid != adminUid ||
+                         (
+                           (!('active' in incoming()) || incoming().active == true) &&
+                           (!('role' in existing()) || !('role' in incoming()) || incoming().role == existing().role)
+                         )
+                       );
+      allow delete: if isAdmin() &&
+                       isValidId(adminUid) &&
+                       request.auth.uid != adminUid &&
+                       (!('role' in existing()) || existing().role != 'SUPER_ADMIN' || isSuperAdmin());
     }
 
     match /users/{userId} {
@@ -485,7 +507,7 @@ service cloud.firestore {
                        isValidUserProfile(incoming()) &&
                        (
                          (isOwner(userId) && incoming().userId == userId && incoming().role == 'STUDENT' && incoming().accountStatus == 'ACTIVE') ||
-                         (isAdmin() && incoming().userId == userId)
+                         (isAdmin() && incoming().userId == userId && (incoming().role != 'SUPER_ADMIN' || isSuperAdmin()))
                        );
 
       allow update: if isSignedIn() &&
@@ -494,7 +516,12 @@ service cloud.firestore {
                        incoming().userId == existing().userId &&
                        incoming().createdAt == existing().createdAt &&
                        (
-                         isAdmin() ||
+                         (
+                           isAdmin() &&
+                           (existing().role != 'SUPER_ADMIN' || isSuperAdmin()) &&
+                           (incoming().role != 'SUPER_ADMIN' || existing().role == 'SUPER_ADMIN' || isSuperAdmin()) &&
+                           (request.auth.uid != userId || incoming().accountStatus == existing().accountStatus)
+                         ) ||
                          (
                            isOwner(userId) &&
                            existing().accountStatus == 'ACTIVE' &&
@@ -504,7 +531,7 @@ service cloud.firestore {
                          )
                        );
 
-      allow delete: if isSuperAdmin() && isValidId(userId);
+      allow delete: if isSuperAdmin() && isValidId(userId) && request.auth.uid != userId;
 
       match /favorites/{favoriteId} {
         allow get: if isOwner(userId) && isAccountActive() && isValidId(favoriteId);

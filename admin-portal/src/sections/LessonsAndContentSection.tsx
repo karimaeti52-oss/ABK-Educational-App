@@ -18,9 +18,18 @@ import {
   StatusBadge,
   StatusSelector,
 } from '../components/CommonUi';
-import { VideoPreviewModal, YouTubeVideoPlayer } from '../components/YouTubePlayer';
+import {
+  AuthenticatedDirectVideo,
+  VideoPreviewModal,
+  YouTubeVideoPlayer,
+} from '../components/YouTubePlayer';
 import { fetchR2QuotaStatus, resolveActiveR2WorkerUrl } from '../services/r2UploadClient';
-import { formatBytesReadable, resolveR2StorageLimits, type R2UploadResult } from '../utils/r2Upload';
+import {
+  buildMultiProviderStorageSummary,
+  formatBytesReadable,
+  resolveR2StorageLimits,
+  type R2UploadResult,
+} from '../utils/r2Upload';
 import { getYouTubeThumbnailUrl, getYouTubeWatchUrl, isYouTubeUrl } from '../utils/youtube';
 import {
   commitSortOrderBatch,
@@ -42,6 +51,7 @@ import type {
   PublishStatus,
   R2QuotaStatus,
   StaffSession,
+  StorageProviderId,
   StudyMaterial,
   VideoSourceType,
 } from '../types';
@@ -79,6 +89,7 @@ export function LessonsSection({
   const [videoUrl, setVideoUrl] = useState('');
   const [videoSourceType, setVideoSourceType] = useState<VideoSourceType>('MP4');
   const [r2ObjectKey, setR2ObjectKey] = useState('');
+  const [storageProvider, setStorageProvider] = useState<StorageProviderId>('r2');
   const [sizeBytes, setSizeBytes] = useState<number | undefined>(undefined);
   const [uploadedVideoMeta, setUploadedVideoMeta] = useState<R2UploadResult | null>(null);
   const [thumbnailUrl, setThumbnailUrl] = useState('');
@@ -108,6 +119,7 @@ export function LessonsSection({
     setVideoUrl('');
     setVideoSourceType('MP4');
     setR2ObjectKey('');
+    setStorageProvider('r2');
     setSizeBytes(undefined);
     setUploadedVideoMeta(null);
     setThumbnailUrl('');
@@ -130,6 +142,7 @@ export function LessonsSection({
     setVideoUrl(l.videoUrl);
     setVideoSourceType(l.videoSourceType || 'MP4');
     setR2ObjectKey(l.r2ObjectKey || '');
+    setStorageProvider(l.storageProvider || 'r2');
     setSizeBytes(l.sizeBytes);
     setUploadedVideoMeta(null);
     setThumbnailUrl(l.thumbnailUrl || '');
@@ -161,6 +174,7 @@ export function LessonsSection({
           videoUrl: videoUrl.trim(),
           videoSourceType,
           r2ObjectKey: r2ObjectKey.trim() || undefined,
+          storageProvider: r2ObjectKey.trim() ? storageProvider : undefined,
           sizeBytes: sizeBytes ? Math.round(sizeBytes) : undefined,
           ...normalizeStatusFlags(status),
         },
@@ -324,11 +338,12 @@ export function LessonsSection({
               setVideoUrl(url);
               if (isYouTubeUrl(url)) {
                 setVideoSourceType('YOUTUBE');
-              } else if (/\.mp4|\.webm|\.m3u8|\/files\//i.test(url)) {
+              } else if (/\.mp4|\.webm|\.m3u8|\/files\/|\/b2\/files\//i.test(url)) {
                 setVideoSourceType('MP4');
               }
               if (!url.trim()) {
                 setR2ObjectKey('');
+                setStorageProvider('r2');
                 setSizeBytes(undefined);
                 setUploadedVideoMeta(null);
               }
@@ -336,10 +351,12 @@ export function LessonsSection({
             onUploadedMeta={(meta) => {
               setVideoSourceType('MP4');
               setR2ObjectKey(meta.objectKey);
+              setStorageProvider(meta.storageProvider);
               setSizeBytes(meta.sizeBytes);
               setUploadedVideoMeta(meta);
             }}
             folderPath={`videos/${subjectId || 'general'}`}
+            accessLevel="private"
             videoOnly
             platformConfig={store.platformConfig}
             onToast={onToast}
@@ -375,7 +392,7 @@ export function LessonsSection({
               </div>
             ) : (
               <div className="overflow-hidden rounded-2xl border border-slate-200 bg-black">
-                <video src={videoUrl} controls playsInline preload="metadata" className="aspect-video w-full" />
+                <AuthenticatedDirectVideo url={videoUrl} platformConfig={store.platformConfig} />
               </div>
             )
           )}
@@ -462,6 +479,8 @@ export function LessonsSection({
                     onHardDelete={() =>
                       hardDeleteEntity('lessons', l.id, staff, l.title, {
                         r2ObjectKey: l.r2ObjectKey,
+                        storageProvider: l.storageProvider,
+                        fileUrl: l.videoUrl,
                         platformConfig: store.platformConfig,
                       })
                     }
@@ -477,6 +496,7 @@ export function LessonsSection({
         open={Boolean(previewVideo)}
         title={previewVideo?.title || 'مشاهدة الفيديو'}
         url={previewVideo?.url || ''}
+        platformConfig={store.platformConfig}
         onClose={() => setPreviewVideo(null)}
       />
     </div>
@@ -508,6 +528,7 @@ export function MaterialsSection({
   const [description, setDescription] = useState('');
   const [fileUrl, setFileUrl] = useState('');
   const [r2ObjectKey, setR2ObjectKey] = useState('');
+  const [storageProvider, setStorageProvider] = useState<StorageProviderId>('r2');
   const [sizeBytes, setSizeBytes] = useState<number | undefined>(undefined);
   const [uploadedPdfMeta, setUploadedPdfMeta] = useState<R2UploadResult | null>(null);
   const [coverUrl, setCoverUrl] = useState('');
@@ -529,6 +550,7 @@ export function MaterialsSection({
     setDescription('');
     setFileUrl('');
     setR2ObjectKey('');
+    setStorageProvider('r2');
     setSizeBytes(undefined);
     setUploadedPdfMeta(null);
     setCoverUrl('');
@@ -546,6 +568,7 @@ export function MaterialsSection({
     setDescription(m.description);
     setFileUrl(m.fileUrl);
     setR2ObjectKey(m.r2ObjectKey || '');
+    setStorageProvider(m.storageProvider || 'r2');
     setSizeBytes(m.sizeBytes);
     setUploadedPdfMeta(null);
     setCoverUrl(m.coverUrl || '');
@@ -574,6 +597,7 @@ export function MaterialsSection({
           coverUrl: coverUrl.trim() || undefined,
           fileUrl: fileUrl.trim(),
           r2ObjectKey: r2ObjectKey.trim() || undefined,
+          storageProvider: r2ObjectKey.trim() ? storageProvider : undefined,
           sizeBytes: sizeBytes ? Math.round(sizeBytes) : undefined,
           ...normalizeStatusFlags(status),
         },
@@ -709,16 +733,19 @@ export function MaterialsSection({
               setFileUrl(url);
               if (!url.trim()) {
                 setR2ObjectKey('');
+                setStorageProvider('r2');
                 setSizeBytes(undefined);
                 setUploadedPdfMeta(null);
               }
             }}
             onUploadedMeta={(meta) => {
               setR2ObjectKey(meta.objectKey);
+              setStorageProvider(meta.storageProvider);
               setSizeBytes(meta.sizeBytes);
               setUploadedPdfMeta(meta);
             }}
             folderPath={`materials/${subjectId || 'general'}`}
+            accessLevel="private"
             accept=".pdf,application/pdf,.doc,.docx,.ppt,.pptx,.zip"
             platformConfig={store.platformConfig}
             onToast={onToast}
@@ -775,6 +802,8 @@ export function MaterialsSection({
                 onHardDelete={() =>
                   hardDeleteEntity('materials', m.id, staff, m.title, {
                     r2ObjectKey: m.r2ObjectKey,
+                    storageProvider: m.storageProvider,
+                    fileUrl: m.fileUrl,
                     platformConfig: store.platformConfig,
                   })
                 }
@@ -937,6 +966,7 @@ export function VideosOverviewSection({
         open={Boolean(previewVideo)}
         title={previewVideo?.title || 'مشاهدة الفيديو'}
         url={previewVideo?.url || ''}
+        platformConfig={store.platformConfig}
         onClose={() => setPreviewVideo(null)}
       />
     </div>
@@ -1039,6 +1069,7 @@ export function MediaLibrarySection({
   const [filterKind, setFilterKind] = useState<'ALL' | MediaKind>('ALL');
   const [filterSubjectId, setFilterSubjectId] = useState('');
   const [quota, setQuota] = useState<R2QuotaStatus | null>(null);
+  const [quotaError, setQuotaError] = useState<string | null>(null);
   const [loadingQuota, setLoadingQuota] = useState(false);
   const [previewVideo, setPreviewVideo] = useState<{ title: string; url: string } | null>(null);
 
@@ -1052,14 +1083,19 @@ export function MediaLibrarySection({
   const refreshQuota = useCallback(async () => {
     if (!workerUrl) {
       setQuota(null);
+      setQuotaError(null);
       return;
     }
     setLoadingQuota(true);
+    setQuotaError(null);
     try {
       const q = await fetchR2QuotaStatus(store.platformConfig);
       setQuota(q);
     } catch (err) {
-      onToast(err instanceof Error ? err.message : 'تعذر جلب إحصائيات مساحة R2', true);
+      setQuota(null);
+      const msg = err instanceof Error ? err.message : 'تعذر التحقق الفعلي من حساب Cloudflare R2';
+      setQuotaError(msg);
+      onToast(msg, true);
     } finally {
       setLoadingQuota(false);
     }
@@ -1076,16 +1112,15 @@ export function MediaLibrarySection({
       .filter((a) => (!filterSubjectId ? true : a.subjectId === filterSubjectId));
   }, [store.mediaAssets, filterKind, filterSubjectId]);
 
-  const fallbackUsedBytes = useMemo(
+  const indexedCatalogBytes = useMemo(
     () => store.mediaAssets.filter((a) => !a.deletedAt).reduce((sum, a) => sum + (a.sizeBytes || 0), 0),
     [store.mediaAssets]
   );
 
-  const totalLimitBytes = quota?.totalLimitBytes ?? limits.totalStorageLimitGb * 1024 * 1024 * 1024;
-  const usedBytes = quota?.usedBytes ?? fallbackUsedBytes;
-  const remainingBytes = Math.max(0, totalLimitBytes - usedBytes);
-  const usedPercent = Math.min(100, Number(((usedBytes / Math.max(1, totalLimitBytes)) * 100).toFixed(1)));
-  const nearCapacity = usedPercent >= 85;
+  const storageSummary = useMemo(
+    () => buildMultiProviderStorageSummary({ limits, r2Quota: quota }),
+    [limits, quota]
+  );
 
   async function handleRegisterManualOrUploaded(e: React.FormEvent) {
     e.preventDefault();
@@ -1121,66 +1156,208 @@ export function MediaLibrarySection({
   return (
     <div className="space-y-5">
       <SectionHeader
-        title="مكتبة الوسائط والحصة التخزينية (Cloudflare R2)"
-        subtitle={`رفع مباشر ومجزأ قابل للاستئناف (فيديو حتى ${limits.maxVideoSizeMb} MB • PDF حتى ${limits.maxPdfSizeMb} MB • صور حتى ${limits.maxImageSizeMb} MB) من أصل حصة إجمالية ${limits.totalStorageLimitGb} GB.`}
+        title="مكتبة الوسائط ومراقبة السعة التخزينية"
+        subtitle={`المساحة المفعّلة حالياً: ${formatBytesReadable(storageSummary.verifiedActiveTotalBytes)} (${limits.r2StorageLimitGb} GB Cloudflare R2${storageSummary.b2.enabled ? ` + ${limits.b2StorageLimitGb} GB Backblaze B2` : ' • Backblaze B2 غير مفعّل بعد'}) • السعة المستهدفة عند تفعيل المزودين: ${limits.r2StorageLimitGb + limits.b2StorageLimitGb} GB • حد الملف: فيديو ${limits.maxVideoSizeMb} MB • PDF ${limits.maxPdfSizeMb} MB • صور ${limits.maxImageSizeMb} MB.`}
       />
 
-      {/* Storage Quota Monitor */}
-      <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-50 text-sky-700">
-              <HardDrive className="h-5 w-5" />
+      {/* Aggregate + Per-Provider Multi-Storage Monitor (Strict Verification-Gated) */}
+      <div className="space-y-4">
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-50 text-sky-700">
+                <HardDrive className="h-5 w-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-extrabold text-[#0F294A]">ملخص التخزين الإجمالي لكل المزودين</h3>
+                <p className="text-xs text-slate-500">
+                  السعة المفعّلة فعلياً تعتمد فقط على الحسابات المربوطة والمُتحقَّق منها — لا تُحسب أي حصة قبل التحقق الفعلي.
+                </p>
+              </div>
             </div>
-            <div>
-              <h3 className="text-sm font-extrabold text-[#0F294A]">حصة التخزين المستخدمة والمتبقية</h3>
-              <p className="text-xs text-slate-500">
-                {workerUrl
-                  ? 'بيانات حية من Cloudflare R2 Worker'
-                  : 'أضف رابط Worker في «إعدادات المنصة» لقراءة السعة الفعلية من R2'}
+
+            <button
+              type="button"
+              onClick={() => void refreshQuota()}
+              disabled={!workerUrl || loadingQuota}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-bold text-[#0F294A] hover:bg-slate-50 disabled:opacity-40"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${loadingQuota ? 'animate-spin' : ''}`} />
+              التحقق الفعلي وتحديث السعة
+            </button>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-5 text-xs">
+            <div className="rounded-xl bg-slate-50 p-3">
+              <p className="text-slate-500">السعة المستهدفة الكلية</p>
+              <p className="mt-1 text-base font-extrabold text-[#0F294A]">
+                {formatBytesReadable(storageSummary.targetTotalBytes)}
+              </p>
+            </div>
+            <div className="rounded-xl bg-sky-50/70 p-3">
+              <p className="text-sky-800">المفعّل والمتحقَّق فعلياً</p>
+              <p className="mt-1 text-base font-extrabold text-sky-900">
+                {formatBytesReadable(storageSummary.verifiedActiveTotalBytes)}
+              </p>
+            </div>
+            <div className="rounded-xl bg-slate-50 p-3">
+              <p className="text-slate-500">إجمالي الاستهلاك الفعلي</p>
+              <p className="mt-1 text-base font-extrabold text-[#0F294A]">
+                {formatBytesReadable(storageSummary.totalUsedBytes)} ({storageSummary.usedPercentOfTarget}%)
+              </p>
+            </div>
+            <div className="rounded-xl bg-emerald-50/70 p-3">
+              <p className="text-emerald-800">المتبقي الفعلي المتاح الآن</p>
+              <p className="mt-1 text-base font-extrabold text-emerald-700">
+                {formatBytesReadable(storageSummary.remainingActiveBytes)}
+              </p>
+            </div>
+            <div className="rounded-xl bg-slate-50 p-3">
+              <p className="text-slate-500">المتبقي من الهدف (20 GB)</p>
+              <p className="mt-1 text-base font-extrabold text-slate-700">
+                {formatBytesReadable(storageSummary.remainingTargetBytes)}
               </p>
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={() => void refreshQuota()}
-            disabled={!workerUrl || loadingQuota}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 px-3 py-1.5 text-xs font-bold text-[#0F294A] hover:bg-slate-50 disabled:opacity-40"
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${loadingQuota ? 'animate-spin' : ''}`} />
-            تحديث السعة
-          </button>
+          <div className="h-3 w-full overflow-hidden rounded-full bg-slate-100">
+            <div
+              className="h-full rounded-full bg-[#167D83] transition-all"
+              style={{ width: `${storageSummary.totalUsedBytes > 0 ? Math.max(2, storageSummary.usedPercentOfTarget) : 0}%` }}
+            />
+          </div>
+
+          {quotaError && (
+            <div className="flex items-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-800">
+              <AlertTriangle className="h-4 w-4 shrink-0" />
+              <span>تعذر التحقق من حساب Cloudflare R2: {quotaError}</span>
+            </div>
+          )}
         </div>
 
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 text-xs">
-          <div className="rounded-xl bg-slate-50 p-3">
-            <p className="text-slate-500">المساحة المستخدمة</p>
-            <p className="mt-1 text-base font-extrabold text-[#0F294A]">{formatBytesReadable(usedBytes)} ({usedPercent}%)</p>
+        {/* Separate Provider Breakdown Cards */}
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          {/* Cloudflare R2 Card (10 GB) */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h4 className="text-sm font-extrabold text-[#0F294A]">Cloudflare R2</h4>
+                <p className="text-[11px] text-slate-500">
+                  المخصص: {formatBytesReadable(storageSummary.r2.allocatedBytes)} • الملفات: {storageSummary.r2.fileCount}
+                </p>
+              </div>
+              <span
+                className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
+                  storageSummary.r2.verified
+                    ? 'bg-emerald-100 text-emerald-800'
+                    : 'bg-amber-100 text-amber-900'
+                }`}
+              >
+                {storageSummary.r2.verified ? 'متحقق منه ومفعّل' : 'بانتظار التحقق الفعلي'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2 text-xs">
+              <div className="rounded-xl bg-slate-50 p-2.5">
+                <p className="text-slate-500">المفعّل</p>
+                <p className="mt-0.5 font-extrabold text-[#0F294A]">{formatBytesReadable(storageSummary.r2.activeBytes)}</p>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-2.5">
+                <p className="text-slate-500">المستهلك</p>
+                <p className="mt-0.5 font-extrabold text-[#0F294A]">
+                  {formatBytesReadable(storageSummary.r2.usedBytes)} ({storageSummary.r2.usedPercentOfAllocated}%)
+                </p>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-2.5">
+                <p className="text-slate-500">المتبقي الفعلي</p>
+                <p className="mt-0.5 font-extrabold text-emerald-700">
+                  {formatBytesReadable(storageSummary.r2.remainingActiveBytes)}
+                </p>
+              </div>
+            </div>
+
+            <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-100">
+              <div
+                className={`h-full rounded-full transition-all ${storageSummary.r2.nearLimit ? 'bg-amber-500' : 'bg-sky-600'}`}
+                style={{
+                  width: `${
+                    storageSummary.r2.usedBytes > 0
+                      ? Math.max(2, storageSummary.r2.usedPercentOfAllocated)
+                      : 0
+                  }%`,
+                }}
+              />
+            </div>
+
+            <p className="text-[11px] text-slate-600">{storageSummary.r2.statusMessage}</p>
+            {!storageSummary.r2.verified && indexedCatalogBytes > 0 && (
+              <p className="text-[11px] text-slate-500">
+                حجم الروابط المسجلة في فهرس Firestore حالياً (دون تحقق من R2 Bucket): {formatBytesReadable(indexedCatalogBytes)}
+              </p>
+            )}
+            {storageSummary.r2.nearLimit && (
+              <div className="flex items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-900">
+                <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600" />
+                <span>تنبيه: اقتربت حصة Cloudflare R2 من حدها المخصص ({storageSummary.r2.usedPercentOfAllocated}%).</span>
+              </div>
+            )}
           </div>
-          <div className="rounded-xl bg-slate-50 p-3">
-            <p className="text-slate-500">المساحة المتبقية</p>
-            <p className="mt-1 text-base font-extrabold text-emerald-700">{formatBytesReadable(remainingBytes)}</p>
-          </div>
-          <div className="rounded-xl bg-slate-50 p-3">
-            <p className="text-slate-500">إجمالي الملفات</p>
-            <p className="mt-1 text-base font-extrabold text-sky-700">{quota?.fileCount ?? activeAssets.length} ملف</p>
+
+          {/* Backblaze B2 Card (10 GB Disabled until provisioned) */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h4 className="text-sm font-extrabold text-[#0F294A]">Backblaze B2</h4>
+                <p className="text-[11px] text-slate-500">
+                  المخصص بالخطة: {formatBytesReadable(storageSummary.b2.allocatedBytes)} • الربط المستقبلي
+                </p>
+              </div>
+              <span
+                className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
+                  storageSummary.b2.verified
+                    ? 'bg-emerald-100 text-emerald-800'
+                    : 'bg-slate-200 text-slate-700'
+                }`}
+              >
+                {storageSummary.b2.verified ? 'متحقق منه ومفعّل' : 'غير مفعّل'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2 text-xs">
+              <div className="rounded-xl bg-slate-50 p-2.5">
+                <p className="text-slate-500">المفعّل فعلياً</p>
+                <p className="mt-0.5 font-extrabold text-slate-700">{formatBytesReadable(storageSummary.b2.activeBytes)}</p>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-2.5">
+                <p className="text-slate-500">المستهلك</p>
+                <p className="mt-0.5 font-extrabold text-slate-700">
+                  {formatBytesReadable(storageSummary.b2.usedBytes)} ({storageSummary.b2.usedPercentOfAllocated}%)
+                </p>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-2.5">
+                <p className="text-slate-500">المتبقي المفعّل</p>
+                <p className="mt-0.5 font-extrabold text-slate-700">
+                  {formatBytesReadable(storageSummary.b2.remainingActiveBytes)}
+                </p>
+              </div>
+            </div>
+
+            <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-100">
+              <div
+                className="h-full rounded-full bg-teal-600 transition-all"
+                style={{
+                  width: `${
+                    storageSummary.b2.usedBytes > 0
+                      ? Math.max(2, storageSummary.b2.usedPercentOfAllocated)
+                      : 0
+                  }%`,
+                }}
+              />
+            </div>
+
+            <p className="text-[11px] text-slate-600">{storageSummary.b2.statusMessage}</p>
           </div>
         </div>
-
-        <div className="h-3 w-full overflow-hidden rounded-full bg-slate-100">
-          <div
-            className={`h-full rounded-full transition-all ${nearCapacity ? 'bg-amber-500' : 'bg-[#167D83]'}`}
-            style={{ width: `${Math.max(2, usedPercent)}%` }}
-          />
-        </div>
-
-        {nearCapacity && (
-          <div className="flex items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-900">
-            <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600" />
-            <span>تنبيه: اقتربت المساحة التخزينية من الحد الأقصى ({usedPercent}%). يُرجى تنظيف الملفات غير المستخدمة أو توسيع الحصة.</span>
-          </div>
-        )}
       </div>
 
       {/* Upload & Classification Form */}
@@ -1274,6 +1451,7 @@ export function MediaLibrarySection({
               if (!uploadTitle.trim()) setUploadTitle(meta.fileName);
             }}
             folderPath={folder}
+            accessLevel={folder === 'branding' ? 'public' : 'private'}
             platformConfig={store.platformConfig}
             quotaStatus={quota}
             onToast={onToast}
@@ -1368,6 +1546,8 @@ export function MediaLibrarySection({
                       onHardDelete={async () => {
                         await hardDeleteEntity('mediaAssets', asset.id, staff, asset.title, {
                           r2ObjectKey: asset.objectKey,
+                          storageProvider: asset.storageProvider,
+                          fileUrl: asset.fileUrl,
                           platformConfig: store.platformConfig,
                         });
                         void refreshQuota();
@@ -1385,6 +1565,7 @@ export function MediaLibrarySection({
         open={Boolean(previewVideo)}
         title={previewVideo?.title || 'معاينة الفيديو'}
         url={previewVideo?.url || ''}
+        platformConfig={store.platformConfig}
         onClose={() => setPreviewVideo(null)}
       />
     </div>

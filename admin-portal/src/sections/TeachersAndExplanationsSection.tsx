@@ -8,7 +8,11 @@ import {
   StatusBadge,
   StatusSelector,
 } from '../components/CommonUi';
-import { VideoPreviewModal, YouTubeVideoPlayer } from '../components/YouTubePlayer';
+import {
+  AuthenticatedDirectVideo,
+  VideoPreviewModal,
+  YouTubeVideoPlayer,
+} from '../components/YouTubePlayer';
 import { isYouTubeUrl } from '../utils/youtube';
 import {
   commitSortOrderBatch,
@@ -30,6 +34,7 @@ import type {
   QaItem,
   QuizQuestion,
   StaffSession,
+  StorageProviderId,
   Teacher,
 } from '../types';
 import { BLOCK_TYPE_LABELS } from '../types';
@@ -346,6 +351,7 @@ export function ExplanationsAndBlocksSection({
   const [blockDuration, setBlockDuration] = useState('');
   const [blockFileSize, setBlockFileSize] = useState('');
   const [blockR2Key, setBlockR2Key] = useState('');
+  const [blockStorageProvider, setBlockStorageProvider] = useState<StorageProviderId>('r2');
   const [blockSizeBytes, setBlockSizeBytes] = useState<number | undefined>(undefined);
   const [lastUploadedMeta, setLastUploadedMeta] = useState<R2UploadResult | null>(null);
   const [qaItems, setQaItems] = useState<QaItem[]>([]);
@@ -444,6 +450,7 @@ export function ExplanationsAndBlocksSection({
     setBlockDuration('');
     setBlockFileSize('');
     setBlockR2Key('');
+    setBlockStorageProvider('r2');
     setBlockSizeBytes(undefined);
     setLastUploadedMeta(null);
     setQaItems([{ question: '', answer: '' }]);
@@ -466,6 +473,7 @@ export function ExplanationsAndBlocksSection({
     setBlockDuration(b.durationLabel || '');
     setBlockFileSize(b.fileSizeLabel || '');
     setBlockR2Key(b.r2ObjectKey || '');
+    setBlockStorageProvider(b.storageProvider || 'r2');
     setBlockSizeBytes(b.sizeBytes);
     setLastUploadedMeta(null);
     setQaItems(b.qaItems?.length ? b.qaItems : [{ question: '', answer: '' }]);
@@ -505,6 +513,7 @@ export function ExplanationsAndBlocksSection({
           durationLabel: blockDuration.trim() || undefined,
           fileSizeLabel: blockFileSize.trim() || undefined,
           r2ObjectKey: blockR2Key.trim() || undefined,
+          storageProvider: blockR2Key.trim() ? blockStorageProvider : undefined,
           sizeBytes: blockSizeBytes ? Math.round(blockSizeBytes) : undefined,
           qaItems: isQa ? qaItems.filter((q) => q.question.trim() && q.answer.trim()) : undefined,
           quizQuestions: isQuiz ? quizQuestions.filter((q) => q.prompt.trim()) : undefined,
@@ -803,12 +812,14 @@ export function ExplanationsAndBlocksSection({
                       if (size) setBlockFileSize(size);
                       if (!url.trim()) {
                         setBlockR2Key('');
+                        setBlockStorageProvider('r2');
                         setBlockSizeBytes(undefined);
                         setLastUploadedMeta(null);
                       }
                     }}
                     onUploadedMeta={(meta) => {
                       setBlockR2Key(meta.objectKey);
+                      setBlockStorageProvider(meta.storageProvider);
                       setBlockSizeBytes(meta.sizeBytes);
                       setLastUploadedMeta(meta);
                       if (meta.mediaKind === 'VIDEO' && blockType === 'YOUTUBE_VIDEO') {
@@ -816,6 +827,7 @@ export function ExplanationsAndBlocksSection({
                       }
                     }}
                     folderPath={`lessons/${currentExplanation.lessonId}`}
+                    accessLevel="private"
                     imageOnly={blockType === 'IMAGE'}
                     videoOnly={blockType === 'EXTERNAL_VIDEO'}
                     accept={blockType === 'PDF_FILE' ? '.pdf,application/pdf' : undefined}
@@ -837,7 +849,7 @@ export function ExplanationsAndBlocksSection({
                     )}
                     {blockType === 'EXTERNAL_VIDEO' && blockMediaUrl.trim() && !isYouTubeUrl(blockMediaUrl) && (
                       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-black">
-                        <video src={blockMediaUrl} controls playsInline preload="metadata" className="aspect-video w-full" />
+                        <AuthenticatedDirectVideo url={blockMediaUrl} platformConfig={store.platformConfig} />
                       </div>
                     )}
                   </div>
@@ -1044,6 +1056,8 @@ export function ExplanationsAndBlocksSection({
                         onHardDelete={() =>
                           hardDeleteEntity('contentBlocks', blk.id, staff, blk.title, {
                             r2ObjectKey: blk.r2ObjectKey,
+                            storageProvider: blk.storageProvider,
+                            fileUrl: blk.mediaUrl,
                             platformConfig: store.platformConfig,
                           })
                         }
@@ -1061,6 +1075,7 @@ export function ExplanationsAndBlocksSection({
         open={Boolean(previewVideo)}
         title={previewVideo?.title || 'مشاهدة الفيديو'}
         url={previewVideo?.url || ''}
+        platformConfig={store.platformConfig}
         onClose={() => setPreviewVideo(null)}
       />
     </div>

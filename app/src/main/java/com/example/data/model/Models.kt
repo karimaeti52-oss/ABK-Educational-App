@@ -261,6 +261,7 @@ data class Lesson(
     val videoUrl: String = "",
     val videoSourceType: String = VideoSourceType.YOUTUBE.name,
     val r2ObjectKey: String? = null,
+    val storageProvider: String? = null,
     val sizeBytes: Long? = null,
     val published: Boolean = true,
     val status: String = PublishStatus.PUBLISHED.name,
@@ -332,6 +333,7 @@ data class ContentBlock(
     val durationLabel: String? = null,
     val fileSizeLabel: String? = null,
     val r2ObjectKey: String? = null,
+    val storageProvider: String? = null,
     val sizeBytes: Long? = null,
     val qaItems: List<QaItem> = emptyList(),
     val quizQuestions: List<QuizQuestion> = emptyList(),
@@ -391,7 +393,10 @@ data class PlatformConfig(
     val maxVideoSizeMb: Int = 200,
     val maxPdfSizeMb: Int = 100,
     val maxImageSizeMb: Int = 20,
-    val totalStorageLimitGb: Int = 25,
+    val r2StorageLimitGb: Int = 10,
+    val b2StorageLimitGb: Int = 10,
+    val b2Enabled: Boolean = false,
+    val totalStorageLimitGb: Int = 10,
     val updatedBy: String = ""
 )
 
@@ -425,6 +430,7 @@ data class StudyMaterial(
     val coverUrl: String? = null,
     val fileUrl: String = "",
     val r2ObjectKey: String? = null,
+    val storageProvider: String? = null,
     val sizeBytes: Long? = null,
     val published: Boolean = true,
     val status: String = PublishStatus.PUBLISHED.name,

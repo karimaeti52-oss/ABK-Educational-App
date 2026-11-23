@@ -5,6 +5,12 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      confirm_ready_to_publish:
+        description: 'Confirm Cloudflare R2 Worker & firestore.rules are deployed and APK signature verification passed before publishing v1.1.1'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -60,15 +66,9 @@ jobs:
           fi
           echo "release_exists=${RELEASE_EXISTS}" >> "$GITHUB_OUTPUT"
 
-          # Inspect v1.0.0 APK read-only (never delete or modify v1.0.0 or v1.1.0)
-          OLD_DIR="${RUNNER_TEMP}/old_v100"
+          # Inspect v1.0.0 APK (mandatory baseline) and v1.1.0 APK (if present) read-only (never delete or modify existing releases)
+          OLD_DIR="${RUNNER_TEMP}/old_releases"
           mkdir -p "$OLD_DIR"
-          gh release download "$OLD_TAG" --pattern "ABK.apk" --repo "$REPO" --dir "$OLD_DIR" --clobber
-          OLD_APK="${OLD_DIR}/ABK.apk"
-          if [ ! -s "$OLD_APK" ]; then
-            echo "::error::Failed to download baseline ${OLD_TAG}/ABK.apk for pre-flight verification."
-            exit 1
-          fi
 
           AAPT2_BIN=$(command -v aapt2 || find "${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}/build-tools" -name aapt2 2>/dev/null | sort -V | tail -n 1 || true)
           APKSIGNER_BIN=$(command -v apksigner || find "${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}/build-tools" -name apksigner 2>/dev/null | sort -V | tail -n 1 || true)
@@ -77,27 +77,79 @@ jobs:
             exit 1
           fi
 
-          OLD_BADGING=$("$AAPT2_BIN" dump badging "$OLD_APK")
-          OLD_PKG=$(printf '%s\n' "$OLD_BADGING" | sed -n "s/.*package: name='\([^']*\)'.*/\1/p" | head -n1)
-          OLD_VC=$(printf '%s\n' "$OLD_BADGING" | sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p" | head -n1)
-          OLD_VN=$(printf '%s\n' "$OLD_BADGING" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p" | head -n1)
+          inspect_baseline_release() {
+            local TAG="$1"
+            local ASSET_PATTERN="$2"
+            local TARGET_FILE="${OLD_DIR}/${TAG}.apk"
+            gh release download "$TAG" --pattern "$ASSET_PATTERN" --repo "$REPO" --output "$TARGET_FILE" --clobber
+            if [ ! -s "$TARGET_FILE" ]; then
+              echo "::error::Failed to download baseline ${TAG}/${ASSET_PATTERN} for pre-flight verification."
+              exit 1
+            fi
+            local BADGING
+            BADGING=$("$AAPT2_BIN" dump badging "$TARGET_FILE")
+            local PKG VC VN CERTS SHA1 SHA256
+            PKG=$(printf '%s\n' "$BADGING" | sed -n "s/.*package: name='\([^']*\)'.*/\1/p" | head -n1)
+            VC=$(printf '%s\n' "$BADGING" | sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p" | head -n1)
+            VN=$(printf '%s\n' "$BADGING" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p" | head -n1)
+            CERTS=$("$APKSIGNER_BIN" verify --print-certs "$TARGET_FILE")
+            SHA1=$(printf '%s\n' "$CERTS" | awk -F'SHA-1 digest:' '/SHA-1 digest:/ {gsub(/[[:space:]]/, "", $2); print tolower($2); exit}')
+            SHA256=$(printf '%s\n' "$CERTS" | awk -F'SHA-256 digest:' '/SHA-256 digest:/ {gsub(/[[:space:]]/, "", $2); print tolower($2); exit}')
+            if [ -z "$VC" ] || [ -z "$SHA1" ] || [ -z "$SHA256" ]; then
+              echo "::error::Could not extract versionCode or certificate digests from baseline ${TAG}."
+              exit 1
+            fi
+            echo "${PKG}|${VC}|${VN}|${SHA1}|${SHA256}"
+          }
 
-          OLD_CERTS=$("$APKSIGNER_BIN" verify --print-certs "$OLD_APK")
-          OLD_SHA1_HEX=$(printf '%s\n' "$OLD_CERTS" | awk -F'SHA-1 digest:' '/SHA-1 digest:/ {gsub(/[[:space:]]/, "", $2); print tolower($2); exit}')
-          OLD_SHA256_HEX=$(printf '%s\n' "$OLD_CERTS" | awk -F'SHA-256 digest:' '/SHA-256 digest:/ {gsub(/[[:space:]]/, "", $2); print tolower($2); exit}')
+          IFS='|' read -r OLD_PKG OLD_VC OLD_VN OLD_SHA1_HEX OLD_SHA256_HEX <<< "$(inspect_baseline_release "$OLD_TAG" "ABK.apk")"
+          MAX_OLD_VC="$OLD_VC"
 
-          if [ -z "$OLD_VC" ] || [ -z "$OLD_SHA1_HEX" ] || [ -z "$OLD_SHA256_HEX" ]; then
-            echo "::error::Could not extract versionCode or certificate digests from baseline ${OLD_TAG}/ABK.apk."
-            exit 1
+          if gh api "repos/${REPO}/releases/tags/v1.1.0" >/dev/null 2>&1; then
+            IFS='|' read -r V110_PKG V110_VC V110_VN V110_SHA1_HEX V110_SHA256_HEX <<< "$(inspect_baseline_release "v1.1.0" "*.apk")"
+            if [ "$V110_PKG" != "$OLD_PKG" ] || [ "$V110_SHA1_HEX" != "$OLD_SHA1_HEX" ] || [ "$V110_SHA256_HEX" != "$OLD_SHA256_HEX" ]; then
+              echo "::error::Existing v1.1.0 release differs in package or signing certificate from v1.0.0 baseline!"
+              exit 1
+            fi
+            if [ "$V110_VC" -gt "$MAX_OLD_VC" ]; then
+              MAX_OLD_VC="$V110_VC"
+            fi
+            echo "Baseline v1.1.0 verified: package=${V110_PKG}, versionCode=${V110_VC}, versionName=${V110_VN}, SHA-1=${V110_SHA1_HEX}"
           fi
 
           echo "old_pkg=${OLD_PKG}" >> "$GITHUB_OUTPUT"
-          echo "old_version_code=${OLD_VC}" >> "$GITHUB_OUTPUT"
+          echo "old_version_code=${MAX_OLD_VC}" >> "$GITHUB_OUTPUT"
           echo "old_version_name=${OLD_VN}" >> "$GITHUB_OUTPUT"
           echo "old_sha1_hex=${OLD_SHA1_HEX}" >> "$GITHUB_OUTPUT"
           echo "old_sha256_hex=${OLD_SHA256_HEX}" >> "$GITHUB_OUTPUT"
 
-          echo "Baseline ${OLD_TAG} verified: package=${OLD_PKG}, versionCode=${OLD_VC}, versionName=${OLD_VN}, SHA-1=${OLD_SHA1_HEX}"
+          echo "Baseline ${OLD_TAG} verified: package=${OLD_PKG}, maxExistingVersionCode=${MAX_OLD_VC}, SHA-1=${OLD_SHA1_HEX}"
+
+      - name: Set up Node.js 20 for Security & Cloud Storage Gates
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Verify Security, Storage Quotas & Admin Portal / Worker Tests
+        run: |
+          set -euo pipefail
+          if grep -rnE "karimaeti07@gmail\.com|BOOTSTRAPPED_ADMIN_EMAIL" \
+            firestore.rules storage.rules firestore.test.js \
+            cloudflare-worker admin-portal/src admin-portal/server app/src \
+            --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=build; then
+            echo "::error::Hardcoded personal admin email literal found in source or rules."
+            exit 1
+          fi
+          if ! grep -q 'READ_ACCESS_MODE = "authenticated"' cloudflare-worker/wrangler.toml || \
+             ! grep -q 'DEFAULT_R2_LIMIT_GB = "10"' cloudflare-worker/wrangler.toml || \
+             ! grep -q 'B2_ENABLED = "false"' cloudflare-worker/wrangler.toml; then
+            echo "::error::cloudflare-worker/wrangler.toml does not match required READ_ACCESS_MODE or 10 GB R2 / B2 disabled defaults."
+            exit 1
+          fi
+          node --test cloudflare-worker/tests/worker.test.js
+          npm --prefix admin-portal ci
+          npm --prefix admin-portal test
+          npm --prefix admin-portal run build
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -363,7 +415,7 @@ jobs:
           echo "APK Cert SHA-256 : ${APK_CERT_SHA256}"
 
       - name: Create new GitHub Release v1.1.1 (preserving v1.0.0 and v1.1.0) and verify assets
-        if: steps.baseline.outputs.release_exists != 'true'
+        if: github.event_name == 'workflow_dispatch' && inputs.confirm_ready_to_publish == true && steps.baseline.outputs.release_exists != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PERMANENT_ASSET: ${{ steps.apk_info.outputs.permanent_asset }}
@@ -457,8 +509,8 @@ jobs:
             echo "- **Versioned Release URL**: https://github.com/${REPO}/releases/download/${TAG}/${VERSIONED_ASSET}"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload built APK workflow artifact (when release tag already exists)
-        if: steps.baseline.outputs.release_exists == 'true'
+      - name: Upload built & verified APK workflow artifact (when release publish is deferred or tag already exists)
+        if: github.event_name != 'workflow_dispatch' || inputs.confirm_ready_to_publish != true || steps.baseline.outputs.release_exists == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: midad-release-v1.1.1-apk
@@ -467,7 +519,24 @@ jobs:
             Midad-v1.1.1-release.apk
           retention-days: 7
 
+      - name: Record deferred release status summary
+        if: (github.event_name != 'workflow_dispatch' || inputs.confirm_ready_to_publish != true) && steps.baseline.outputs.release_exists != 'true'
+        env:
+          CERT_SHA1: ${{ steps.apk_info.outputs.cert_sha1 }}
+          LOCAL_SHA256: ${{ steps.apk_info.outputs.sha256 }}
+          VERSION_CODE: ${{ steps.apk_info.outputs.version_code }}
+          VERSION_NAME: ${{ steps.apk_info.outputs.version_name }}
+        run: |
+          {
+            echo "### Midad Release APK Dry-Run Verified (Release Publish Gated)"
+            echo "- **Status**: Built & signature-verified (\`v${VERSION_NAME}\` / \`versionCode=${VERSION_CODE}\`), uploaded as workflow artifact only."
+            echo "- **Releases Preserved**: \`v1.0.0\` and \`v1.1.0\` untouched; \`v1.1.1\` NOT published automatically."
+            echo "- **To Publish v1.1.1**: Confirm Worker + \`firestore.rules\` are deployed, then trigger \`workflow_dispatch\` with \`confirm_ready_to_publish=true\`."
+            echo "- **APK Cert SHA-1 (Matched v1.0.0)**: \`${CERT_SHA1}\`"
+            echo "- **APK File SHA-256**: \`${LOCAL_SHA256}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Clean up temporary keystores and local build copies
         if: always()
         run: |
-          rm -rf "${RUNNER_TEMP}/release-compat.keystore" "${RUNNER_TEMP}/old_v100" Midad.apk Midad-v1.1.1-release.apk
+          rm -rf "${RUNNER_TEMP}/release-compat.keystore" "${RUNNER_TEMP}/old_releases" Midad.apk Midad-v1.1.1-release.apk

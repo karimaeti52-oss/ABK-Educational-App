@@ -213,6 +213,97 @@ export function createAdminApp({ config, firebaseServices }) {
     res.json({ admins });
   });
 
+  const FULL_ADMIN_ROLES = new Set(['SUPER_ADMIN', 'ADMIN']);
+
+  async function guardAdminMutation({ actor, targetUid, targetUser, intentRole, intentActive }) {
+    const targetEmail = (targetUser?.email || '').trim().toLowerCase();
+    if (config.superAdminEmail && targetEmail === config.superAdminEmail) {
+      if (intentRole === null || intentActive === false || (intentRole && intentRole !== 'SUPER_ADMIN')) {
+        return {
+          status: 403,
+          error: 'PRIMARY_SUPER_ADMIN_LOCKED',
+          message: 'لا يمكن تعطيل أو سحب صلاحيات حساب المدير العام الأساسي.',
+        };
+      }
+    }
+
+    const adminsSnap = await db.collection('admins').get();
+    const adminEntries = new Map();
+    for (const d of adminsSnap.docs || []) {
+      const data = d.data() || {};
+      adminEntries.set(d.id, {
+        uid: d.id,
+        role: data.role || 'ADMIN',
+        active: data.active !== false,
+      });
+    }
+
+    const existingDoc = adminEntries.get(targetUid) || null;
+    const claimRole = targetUser?.customClaims?.abkRole;
+    const currentEffectiveRole =
+      (existingDoc && existingDoc.active ? existingDoc.role : null) ||
+      (typeof claimRole === 'string' ? claimRole : null) ||
+      (existingDoc ? existingDoc.role : null);
+
+    const isCurrentlySuperAdmin = currentEffectiveRole === 'SUPER_ADMIN' && (!existingDoc || existingDoc.active);
+    const isCurrentlyActiveFullAdmin =
+      Boolean(currentEffectiveRole && FULL_ADMIN_ROLES.has(currentEffectiveRole)) &&
+      (!existingDoc || existingDoc.active) &&
+      !targetUser?.disabled;
+
+    if ((isCurrentlySuperAdmin || intentRole === 'SUPER_ADMIN') && actor.role !== 'SUPER_ADMIN') {
+      return {
+        status: 403,
+        error: 'SUPER_ADMIN_REQUIRED',
+        message: 'تعديل أو منح صلاحيات المدير العام مقتصر على المدير العام فقط.',
+      };
+    }
+
+    const willRemainActiveFullAdmin =
+      intentActive !== false &&
+      intentRole !== null &&
+      (intentRole ? FULL_ADMIN_ROLES.has(intentRole) : isCurrentlyActiveFullAdmin);
+
+    const willRemainActiveSuperAdmin =
+      intentActive !== false &&
+      intentRole !== null &&
+      (intentRole ? intentRole === 'SUPER_ADMIN' : isCurrentlySuperAdmin);
+
+    if (targetUid === actor.uid && (!willRemainActiveFullAdmin || (isCurrentlySuperAdmin && !willRemainActiveSuperAdmin))) {
+      return {
+        status: 400,
+        error: 'SELF_DEMOTE_DENIED',
+        message: 'لا يمكنك تعطيل أو خفض صلاحيات حسابك الإداري بنفسك.',
+      };
+    }
+
+    const remainingActiveAdmins = Array.from(adminEntries.values()).filter(
+      (entry) => entry.uid !== targetUid && entry.active && FULL_ADMIN_ROLES.has(entry.role)
+    ).length;
+
+    const remainingActiveSuperAdmins = Array.from(adminEntries.values()).filter(
+      (entry) => entry.uid !== targetUid && entry.active && entry.role === 'SUPER_ADMIN'
+    ).length;
+
+    if (isCurrentlyActiveFullAdmin && !willRemainActiveFullAdmin && remainingActiveAdmins === 0) {
+      return {
+        status: 409,
+        error: 'LAST_ACTIVE_ADMIN_LOCKED',
+        message: 'لا يمكن حذف أو تعطيل آخر حساب مسؤول فعال في النظام.',
+      };
+    }
+
+    if (isCurrentlySuperAdmin && !willRemainActiveSuperAdmin && remainingActiveSuperAdmins === 0) {
+      return {
+        status: 409,
+        error: 'LAST_SUPER_ADMIN_LOCKED',
+        message: 'لا يمكن حذف أو خفض صلاحيات آخر مدير عام فعال في النظام.',
+      };
+    }
+
+    return null;
+  }
+
   app.post(
     '/api/admins/grant',
     sensitiveLimiter,
@@ -236,8 +327,21 @@ export function createAdminApp({ config, firebaseServices }) {
         });
       }
 
+      const guardFailure = await guardAdminMutation({
+        actor: req.staff,
+        targetUid: userRecord.uid,
+        targetUser: userRecord,
+        intentRole: role,
+        intentActive: active,
+      });
+      if (guardFailure) {
+        return res.status(guardFailure.status).json({ error: guardFailure.error, message: guardFailure.message });
+      }
+
       const effectivePerms = resolveEffectivePermissions(role, null, { permissions });
+      const existingClaims = userRecord.customClaims && typeof userRecord.customClaims === 'object' ? userRecord.customClaims : {};
       await auth.setCustomUserClaims(userRecord.uid, {
+        ...existingClaims,
         abkRole: active ? role : 'STUDENT',
         abkPermissions: active ? effectivePerms : [],
       });
@@ -301,11 +405,15 @@ export function createAdminApp({ config, firebaseServices }) {
       }
 
       const targetUser = await auth.getUser(uid).catch(() => null);
-      if (targetUser?.email?.toLowerCase() === config.superAdminEmail) {
-        return res.status(403).json({
-          error: 'PRIMARY_SUPER_ADMIN_LOCKED',
-          message: 'لا يمكن سحب صلاحيات حساب المدير العام الأساسي.',
-        });
+      const guardFailure = await guardAdminMutation({
+        actor: req.staff,
+        targetUid: uid,
+        targetUser,
+        intentRole: null,
+        intentActive: false,
+      });
+      if (guardFailure) {
+        return res.status(guardFailure.status).json({ error: guardFailure.error, message: guardFailure.message });
       }
 
       await auth.setCustomUserClaims(uid, { abkRole: 'STUDENT', abkPermissions: [] });
@@ -486,6 +594,18 @@ export function createAdminApp({ config, firebaseServices }) {
 
       const { accountStatus, reason } = parsed.data;
       const shouldDisable = accountStatus === 'SUSPENDED' || accountStatus === 'BANNED';
+      if (shouldDisable) {
+        const guardFailure = await guardAdminMutation({
+          actor: req.staff,
+          targetUid: uid,
+          targetUser: targetAuth,
+          intentRole: undefined,
+          intentActive: false,
+        });
+        if (guardFailure) {
+          return res.status(guardFailure.status).json({ error: guardFailure.error, message: guardFailure.message });
+        }
+      }
       if (targetAuth) {
         await auth.updateUser(uid, { disabled: shouldDisable });
         if (shouldDisable && typeof auth.revokeRefreshTokens === 'function') {
@@ -581,11 +701,15 @@ export function createAdminApp({ config, firebaseServices }) {
       }
 
       const targetEmail = (targetAuth?.email || targetData?.email || '').trim();
-      if (targetEmail.toLowerCase() === config.superAdminEmail) {
-        return res.status(403).json({
-          error: 'PRIMARY_SUPER_ADMIN_LOCKED',
-          message: 'لا يمكن حذف حساب المدير العام الأساسي.',
-        });
+      const guardFailure = await guardAdminMutation({
+        actor: req.staff,
+        targetUid: uid,
+        targetUser: targetAuth,
+        intentRole: null,
+        intentActive: false,
+      });
+      if (guardFailure) {
+        return res.status(guardFailure.status).json({ error: guardFailure.error, message: guardFailure.message });
       }
 
       const confirmValue = parsed.data.confirmTarget.trim();

@@ -1,11 +1,17 @@
+import { hasB2Credentials } from './b2S3Client.js';
+
 export const DEFAULT_LIMITS = {
   maxVideoSizeMb: 200,
   maxPdfSizeMb: 100,
   maxImageSizeMb: 20,
-  totalStorageLimitGb: 25,
+  totalStorageLimitGb: 10,
+  targetStorageLimitGb: 20,
+  r2StorageLimitGb: 10,
+  b2StorageLimitGb: 10,
+  b2Enabled: false,
 };
 
-export const PART_SIZE_BYTES = 5 * 1024 * 1024; // R2 minimum part size (5 MiB, except final part)
+export const PART_SIZE_BYTES = 5 * 1024 * 1024; // R2 / B2 S3 minimum part size (5 MiB, except final part)
 export const MAX_SINGLE_UPLOAD_BYTES = 20 * 1024 * 1024;
 export const QUOTA_WARNING_RATIO = 0.85;
 
@@ -39,6 +45,31 @@ export function normalizeEnvLimits(env, dynamicConfig = null) {
     return Math.min(max, Math.max(min, rounded));
   };
 
+  const r2StorageLimitGb = toPositiveInt(
+    dynamicConfig?.r2StorageLimitGb ?? env?.DEFAULT_R2_LIMIT_GB ?? env?.DEFAULT_TOTAL_LIMIT_GB,
+    DEFAULT_LIMITS.r2StorageLimitGb,
+    1,
+    500
+  );
+  const b2StorageLimitGb = toPositiveInt(
+    dynamicConfig?.b2StorageLimitGb ?? env?.DEFAULT_B2_LIMIT_GB,
+    DEFAULT_LIMITS.b2StorageLimitGb,
+    0,
+    500
+  );
+
+  // Backblaze B2 can ONLY be enabled when Worker B2_ENABLED=true AND valid S3 secrets exist.
+  // Firestore alone cannot activate B2; if Firestore explicitly sets b2Enabled=false, honor that toggle.
+  const b2WorkerFlag = String(env?.B2_ENABLED || 'false').trim().toLowerCase() === 'true';
+  const b2CredentialsConfigured = hasB2Credentials(env);
+  const b2WorkerConfigured = b2WorkerFlag && b2CredentialsConfigured;
+  const b2Enabled =
+    b2WorkerConfigured &&
+    (dynamicConfig === null || dynamicConfig === undefined || dynamicConfig.b2Enabled !== false);
+
+  const targetStorageLimitGb = r2StorageLimitGb + b2StorageLimitGb;
+  const totalStorageLimitGb = b2Enabled ? r2StorageLimitGb + b2StorageLimitGb : r2StorageLimitGb;
+
   return {
     maxVideoSizeMb: toPositiveInt(
       dynamicConfig?.maxVideoSizeMb ?? env?.DEFAULT_MAX_VIDEO_MB,
@@ -58,12 +89,13 @@ export function normalizeEnvLimits(env, dynamicConfig = null) {
       1,
       256
     ),
-    totalStorageLimitGb: toPositiveInt(
-      dynamicConfig?.totalStorageLimitGb ?? env?.DEFAULT_TOTAL_LIMIT_GB,
-      DEFAULT_LIMITS.totalStorageLimitGb,
-      1,
-      1000
-    ),
+    totalStorageLimitGb,
+    targetStorageLimitGb,
+    r2StorageLimitGb,
+    b2StorageLimitGb,
+    b2Enabled,
+    b2WorkerConfigured,
+    b2CredentialsConfigured,
   };
 }
 

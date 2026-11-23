@@ -8,8 +8,8 @@ const fs = require("node:fs");
 
 let testEnv;
 const PROJECT_ID = process.env.GCP_PROJECT || "demo-no-project";
-const ADMIN_UID = "admin_karim";
-const ADMIN_EMAIL = "karimaeti07@gmail.com";
+const ADMIN_UID = "admin_super";
+const ADMIN_EMAIL = "superadmin@abk.edu";
 const CONTENT_MGR_UID = "content_mgr_1";
 const TEACHER_A_UID = "teacher_qusai_uid";
 const TEACHER_B_UID = "teacher_other_uid";
@@ -50,6 +50,7 @@ function adminContext() {
   return testEnv.authenticatedContext(ADMIN_UID, {
     email: ADMIN_EMAIL,
     email_verified: true,
+    abkRole: "SUPER_ADMIN",
   });
 }
 
@@ -949,7 +950,10 @@ test("platformConfig R2 storage limits and mediaAssets RBAC enforce strict acces
       maxVideoSizeMb: 200,
       maxPdfSizeMb: 100,
       maxImageSizeMb: 20,
-      totalStorageLimitGb: 25,
+      r2StorageLimitGb: 10,
+      b2StorageLimitGb: 10,
+      b2Enabled: false,
+      totalStorageLimitGb: 20,
       updatedBy: ADMIN_UID,
       updatedAt: now,
     })
@@ -1004,11 +1008,31 @@ test("platformConfig R2 storage limits and mediaAssets RBAC enforce strict acces
     })
   );
 
+  // Admin creates published + draft mediaAssets with explicit storageProvider; invalid provider rejected
+  await assertFails(
+    admDb.collection("mediaAssets").doc("asset_bad_provider").set({
+      title: "مزود غير مدعوم",
+      fileName: "x.mp4",
+      objectKey: "videos/x.mp4",
+      storageProvider: "s3",
+      fileUrl: "https://midad-r2-worker.example.workers.dev/files/videos/x.mp4",
+      contentType: "video/mp4",
+      mediaKind: "VIDEO",
+      sizeBytes: 1024,
+      published: true,
+      status: "PUBLISHED",
+      createdBy: ADMIN_UID,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
   await assertSucceeds(
     admDb.collection("mediaAssets").doc("asset_video_pub").set({
       title: "درس الدوال الحقيقية",
       fileName: "functions.mp4",
       objectKey: "videos/1700_functions.mp4",
+      storageProvider: "r2",
       fileUrl: "https://midad-r2-worker.example.workers.dev/files/videos/1700_functions.mp4",
       contentType: "video/mp4",
       mediaKind: "VIDEO",
@@ -1028,7 +1052,8 @@ test("platformConfig R2 storage limits and mediaAssets RBAC enforce strict acces
       title: "مسودة كتاب",
       fileName: "book.pdf",
       objectKey: "materials/1700_book.pdf",
-      fileUrl: "https://midad-r2-worker.example.workers.dev/files/materials/1700_book.pdf",
+      storageProvider: "b2",
+      fileUrl: "https://midad-r2-worker.example.workers.dev/b2/files/materials/1700_book.pdf",
       contentType: "application/pdf",
       mediaKind: "PDF",
       sizeBytes: 15728640,
@@ -1046,5 +1071,158 @@ test("platformConfig R2 storage limits and mediaAssets RBAC enforce strict acces
   await assertFails(aliceDb.collection("mediaAssets").doc("asset_video_pub").delete());
   await assertSucceeds(admDb.collection("mediaAssets").doc("asset_pdf_draft").delete());
 });
+
+test("/admins/{uid} active flag enforces staff activation and revocation cleanly", async () => {
+  const superDb = adminContext().firestore();
+  const delegatedUid = "delegated_staff_1";
+  const delegatedDb = testEnv
+    .authenticatedContext(delegatedUid, {
+      email: "delegated@abk.edu",
+      email_verified: true,
+    })
+    .firestore();
+  const now = new Date(Date.now() - 2000);
+
+  await assertSucceeds(
+    superDb.collection("admins").doc(delegatedUid).set({
+      uid: delegatedUid,
+      email: "delegated@abk.edu",
+      role: "CONTENT_MANAGER",
+      active: true,
+      grantedBy: ADMIN_UID,
+      createdAt: now,
+    })
+  );
+
+  await assertSucceeds(
+    delegatedDb.collection("subjects").doc("subj_delegated").set({
+      title: "الكيمياء",
+      description: "الكيمياء العضوية",
+      iconKey: "chemistry",
+      sortOrder: 1,
+      published: true,
+      createdBy: delegatedUid,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Deactivate /admins/{uid} -> staff privilege revoked immediately
+  await assertSucceeds(
+    superDb.collection("admins").doc(delegatedUid).update({
+      active: false,
+      updatedAt: new Date(Date.now() - 500),
+    })
+  );
+
+  await assertFails(
+    delegatedDb.collection("subjects").doc("subj_delegated_blocked").set({
+      title: "ممنوع",
+      description: "تم إلغاء التفعيل",
+      iconKey: "chemistry",
+      sortOrder: 2,
+      published: true,
+      createdBy: delegatedUid,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+});
+
+test("Dual admin support (Custom Claims OR /admins/{uid}) and anti-self-disable / SUPER_ADMIN hierarchy rules", async () => {
+  const superDb = adminContext().firestore();
+  const claimOnlyAdminUid = "claim_only_admin";
+  const docOnlyAdminUid = "doc_only_admin";
+  const claimOnlyDb = staffContext(claimOnlyAdminUid, "ADMIN", "claimonly@abk.edu").firestore();
+  const docOnlyDb = testEnv
+    .authenticatedContext(docOnlyAdminUid, { email: "doconly@abk.edu", email_verified: true })
+    .firestore();
+  const now = new Date(Date.now() - 2000);
+
+  // Seed active SUPER_ADMIN + regular ADMIN in /admins/{uid}
+  await assertSucceeds(
+    superDb.collection("admins").doc(ADMIN_UID).set({
+      uid: ADMIN_UID,
+      email: ADMIN_EMAIL,
+      role: "SUPER_ADMIN",
+      active: true,
+      grantedBy: "SYSTEM_BOOTSTRAP",
+      createdAt: now,
+    })
+  );
+  await assertSucceeds(
+    superDb.collection("admins").doc(docOnlyAdminUid).set({
+      uid: docOnlyAdminUid,
+      email: "doconly@abk.edu",
+      role: "ADMIN",
+      active: true,
+      grantedBy: ADMIN_UID,
+      createdAt: now,
+    })
+  );
+
+  // 1. Both claim-only ADMIN (no /admins doc) and doc-only ADMIN (no Custom Claims) can manage subjects & platformConfig
+  await assertSucceeds(
+    claimOnlyDb.collection("subjects").doc("subj_claim_ok").set({
+      title: "مادة بصلاحية Claims",
+      description: "اختبار Custom Claims",
+      iconKey: "book",
+      sortOrder: 1,
+      published: true,
+      createdBy: claimOnlyAdminUid,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+  await assertSucceeds(
+    docOnlyDb.collection("subjects").doc("subj_doc_ok").set({
+      title: "مادة بصلاحية /admins",
+      description: "اختبار Firestore admin doc",
+      iconKey: "book",
+      sortOrder: 2,
+      published: true,
+      createdBy: docOnlyAdminUid,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // 2. An active admin CANNOT delete or deactivate their own /admins/{uid} document
+  await assertFails(docOnlyDb.collection("admins").doc(docOnlyAdminUid).delete());
+  await assertFails(
+    docOnlyDb.collection("admins").doc(docOnlyAdminUid).update({
+      active: false,
+      updatedAt: new Date(Date.now() - 500),
+    })
+  );
+  await assertFails(superDb.collection("admins").doc(ADMIN_UID).delete());
+  await assertFails(
+    superDb.collection("admins").doc(ADMIN_UID).update({
+      active: false,
+      updatedAt: new Date(Date.now() - 500),
+    })
+  );
+
+  // 3. Regular ADMIN CANNOT delete, modify, or overwrite a SUPER_ADMIN entry
+  await assertFails(docOnlyDb.collection("admins").doc(ADMIN_UID).delete());
+  await assertFails(
+    docOnlyDb.collection("admins").doc(ADMIN_UID).update({
+      role: "VIEWER",
+      updatedAt: new Date(Date.now() - 500),
+    })
+  );
+  await assertFails(
+    docOnlyDb.collection("admins").doc("new_super").set({
+      uid: "new_super",
+      email: "escalate@abk.edu",
+      role: "SUPER_ADMIN",
+      active: true,
+      grantedBy: docOnlyAdminUid,
+      createdAt: now,
+    })
+  );
+});
+
+
 
 

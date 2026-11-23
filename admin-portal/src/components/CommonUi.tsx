@@ -25,7 +25,13 @@ import {
   type R2UploadProgress,
   type R2UploadResult,
 } from '../utils/r2Upload';
-import type { PlatformConfig, PublishStatus, R2QuotaStatus } from '../types';
+import type {
+  MediaAccessLevel,
+  PlatformConfig,
+  PublishStatus,
+  R2QuotaStatus,
+  StorageProviderId,
+} from '../types';
 
 export function StatusBadge({
   status,
@@ -101,6 +107,8 @@ export function AssetUrlOrUploadInput({
   placeholder = 'https://...',
   platformConfig,
   quotaStatus,
+  accessLevel,
+  defaultProvider = 'r2',
   onUploadedMeta,
   onToast,
 }: {
@@ -114,10 +122,13 @@ export function AssetUrlOrUploadInput({
   placeholder?: string;
   platformConfig?: Partial<PlatformConfig> | null;
   quotaStatus?: R2QuotaStatus | null;
+  accessLevel?: MediaAccessLevel;
+  defaultProvider?: StorageProviderId;
   onUploadedMeta?: (meta: R2UploadResult) => void;
   onToast: (msg: string, isError?: boolean) => void;
 }) {
   const [phase, setPhase] = useState<UploadPhase>('idle');
+  const [selectedProvider, setSelectedProvider] = useState<StorageProviderId>(defaultProvider);
   const [progress, setProgress] = useState<R2UploadProgress>({
     bytesTransferred: 0,
     totalBytes: 0,
@@ -136,6 +147,11 @@ export function AssetUrlOrUploadInput({
   const isBusy = phase === 'checking' || phase === 'uploading' || phase === 'completing';
   const limits = resolveR2StorageLimits(platformConfig);
   const workerConfigured = Boolean(resolveActiveR2WorkerUrl(platformConfig));
+  const b2Ready = Boolean(quotaStatus?.b2?.enabled === true && quotaStatus?.b2?.verified === true);
+  const effectiveProvider: StorageProviderId =
+    selectedProvider === 'b2' && b2Ready ? 'b2' : 'r2';
+  const resolvedAccessLevel: MediaAccessLevel =
+    accessLevel ?? (folderPath.trim().toLowerCase() === 'branding' ? 'public' : 'private');
   const maxMbHint = imageOnly
     ? limits.maxImageSizeMb
     : videoOnly
@@ -162,16 +178,19 @@ export function AssetUrlOrUploadInput({
     const controller = startR2ResumableUpload(file, folderPath, {
       platformConfig,
       quotaStatus,
+      storageProvider: effectiveProvider,
+      accessLevel: resolvedAccessLevel,
       imageOnly,
       videoOnly,
       onProgress: (info) => {
         setProgress(info);
+        const providerLabel = effectiveProvider === 'b2' ? 'Backblaze B2' : 'Cloudflare R2';
         if (info.phase === 'uploading') {
           setPhase('uploading');
           setStatusMessage(
             info.totalParts > 1
-              ? `جاري رفع ${file.name} — جزء ${info.currentPart} من ${info.totalParts}`
-              : `جاري رفع ${file.name} إلى Cloudflare R2...`
+              ? `جاري رفع ${file.name} (${providerLabel}) — جزء ${info.currentPart} من ${info.totalParts}`
+              : `جاري رفع ${file.name} إلى ${providerLabel}...`
           );
         } else if (info.phase === 'completing') {
           setPhase('completing');
@@ -194,7 +213,8 @@ export function AssetUrlOrUploadInput({
         percent: 100,
         phase: 'completing',
       }));
-      setStatusMessage(`تم الرفع إلى Cloudflare R2 بنجاح (${uploaded.sizeLabel}).`);
+      const targetName = uploaded.storageProvider === 'b2' ? 'Backblaze B2' : 'Cloudflare R2';
+      setStatusMessage(`تم الرفع إلى ${targetName} بنجاح (${uploaded.sizeLabel}).`);
       setCanRetry(false);
       onChange(uploaded.url, uploaded.sizeLabel);
       onUploadedMeta?.(uploaded);
@@ -262,11 +282,34 @@ export function AssetUrlOrUploadInput({
 
   return (
     <div className="space-y-2">
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <label className="block text-xs font-semibold text-slate-600">{label}</label>
-        <span className="text-[11px] font-medium text-slate-500">
-          الحد الأقصى: {maxMbHint} MB {workerConfigured ? '• R2 مفعّل' : '• بانتظار رابط R2 Worker'}
-        </span>
+        <div className="flex flex-wrap items-center gap-2">
+          {workerConfigured && (
+            <select
+              value={effectiveProvider}
+              onChange={(e) => setSelectedProvider(e.target.value as StorageProviderId)}
+              disabled={isBusy}
+              className="rounded-lg border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-700"
+              aria-label="مزود التخزين"
+            >
+              <option value="r2">Cloudflare R2 ({limits.r2StorageLimitGb} GB)</option>
+              <option value="b2" disabled={!b2Ready}>
+                {b2Ready
+                  ? `Backblaze B2 (${limits.b2StorageLimitGb} GB)`
+                  : 'Backblaze B2 (غير مربوط/متحقق)'}
+              </option>
+            </select>
+          )}
+          <span className="text-[11px] font-medium text-slate-500">
+            الحد الأقصى: {maxMbHint} MB •{' '}
+            {!workerConfigured
+              ? 'بانتظار رابط R2 Worker'
+              : quotaStatus?.verified
+                ? `${effectiveProvider === 'b2' ? 'B2' : 'R2'} متحقق منه`
+                : `Worker مهيأ — بانتظار التحقق الفعلي`}
+          </span>
+        </div>
       </div>
 
       <div className="flex flex-col gap-2 sm:flex-row">
