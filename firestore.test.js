@@ -1223,6 +1223,52 @@ test("Dual admin support (Custom Claims OR /admins/{uid}) and anti-self-disable 
   );
 });
 
+test("Strict /admins/{uid} policy rejects missing active, invalid role, and blocks disabled admin even with cached abkRole claim", async () => {
+  const superDb = adminContext().firestore();
+  const now = new Date(Date.now() - 2000);
 
+  // Incomplete /admins creation (missing active or role) is rejected
+  await assertFails(
+    superDb.collection("admins").doc("incomplete_no_active").set({
+      uid: "incomplete_no_active",
+      email: "inc1@abk.edu",
+      role: "ADMIN",
+      grantedBy: ADMIN_UID,
+      createdAt: now,
+    })
+  );
+  await assertFails(
+    superDb.collection("admins").doc("incomplete_no_role").set({
+      uid: "incomplete_no_role",
+      email: "inc2@abk.edu",
+      active: true,
+      grantedBy: ADMIN_UID,
+      createdAt: now,
+    })
+  );
 
-
+  // Deactivated /admins/{uid} blocks access immediately even if cached abkRole claim remains in JWT
+  await assertSucceeds(
+    superDb.collection("admins").doc("revoked_with_claim").set({
+      uid: "revoked_with_claim",
+      email: "revoked@abk.edu",
+      role: "ADMIN",
+      active: false,
+      grantedBy: ADMIN_UID,
+      createdAt: now,
+    })
+  );
+  const revokedClaimDb = staffContext("revoked_with_claim", "ADMIN", "revoked@abk.edu").firestore();
+  await assertFails(
+    revokedClaimDb.collection("subjects").doc("subj_revoked_blocked").set({
+      title: "محظور",
+      description: "معطل في /admins",
+      iconKey: "book",
+      sortOrder: 1,
+      published: true,
+      createdBy: "revoked_with_claim",
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+});

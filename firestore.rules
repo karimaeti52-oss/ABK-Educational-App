@@ -32,25 +32,29 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/admins/$(request.auth.uid)).data;
     }
 
+    function isAdminDocDisabled() {
+      return adminDocExists() && ('active' in adminDocData()) && adminDocData().active == false;
+    }
+
     function isAdminDocActive() {
-      return adminDocExists() && (!('active' in adminDocData()) || adminDocData().active == true);
+      return adminDocExists() &&
+             ('active' in adminDocData()) &&
+             adminDocData().active == true &&
+             ('role' in adminDocData()) &&
+             adminDocData().role in ['SUPER_ADMIN', 'ADMIN', 'CONTENT_MANAGER', 'TEACHER', 'VIEWER'];
     }
 
     function effectiveRole() {
-      return (
-          isSignedIn() &&
-          'abkRole' in request.auth.token &&
-          request.auth.token.abkRole in ['SUPER_ADMIN', 'ADMIN', 'CONTENT_MANAGER', 'TEACHER', 'VIEWER']
-        )
-        ? request.auth.token.abkRole
+      return isAdminDocDisabled()
+        ? 'STUDENT'
         : (
-            isAdminDocActive()
-            ? (
-                ('role' in adminDocData() && adminDocData().role in ['SUPER_ADMIN', 'ADMIN', 'CONTENT_MANAGER', 'TEACHER', 'VIEWER'])
-                  ? adminDocData().role
-                  : 'ADMIN'
-              )
-            : 'STUDENT'
+            (
+              isSignedIn() &&
+              'abkRole' in request.auth.token &&
+              request.auth.token.abkRole in ['SUPER_ADMIN', 'ADMIN', 'CONTENT_MANAGER', 'TEACHER', 'VIEWER']
+            )
+            ? request.auth.token.abkRole
+            : (isAdminDocActive() ? adminDocData().role : 'STUDENT')
           );
     }
 
@@ -123,15 +127,15 @@ service cloud.firestore {
     // --- ENTITY VALIDATION HELPERS ---
 
     function isValidAdminEntry(data) {
-      return data.keys().hasAll(['uid', 'email', 'grantedBy', 'createdAt']) &&
+      return data.keys().hasAll(['uid', 'email', 'role', 'active', 'grantedBy', 'createdAt']) &&
              data.keys().hasOnly(['uid', 'email', 'displayName', 'role', 'permissions', 'teacherId', 'active', 'grantedBy', 'createdAt', 'updatedAt']) &&
              isValidId(data.uid) &&
              data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
              isOptionalString(data, 'displayName', 100) &&
-             (!('role' in data) || data.role in ['SUPER_ADMIN', 'ADMIN', 'CONTENT_MANAGER', 'TEACHER', 'VIEWER']) &&
+             data.role in ['SUPER_ADMIN', 'ADMIN', 'CONTENT_MANAGER', 'TEACHER', 'VIEWER'] &&
              isOptionalStringList(data, 'permissions', 30) &&
              isOptionalString(data, 'teacherId', 128) &&
-             isOptionalBool(data, 'active') &&
+             data.active is bool &&
              data.grantedBy is string && data.grantedBy.size() >= 1 && data.grantedBy.size() <= 160 &&
              data.createdAt is timestamp && data.createdAt <= request.time &&
              (!('updatedAt' in data) || (data.updatedAt is timestamp && data.updatedAt <= request.time));
@@ -477,25 +481,26 @@ service cloud.firestore {
                        isValidId(adminUid) &&
                        isValidAdminEntry(incoming()) &&
                        incoming().uid == adminUid &&
-                       (!('role' in incoming()) || incoming().role != 'SUPER_ADMIN' || isSuperAdmin());
+                       (incoming().role != 'SUPER_ADMIN' || isSuperAdmin());
       allow update: if isAdmin() &&
                        isValidId(adminUid) &&
                        isValidAdminEntry(incoming()) &&
                        incoming().uid == adminUid &&
                        incoming().createdAt == existing().createdAt &&
-                       (!('role' in existing()) || existing().role != 'SUPER_ADMIN' || isSuperAdmin()) &&
-                       (!('role' in incoming()) || incoming().role != 'SUPER_ADMIN' || isSuperAdmin()) &&
+                       ((!('role' in existing()) ? isSuperAdmin() : (existing().role != 'SUPER_ADMIN' || isSuperAdmin()))) &&
+                       (incoming().role != 'SUPER_ADMIN' || isSuperAdmin()) &&
                        (
                          request.auth.uid != adminUid ||
                          (
-                           (!('active' in incoming()) || incoming().active == true) &&
-                           (!('role' in existing()) || !('role' in incoming()) || incoming().role == existing().role)
+                           incoming().active == true &&
+                           ('role' in existing()) &&
+                           incoming().role == existing().role
                          )
                        );
       allow delete: if isAdmin() &&
                        isValidId(adminUid) &&
                        request.auth.uid != adminUid &&
-                       (!('role' in existing()) || existing().role != 'SUPER_ADMIN' || isSuperAdmin());
+                       ((!('role' in existing()) ? isSuperAdmin() : (existing().role != 'SUPER_ADMIN' || isSuperAdmin())));
     }
 
     match /users/{userId} {

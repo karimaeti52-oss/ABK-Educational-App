@@ -22,6 +22,7 @@ import {
 } from '../api';
 import { EmptyBox, SectionHeader } from '../components/CommonUi';
 import { recordAudit, type CmsStore } from '../services/firestoreCms';
+import { VALID_STAFF_ROLES } from '../utils/staffRole';
 import {
   ROLE_LABELS,
   type AuthUserRecord,
@@ -661,6 +662,9 @@ export function AdminsRbacSection({
     if (!user) return;
     setCheckingToken(true);
     try {
+      if (forceRefresh) {
+        await user.getIdToken(true);
+      }
       const tokenRes = await user.getIdTokenResult(forceRefresh);
       const rawClaim = tokenRes.claims.abkRole;
       setClaimRole(typeof rawClaim === 'string' ? rawClaim : null);
@@ -685,10 +689,13 @@ export function AdminsRbacSection({
     () => store.admins.find((a) => a.uid === staff.uid || a.id === staff.uid) || null,
     [store.admins, staff.uid]
   );
+  const selfDocValid = Boolean(
+    selfAdminDoc && selfAdminDoc.active === true && selfAdminDoc.role && VALID_STAFF_ROLES.has(selfAdminDoc.role)
+  );
   const activeAdminsCount = useMemo(
     () =>
       store.admins.filter(
-        (a) => a.active !== false && (!a.role || a.role === 'SUPER_ADMIN' || a.role === 'ADMIN')
+        (a) => a.active === true && (a.role === 'SUPER_ADMIN' || a.role === 'ADMIN')
       ).length,
     [store.admins]
   );
@@ -813,10 +820,19 @@ export function AdminsRbacSection({
           <div className="rounded-xl bg-slate-50 p-3">
             <div className="mb-1 text-[11px] font-semibold text-slate-500">وثيقة Firestore (/admins)</div>
             <div className="font-bold text-[#0F294A]">
-              {selfAdminDoc ? `موجودة (${selfAdminDoc.role || 'ADMIN'})` : 'غير موجودة'}
+              {selfAdminDoc ? `موجودة (${selfAdminDoc.role || 'غير محدد'})` : 'غير موجودة'}
             </div>
-            <div className={`mt-1 text-[11px] font-semibold ${selfAdminDoc && selfAdminDoc.active !== false ? 'text-emerald-700' : 'text-amber-700'}`}>
-              الحالة: {selfAdminDoc ? (selfAdminDoc.active !== false ? 'نشطة (active=true)' : 'معطلة') : 'يعتمد على Custom Claim فقط'}
+            <div className={`mt-1 text-[11px] font-semibold ${selfDocValid ? 'text-emerald-700' : 'text-amber-700'}`}>
+              الحالة:{' '}
+              {selfAdminDoc
+                ? selfAdminDoc.active === true
+                  ? selfAdminDoc.role && VALID_STAFF_ROLES.has(selfAdminDoc.role)
+                    ? 'نشطة (active=true)'
+                    : 'دور غير صالح — يلزم تحديد دور معتمد'
+                  : selfAdminDoc.active === false
+                    ? 'معطلة (active=false)'
+                    : 'ناقصة — حقل active غير مضبوط على true'
+                : 'يعتمد على Custom Claim فقط'}
             </div>
           </div>
 
@@ -841,7 +857,7 @@ export function AdminsRbacSection({
             <p className="font-bold">الخادم الخلفي الموثوق (server) غير متصل حالياً</p>
             <p className="mt-1">
               لحفظ Custom Claims بشكل آمن ومنع أي تلاعب من المتصفح، يتم تعديل أدوار المشرفين عبر خادم{' '}
-              <code dir="ltr">admin-portal/server</code> مع مفتاح Service Account في متغيرات البيئة.
+              <code dir="ltr">admin-portal/server</code> باستخدام بيانات اعتماد Google Cloud الموثوقة (ADC / WIF).
             </p>
           </div>
         </div>
@@ -919,7 +935,7 @@ export function AdminsRbacSection({
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-bold text-[#0F294A]">{adm.displayName || adm.email}</span>
                   <span className="rounded-full bg-[#0F294A] px-2.5 py-0.5 text-[11px] font-bold text-white">
-                    {ROLE_LABELS[adm.role || 'ADMIN']}
+                    {(adm.role && ROLE_LABELS[adm.role]) || 'دور غير محدد'}
                   </span>
                 </div>
                 <p className="text-xs text-slate-500">

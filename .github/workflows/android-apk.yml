@@ -125,14 +125,16 @@ jobs:
 
           echo "Baseline ${OLD_TAG} verified: package=${OLD_PKG}, maxExistingVersionCode=${MAX_OLD_VC}, SHA-1=${OLD_SHA1_HEX}"
 
-      - name: Set up Node.js 20 for Security & Cloud Storage Gates
+      - name: Set up Node.js 22 for Security & Cloud Storage Gates
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Verify Security, Storage Quotas & Admin Portal / Worker Tests
         run: |
           set -euo pipefail
+          node --version
+          node -e "const [maj, min] = process.versions.node.split('.').map(Number); if (maj < 22 || (maj === 22 && min < 6)) { console.error('Node.js >= 22.6.0 is required for --experimental-strip-types, found v' + process.versions.node); process.exit(1); }"
           if grep -rnE "karimaeti07@gmail\.com|BOOTSTRAPPED_ADMIN_EMAIL" \
             firestore.rules storage.rules firestore.test.js \
             cloudflare-worker admin-portal/src admin-portal/server app/src \

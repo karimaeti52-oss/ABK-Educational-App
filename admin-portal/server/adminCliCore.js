@@ -65,10 +65,14 @@ export async function verifyAdminAccountState({ auth, db, config, email = '', ui
   const userDoc = userSnap.exists ? userSnap.data() : null;
 
   const customClaims = userRecord.customClaims && typeof userRecord.customClaims === 'object' ? userRecord.customClaims : {};
-  const claimRole = typeof customClaims.abkRole === 'string' ? customClaims.abkRole : null;
-  const hasStaffClaim = Boolean(claimRole && STAFF_ROLES.includes(claimRole));
-  const hasActiveAdminDoc = Boolean(adminDoc && adminDoc.active !== false);
-  const docRole = hasActiveAdminDoc ? adminDoc.role || 'ADMIN' : null;
+  const rawClaimRole = typeof customClaims.abkRole === 'string' ? customClaims.abkRole : null;
+  const claimRole = rawClaimRole && STAFF_ROLES.includes(rawClaimRole) ? rawClaimRole : null;
+  const hasStaffClaim = Boolean(claimRole);
+  const rawDocRole = adminDoc && typeof adminDoc.role === 'string' ? adminDoc.role : null;
+  const validDocRole = rawDocRole && STAFF_ROLES.includes(rawDocRole) ? rawDocRole : null;
+  const hasActiveAdminDoc = Boolean(adminDoc && adminDoc.active === true && validDocRole);
+  const docRole = hasActiveAdminDoc ? validDocRole : null;
+  const isAdminDocDisabled = Boolean(adminDoc && adminDoc.active === false);
   const storageReady = Boolean(claimRole && ['SUPER_ADMIN', 'ADMIN', 'CONTENT_MANAGER', 'TEACHER'].includes(claimRole));
   const userProfileBlocked = userDoc?.accountStatus === 'BANNED' || userDoc?.accountStatus === 'SUSPENDED';
 
@@ -76,15 +80,17 @@ export async function verifyAdminAccountState({ auth, db, config, email = '', ui
   let activeSuperAdminCount = 0;
   for (const d of adminsCollectionSnap.docs || []) {
     const data = d.data() || {};
-    if (data.active === false) continue;
-    const r = data.role || 'ADMIN';
+    if (data.active !== true) continue;
+    const r = data.role;
+    if (typeof r !== 'string' || !STAFF_ROLES.includes(r)) continue;
     if (r === 'SUPER_ADMIN' || r === 'ADMIN') activeAdminCount += 1;
     if (r === 'SUPER_ADMIN') activeSuperAdminCount += 1;
   }
 
-  const readyForFirestore = (hasStaffClaim || hasActiveAdminDoc) && !userRecord.disabled;
-  const readyForStorage = storageReady && !userRecord.disabled;
+  const readyForFirestore = !isAdminDocDisabled && (hasStaffClaim || hasActiveAdminDoc) && !userRecord.disabled;
+  const readyForStorage = !isAdminDocDisabled && storageReady && !userRecord.disabled;
   const readyForFullAdmin =
+    !isAdminDocDisabled &&
     Boolean(claimRole && (claimRole === 'SUPER_ADMIN' || claimRole === 'ADMIN')) &&
     Boolean(hasActiveAdminDoc && (docRole === 'SUPER_ADMIN' || docRole === 'ADMIN')) &&
     !userRecord.disabled &&
@@ -104,11 +110,12 @@ export async function verifyAdminAccountState({ auth, db, config, email = '', ui
     adminsDoc: adminDoc
       ? {
           exists: true,
-          active: adminDoc.active !== false,
-          role: adminDoc.role || 'ADMIN',
+          active: adminDoc.active === true,
+          role: rawDocRole,
+          roleValid: Boolean(validDocRole),
           grantedBy: adminDoc.grantedBy || null,
         }
-      : { exists: false, active: false, role: null, grantedBy: null },
+      : { exists: false, active: false, role: null, roleValid: false, grantedBy: null },
     userProfile: userDoc
       ? {
           exists: true,

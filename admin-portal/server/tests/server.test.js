@@ -702,3 +702,390 @@ test('loadConfig leaves service account key fields empty so Firebase Admin SDK u
     'ai-studio-android-abk-452af8d1-cf14-40e7-aead-48a40e7f239d'
   );
 });
+
+test('initFirebaseAdmin initializes Auth and named Firestore with external_account WIF ADC config locally without private_key', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { loadConfig } = await import('../config.js');
+  const { initFirebaseAdmin } = await import('../firebaseAdmin.js');
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'abk-wif-test-'));
+  const credFile = path.join(tmpDir, 'external-account.json');
+  const tokenFile = path.join(tmpDir, 'oidc-token');
+  fs.writeFileSync(tokenFile, 'header.payload.signature', 'utf8');
+  fs.writeFileSync(
+    credFile,
+    JSON.stringify({
+      type: 'external_account',
+      audience: '//iam.googleapis.com/projects/000000000000/locations/global/workloadIdentityPools/test-pool/providers/test-provider',
+      subject_token_type: 'urn:ietf:params:oauth:token-type:jwt',
+      token_url: 'https://sts.googleapis.com/v1/token',
+      service_account_impersonation_url:
+        'https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/test@example.iam.gserviceaccount.com:generateAccessToken',
+      credential_source: { file: tokenFile },
+    }),
+    'utf8'
+  );
+
+  const prevCred = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  let initializedApp = null;
+  try {
+    process.env.GOOGLE_APPLICATION_CREDENTIALS = credFile;
+    const cfg = loadConfig({});
+    const { app, auth, db } = initFirebaseAdmin(cfg);
+    initializedApp = app;
+    assert.equal(app.options.projectId, cfg.projectId);
+    assert.equal(typeof auth.getUserByEmail, 'function');
+    assert.equal(typeof auth.setCustomUserClaims, 'function');
+    assert.equal(typeof db.collection, 'function');
+  } finally {
+    if (initializedApp) {
+      await initializedApp.delete();
+    }
+    if (prevCred === undefined) {
+      delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    } else {
+      process.env.GOOGLE_APPLICATION_CREDENTIALS = prevCred;
+    }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('resolveEffectiveRole rejects missing active, non-boolean active, invalid role, and blocks disabled admin even with cached claims', () => {
+  assert.equal(
+    resolveEffectiveRole({ email: 'staff@abk.edu', email_verified: true }, { role: 'SUPER_ADMIN' }),
+    'STUDENT'
+  );
+  assert.equal(
+    resolveEffectiveRole({ email: 'staff@abk.edu', email_verified: true }, { role: 'ADMIN', active: 'true' }),
+    'STUDENT'
+  );
+  assert.equal(
+    resolveEffectiveRole({ email: 'staff@abk.edu', email_verified: true }, { active: true }),
+    'STUDENT'
+  );
+  assert.equal(
+    resolveEffectiveRole({ email: 'staff@abk.edu', email_verified: true }, { active: true, role: 'OWNER' }),
+    'STUDENT'
+  );
+  assert.equal(
+    resolveEffectiveRole(
+      { email: 'disabled@abk.edu', email_verified: true, abkRole: 'SUPER_ADMIN' },
+      { active: false, role: 'SUPER_ADMIN' }
+    ),
+    'STUDENT'
+  );
+});
+
+test('adminCliCore rejects missing user, unverified email, disabled Auth user, missing active, active=false, and invalid /admins role', async () => {
+  const { grantAdminAccount, verifyAdminAccountState } = await import('../adminCliCore.js');
+  const { loadConfig } = await import('../config.js');
+  const config = loadConfig({});
+
+  const adminsMap = new Map();
+  const usersMap = new Map();
+  const authUsers = new Map([
+    [
+      'uid_unverified',
+      {
+        uid: 'uid_unverified',
+        email: 'unverified@abk.edu',
+        emailVerified: false,
+        disabled: false,
+        customClaims: { abkRole: 'SUPER_ADMIN' },
+      },
+    ],
+    [
+      'uid_disabled',
+      {
+        uid: 'uid_disabled',
+        email: 'disabled@abk.edu',
+        emailVerified: true,
+        disabled: true,
+        customClaims: { abkRole: 'SUPER_ADMIN' },
+      },
+    ],
+    [
+      'uid_partial',
+      {
+        uid: 'uid_partial',
+        email: 'partial@abk.edu',
+        emailVerified: true,
+        disabled: false,
+        customClaims: { abkRole: 'SUPER_ADMIN' },
+      },
+    ],
+  ]);
+
+  const auth = {
+    async getUserByEmail(email) {
+      for (const u of authUsers.values()) {
+        if (u.email === email) return u;
+      }
+      throw new Error('auth/user-not-found');
+    },
+    async getUser(uid) {
+      const u = authUsers.get(uid);
+      if (!u) throw new Error('auth/user-not-found');
+      return u;
+    },
+    async setCustomUserClaims() {},
+  };
+
+  const db = {
+    collection(name) {
+      return {
+        doc(id) {
+          return {
+            async get() {
+              const map = name === 'admins' ? adminsMap : usersMap;
+              return map.has(id) ? { exists: true, data: () => map.get(id) } : { exists: false, data: () => null };
+            },
+            async set() {},
+            async update() {},
+          };
+        },
+        async get() {
+          if (name === 'admins') {
+            return { docs: Array.from(adminsMap.entries()).map(([id, data]) => ({ id, data: () => data })) };
+          }
+          return { docs: [] };
+        },
+        async add() {},
+      };
+    },
+  };
+  const FieldValueMock = { serverTimestamp: () => 'TS' };
+
+  await assert.rejects(
+    verifyAdminAccountState({ auth, db, config, email: 'missing@abk.edu' }),
+    /user-not-found/
+  );
+  await assert.rejects(
+    grantAdminAccount({ auth, db, FieldValue: FieldValueMock, config, email: 'unverified@abk.edu', role: 'SUPER_ADMIN' }),
+    /emailVerified=false/
+  );
+  await assert.rejects(
+    grantAdminAccount({ auth, db, FieldValue: FieldValueMock, config, email: 'disabled@abk.edu', role: 'SUPER_ADMIN' }),
+    /disabled=true/
+  );
+
+  // Disabled Auth account never reports ready
+  adminsMap.set('uid_disabled', { uid: 'uid_disabled', role: 'SUPER_ADMIN', active: true });
+  const disabledState = await verifyAdminAccountState({ auth, db, config, email: 'disabled@abk.edu' });
+  assert.equal(disabledState.checks.readyForFirestore, false);
+  assert.equal(disabledState.checks.readyForStorage, false);
+  assert.equal(disabledState.checks.readyForFullAdmin, false);
+
+  // Missing active field on /admins/{uid} -> hasActiveAdminDoc=false, readyForFullAdmin=false
+  adminsMap.set('uid_partial', { uid: 'uid_partial', role: 'SUPER_ADMIN' });
+  const missingActiveState = await verifyAdminAccountState({ auth, db, config, email: 'partial@abk.edu' });
+  assert.equal(missingActiveState.adminsDoc.active, false);
+  assert.equal(missingActiveState.checks.hasActiveAdminDoc, false);
+  assert.equal(missingActiveState.checks.readyForFullAdmin, false);
+
+  // active=false on /admins/{uid} -> blocks even if claim exists
+  adminsMap.set('uid_partial', { uid: 'uid_partial', role: 'SUPER_ADMIN', active: false });
+  const inactiveState = await verifyAdminAccountState({ auth, db, config, email: 'partial@abk.edu' });
+  assert.equal(inactiveState.checks.hasActiveAdminDoc, false);
+  assert.equal(inactiveState.checks.readyForFirestore, false);
+  assert.equal(inactiveState.checks.readyForStorage, false);
+  assert.equal(inactiveState.checks.readyForFullAdmin, false);
+
+  // active=true with invalid role -> roleValid=false, hasActiveAdminDoc=false
+  adminsMap.set('uid_partial', { uid: 'uid_partial', role: 'INVALID_ROLE', active: true });
+  const invalidRoleState = await verifyAdminAccountState({ auth, db, config, email: 'partial@abk.edu' });
+  assert.equal(invalidRoleState.adminsDoc.roleValid, false);
+  assert.equal(invalidRoleState.checks.hasActiveAdminDoc, false);
+  assert.equal(invalidRoleState.checks.readyForFullAdmin, false);
+});
+
+test('Portal API rejects non-SUPER_ADMIN self-upgrade and blocks removing the sole remaining SUPER_ADMIN doc', async () => {
+  const { createAdminApp } = await import('../app.js');
+  const { loadConfig } = await import('../config.js');
+  const config = loadConfig({ SUPER_ADMIN_EMAIL: '' });
+
+  const adminDocs = new Map([
+    ['uid_sole_super', { uid: 'uid_sole_super', email: 'sole@abk.edu', role: 'SUPER_ADMIN', active: true }],
+    ['uid_content', { uid: 'uid_content', email: 'cm@abk.edu', role: 'CONTENT_MANAGER', active: true }],
+  ]);
+
+  const authStore = new Map([
+    [
+      'uid_sole_super',
+      {
+        uid: 'uid_sole_super',
+        email: 'sole@abk.edu',
+        emailVerified: true,
+        disabled: false,
+        customClaims: { abkRole: 'SUPER_ADMIN' },
+      },
+    ],
+    [
+      'uid_content',
+      {
+        uid: 'uid_content',
+        email: 'cm@abk.edu',
+        emailVerified: true,
+        disabled: false,
+        customClaims: { abkRole: 'CONTENT_MANAGER' },
+      },
+    ],
+    [
+      'uid_external_super',
+      {
+        uid: 'uid_external_super',
+        email: 'ops@abk.edu',
+        emailVerified: true,
+        disabled: false,
+        customClaims: { abkRole: 'SUPER_ADMIN' },
+      },
+    ],
+  ]);
+
+  const fakeServices = {
+    auth: {
+      async verifyIdToken(token) {
+        const now = Math.floor(Date.now() / 1000);
+        if (token === 'cm-token') {
+          return { uid: 'uid_content', email: 'cm@abk.edu', email_verified: true, abkRole: 'CONTENT_MANAGER', auth_time: now };
+        }
+        if (token === 'ext-super-token') {
+          return { uid: 'uid_external_super', email: 'ops@abk.edu', email_verified: true, abkRole: 'SUPER_ADMIN', auth_time: now };
+        }
+        throw Object.assign(new Error('bad'), { code: 'auth/invalid-id-token' });
+      },
+      async getUserByEmail(email) {
+        for (const u of authStore.values()) {
+          if (u.email === email) return u;
+        }
+        throw new Error('not found');
+      },
+      async getUser(uid) {
+        const u = authStore.get(uid);
+        if (!u) throw new Error('not found');
+        return u;
+      },
+      async setCustomUserClaims() {},
+    },
+    db: {
+      collection(name) {
+        return {
+          doc(id) {
+            return {
+              async get() {
+                if (name === 'admins' && adminDocs.has(id)) {
+                  return { exists: true, data: () => ({ ...adminDocs.get(id) }) };
+                }
+                return { exists: false, data: () => null };
+              },
+              async set() {},
+              async delete() {
+                if (name === 'admins') adminDocs.delete(id);
+              },
+            };
+          },
+          async get() {
+            if (name === 'admins') {
+              return { docs: Array.from(adminDocs.entries()).map(([id, data]) => ({ id, data: () => ({ ...data }) })) };
+            }
+            return { docs: [] };
+          },
+          async add() {},
+        };
+      },
+    },
+    appCheck: { async verifyToken() {} },
+  };
+
+  const app = createAdminApp({ config, firebaseServices: fakeServices });
+  const server = app.listen(0);
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  try {
+    // CONTENT_MANAGER cannot self-upgrade to SUPER_ADMIN
+    const selfUpgradeRes = await fetch(`${baseUrl}/api/admins/grant`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer cm-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'cm@abk.edu', role: 'SUPER_ADMIN', active: true }),
+    });
+    assert.equal(selfUpgradeRes.status, 403);
+
+    // Another SUPER_ADMIN cannot revoke or demote the sole remaining active SUPER_ADMIN in /admins
+    const revokeSoleRes = await fetch(`${baseUrl}/api/admins/revoke`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ext-super-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uid: 'uid_sole_super' }),
+    });
+    assert.equal(revokeSoleRes.status, 409);
+
+    const demoteSoleRes = await fetch(`${baseUrl}/api/admins/grant`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ext-super-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'sole@abk.edu', role: 'ADMIN', active: true }),
+    });
+    assert.equal(demoteSoleRes.status, 409);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('firebase-admin-check.yml enforces manual OIDC/WIF guards, split SAs, and zero PII/secrets leakage', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const workflowPath = path.resolve(import.meta.dirname, '../../../.github/workflows/firebase-admin-check.yml');
+  const content = fs.readFileSync(workflowPath, 'utf8');
+
+  assert.ok(content.includes('workflow_dispatch:'));
+  assert.ok(content.includes("default: verify_only"));
+  assert.ok(content.includes('contents: read'));
+  assert.ok(content.includes('id-token: write'));
+  assert.ok(content.includes('google-github-actions/auth@v2'));
+  assert.ok(content.includes("github.repository == 'karimaeti52-oss/ABK-Educational-App'"));
+  assert.ok(content.includes("github.ref == 'refs/heads/main'"));
+  assert.ok(content.includes('github.actor == github.repository_owner'));
+  assert.ok(content.includes('CONFIRM_SUPER_ADMIN'));
+  assert.ok(content.includes('GCP_WIF_VERIFY_SERVICE_ACCOUNT'));
+  assert.ok(content.includes('GCP_WIF_GRANT_SERVICE_ACCOUNT'));
+  assert.ok(content.includes('cleanup_credentials: true'));
+
+  assert.equal(content.includes('FIREBASE_SERVICE_ACCOUNT_JSON'), false);
+  assert.equal(content.includes('FIREBASE_SERVICE_ACCOUNT_BASE64'), false);
+  assert.equal(content.includes('karimaeti07'), false);
+  assert.equal(content.includes('final.get(\'uid\')'), false);
+  assert.equal(content.includes('/admins/{uid}`'), false);
+});
+
+test('All auth/RBAC layers unify strict active === true + valid role policy with zero legacy ADMIN fallback', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const root = path.resolve(import.meta.dirname, '../../..');
+
+  const files = [
+    'firestore.rules',
+    'cloudflare-worker/src/auth.js',
+    'admin-portal/server/rbac.js',
+    'admin-portal/server/app.js',
+    'admin-portal/server/adminCliCore.js',
+    'admin-portal/src/utils/staffRole.ts',
+    'admin-portal/src/sections/UsersAndAdminsSection.tsx',
+    'app/src/main/java/com/example/data/repository/StudentRepository.kt',
+    'app/src/main/java/com/example/data/repository/AdminRepository.kt',
+  ];
+
+  for (const rel of files) {
+    const txt = fs.readFileSync(path.join(root, rel), 'utf8');
+    assert.equal(/active\s*!==\s*false|active"\)\s*!=\s*false|!\('active'\s+in\s+adminDocData/.test(txt), false, `Found legacy active!=false fallback in ${rel}`);
+  }
+
+  const rules = fs.readFileSync(path.join(root, 'firestore.rules'), 'utf8');
+  assert.ok(rules.includes('function isAdminDocDisabled()'));
+  assert.ok(rules.includes('adminDocData().active == true'));
+  assert.ok(rules.includes("data.keys().hasAll(['uid', 'email', 'role', 'active', 'grantedBy', 'createdAt'])"));
+
+  const workerAuth = fs.readFileSync(path.join(root, 'cloudflare-worker/src/auth.js'), 'utf8');
+  assert.ok(workerAuth.includes('adminDoc.active === false'));
+  assert.ok(workerAuth.includes('adminDoc.active === true'));
+});
+

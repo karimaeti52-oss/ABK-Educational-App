@@ -35,14 +35,17 @@ export function resolveFrontendStaffRole({
   let adminPermissions: string[] = [];
   let docTeacherId: string | null = null;
 
-  if (adminDoc) {
+  // Enforce strict active === true and an explicit role within VALID_STAFF_ROLES
+  if (adminDoc && adminDoc.active === true) {
     const rawDocRole = adminDoc.role;
-    adminDocRole =
-      typeof rawDocRole === 'string' && VALID_STAFF_ROLES.has(rawDocRole as StaffRole)
-        ? (rawDocRole as StaffRole)
-        : 'ADMIN';
-    adminPermissions = Array.isArray(adminDoc.permissions) ? adminDoc.permissions : [];
-    docTeacherId = typeof adminDoc.teacherId === 'string' && adminDoc.teacherId ? adminDoc.teacherId : null;
+    if (typeof rawDocRole === 'string' && VALID_STAFF_ROLES.has(rawDocRole as StaffRole)) {
+      adminDocRole = rawDocRole as StaffRole;
+      adminPermissions = Array.isArray(adminDoc.permissions)
+        ? adminDoc.permissions.filter((p): p is string => typeof p === 'string')
+        : [];
+      docTeacherId =
+        typeof adminDoc.teacherId === 'string' && adminDoc.teacherId ? adminDoc.teacherId : null;
+    }
   }
 
   const resolvedRole: StaffRole | null = validClaimRole || adminDocRole || null;
@@ -50,12 +53,16 @@ export function resolveFrontendStaffRole({
     return null;
   }
 
+  const claimPermissions = Array.isArray(claims?.abkPermissions)
+    ? (claims.abkPermissions as unknown[]).filter((p): p is string => typeof p === 'string')
+    : [];
+
   const claimTeacherId =
     typeof claims?.teacherId === 'string' && claims.teacherId ? claims.teacherId : null;
 
   return {
     role: resolvedRole,
-    permissions: adminPermissions,
+    permissions: adminPermissions.length > 0 ? adminPermissions : claimPermissions,
     teacherId: docTeacherId || claimTeacherId,
   };
 }

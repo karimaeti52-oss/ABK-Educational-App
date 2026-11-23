@@ -62,17 +62,20 @@ export function resolveEffectiveRole(decodedToken, adminDoc, superAdminEmail = '
     return 'SUPER_ADMIN';
   }
 
+  if (adminDoc && adminDoc.active === false) {
+    return 'STUDENT';
+  }
+
   const claimRole = decodedToken?.abkRole;
   if (typeof claimRole === 'string' && STAFF_ROLES.includes(claimRole)) {
     return claimRole;
   }
 
-  if (adminDoc && adminDoc.active !== false) {
+  if (adminDoc && adminDoc.active === true) {
     const docRole = adminDoc.role;
     if (typeof docRole === 'string' && STAFF_ROLES.includes(docRole)) {
       return docRole;
     }
-    return 'ADMIN';
   }
 
   return 'STUDENT';

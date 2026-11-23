@@ -8,6 +8,7 @@ import {
   PERMISSIONS,
   resolveEffectivePermissions,
   resolveEffectiveRole,
+  STAFF_ROLES,
 } from './rbac.js';
 import {
   AuditLogSchema,
@@ -231,24 +232,27 @@ export function createAdminApp({ config, firebaseServices }) {
     const adminEntries = new Map();
     for (const d of adminsSnap.docs || []) {
       const data = d.data() || {};
+      const validRole = typeof data.role === 'string' && STAFF_ROLES.includes(data.role) ? data.role : null;
       adminEntries.set(d.id, {
         uid: d.id,
-        role: data.role || 'ADMIN',
-        active: data.active !== false,
+        role: validRole,
+        active: data.active === true && Boolean(validRole),
+        isDisabled: data.active === false,
       });
     }
 
     const existingDoc = adminEntries.get(targetUid) || null;
-    const claimRole = targetUser?.customClaims?.abkRole;
+    const rawClaimRole = targetUser?.customClaims?.abkRole;
+    const validClaimRole = typeof rawClaimRole === 'string' && STAFF_ROLES.includes(rawClaimRole) ? rawClaimRole : null;
     const currentEffectiveRole =
       (existingDoc && existingDoc.active ? existingDoc.role : null) ||
-      (typeof claimRole === 'string' ? claimRole : null) ||
-      (existingDoc ? existingDoc.role : null);
+      (existingDoc?.isDisabled ? null : validClaimRole) ||
+      (existingDoc && !existingDoc.isDisabled ? existingDoc.role : null);
 
-    const isCurrentlySuperAdmin = currentEffectiveRole === 'SUPER_ADMIN' && (!existingDoc || existingDoc.active);
+    const isCurrentlySuperAdmin = currentEffectiveRole === 'SUPER_ADMIN' && !existingDoc?.isDisabled;
     const isCurrentlyActiveFullAdmin =
       Boolean(currentEffectiveRole && FULL_ADMIN_ROLES.has(currentEffectiveRole)) &&
-      (!existingDoc || existingDoc.active) &&
+      !existingDoc?.isDisabled &&
       !targetUser?.disabled;
 
     if ((isCurrentlySuperAdmin || intentRole === 'SUPER_ADMIN') && actor.role !== 'SUPER_ADMIN') {
@@ -482,10 +486,17 @@ export function createAdminApp({ config, firebaseServices }) {
     for (const u of authUsers) {
       const profile = profileMap.get(u.uid) || null;
       const adminDoc = adminMap.get(u.uid) || null;
-      const claimsRole = u.customClaims?.abkRole;
+      const claimsRole =
+        typeof u.customClaims?.abkRole === 'string' && STAFF_ROLES.includes(u.customClaims.abkRole)
+          ? u.customClaims.abkRole
+          : null;
+      const docRole =
+        adminDoc && adminDoc.active === true && typeof adminDoc.role === 'string' && STAFF_ROLES.includes(adminDoc.role)
+          ? adminDoc.role
+          : null;
       const effectiveRole =
-        claimsRole ||
-        (adminDoc && adminDoc.active !== false ? adminDoc.role || 'ADMIN' : null) ||
+        (adminDoc && adminDoc.active === false ? null : claimsRole) ||
+        docRole ||
         profile?.role ||
         'STUDENT';
 

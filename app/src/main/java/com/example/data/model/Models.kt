@@ -134,9 +134,9 @@ data class AdminEntry(
     val uid: String = "",
     val email: String = "",
     val displayName: String? = null,
-    val role: String = "ADMIN",
+    val role: String = "",
     val teacherId: String? = null,
-    val active: Boolean = true,
+    val active: Boolean = false,
     val grantedBy: String = "",
     @ServerTimestamp val createdAt: Timestamp? = null
 )

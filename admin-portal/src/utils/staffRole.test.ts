@@ -2,14 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { resolveFrontendStaffRole } from './staffRole.ts';
 
-test('resolveFrontendStaffRole accepts valid abkRole claims and active /admins documents', () => {
+test('resolveFrontendStaffRole accepts valid abkRole claims and active === true /admins documents with valid roles', () => {
   const superAdmin = resolveFrontendStaffRole({
-    claims: { abkRole: 'SUPER_ADMIN' },
+    claims: { abkRole: 'SUPER_ADMIN', abkPermissions: ['manage_admins'] },
     adminDoc: null,
   });
   assert.deepEqual(superAdmin, {
     role: 'SUPER_ADMIN',
-    permissions: [],
+    permissions: ['manage_admins'],
     teacherId: null,
   });
 
@@ -23,23 +23,23 @@ test('resolveFrontendStaffRole accepts valid abkRole claims and active /admins d
     teacherId: 'teacher_1',
   });
 
-  const adminFromDocDefault = resolveFrontendStaffRole({
+  const adminFromActiveDoc = resolveFrontendStaffRole({
     claims: {},
-    adminDoc: { active: true, permissions: ['MANAGE_LESSONS'] },
+    adminDoc: { active: true, role: 'ADMIN', permissions: ['manage_lessons'] },
   });
-  assert.deepEqual(adminFromDocDefault, {
+  assert.deepEqual(adminFromActiveDoc, {
     role: 'ADMIN',
-    permissions: ['MANAGE_LESSONS'],
+    permissions: ['manage_lessons'],
     teacherId: null,
   });
 
   const contentManagerFromDoc = resolveFrontendStaffRole({
     claims: {},
-    adminDoc: { active: true, role: 'CONTENT_MANAGER', permissions: ['MANAGE_CATALOG'] },
+    adminDoc: { active: true, role: 'CONTENT_MANAGER', permissions: ['manage_catalog'] },
   });
   assert.deepEqual(contentManagerFromDoc, {
     role: 'CONTENT_MANAGER',
-    permissions: ['MANAGE_CATALOG'],
+    permissions: ['manage_catalog'],
     teacherId: null,
   });
 });
@@ -78,12 +78,67 @@ test('resolveFrontendStaffRole rejects legacy admin, abkStaff, and role claim fa
   );
 });
 
-test('resolveFrontendStaffRole blocks disabled admin accounts even when cached claims remain', () => {
+test('resolveFrontendStaffRole rejects /admins docs with missing active, non-boolean active, or invalid/missing role', () => {
+  // active is missing (undefined) -> must NOT grant access
+  assert.equal(
+    resolveFrontendStaffRole({
+      claims: {},
+      adminDoc: { role: 'SUPER_ADMIN' },
+    }),
+    null
+  );
+
+  // active is non-boolean truthy value -> must NOT satisfy active === true
+  assert.equal(
+    resolveFrontendStaffRole({
+      claims: {},
+      adminDoc: { active: 'true' as unknown as boolean, role: 'ADMIN' },
+    }),
+    null
+  );
+
+  // active === true but role is missing -> must NOT silently default to ADMIN
+  assert.equal(
+    resolveFrontendStaffRole({
+      claims: {},
+      adminDoc: { active: true },
+    }),
+    null
+  );
+
+  // active === true but role is outside allowed STAFF_ROLES -> must return null
+  assert.equal(
+    resolveFrontendStaffRole({
+      claims: {},
+      adminDoc: { active: true, role: 'STUDENT' as unknown as 'ADMIN' },
+    }),
+    null
+  );
+
+  assert.equal(
+    resolveFrontendStaffRole({
+      claims: {},
+      adminDoc: { active: true, role: 'OWNER' as unknown as 'ADMIN' },
+    }),
+    null
+  );
+});
+
+test('resolveFrontendStaffRole blocks active === false admin accounts even when cached claims remain', () => {
   assert.throws(
     () =>
       resolveFrontendStaffRole({
         claims: { abkRole: 'SUPER_ADMIN' },
         adminDoc: { active: false, role: 'SUPER_ADMIN' },
+      }),
+    /تعطيل/
+  );
+
+  assert.throws(
+    () =>
+      resolveFrontendStaffRole({
+        claims: {},
+        adminDoc: { active: false, role: 'ADMIN' },
       }),
     /تعطيل/
   );

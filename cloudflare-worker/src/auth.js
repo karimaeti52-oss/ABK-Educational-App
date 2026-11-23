@@ -146,15 +146,24 @@ export async function resolveStaffAuthorization(env, idToken, fetchImpl = fetch)
     return { uid: payload.sub, email, role: 'SUPER_ADMIN', authorized: true };
   }
 
+  const adminDoc = await fetchFirestoreDocWithToken(
+    env,
+    idToken,
+    `admins/${encodeURIComponent(payload.sub)}`,
+    fetchImpl
+  );
+  if (adminDoc && adminDoc.active === false) {
+    return { uid: payload.sub, email, role: 'STUDENT', authorized: false };
+  }
+
   const claimRole = payload.abkRole;
   if (typeof claimRole === 'string' && WRITE_STAFF_ROLES.has(claimRole)) {
     return { uid: payload.sub, email, role: claimRole, authorized: true };
   }
 
-  const adminDoc = await fetchFirestoreDocWithToken(env, idToken, `admins/${encodeURIComponent(payload.sub)}`, fetchImpl);
-  if (adminDoc && adminDoc.active !== false) {
-    const docRole = typeof adminDoc.role === 'string' ? adminDoc.role : 'ADMIN';
-    if (WRITE_STAFF_ROLES.has(docRole)) {
+  if (adminDoc && adminDoc.active === true) {
+    const docRole = adminDoc.role;
+    if (typeof docRole === 'string' && WRITE_STAFF_ROLES.has(docRole)) {
       return { uid: payload.sub, email, role: docRole, authorized: true };
     }
   }

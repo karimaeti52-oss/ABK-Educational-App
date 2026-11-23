@@ -448,11 +448,6 @@ fun AdminDashboardScreen(
                                                         Spacer(Modifier.width(4.dp))
                                                         Text(if (isBlocked) "تفعيل الحساب" else "تعطيل الحساب")
                                                     }
-                                                    TextButton(
-                                                        onClick = { adminViewModel.toggleAdminPrivilege(user, !isUserAdmin) }
-                                                    ) {
-                                                        Text(if (isUserAdmin) "إلغاء الإدارة" else "ترقية لمدير")
-                                                    }
                                                 }
                                             }
                                         }

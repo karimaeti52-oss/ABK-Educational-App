@@ -131,16 +131,23 @@ export default function App() {
     }
 
     // Fallback when running static frontend without Node server:
-    // Verify Firebase Custom Claim (abkRole only) + Firestore /admins/{uid}
+    // Verify Firebase Custom Claim (abkRole only) + Firestore /admins/{uid} (active === true & valid role)
     const tokenResult = await user.getIdTokenResult();
 
     let adminDoc: Partial<AdminEntry> | null = null;
     try {
       const snap = await getDoc(doc(firestoreDb, 'admins', user.uid));
       if (snap.exists()) {
-        adminDoc = snap.data() as Partial<AdminEntry>;
+        const rawData = snap.data() as Partial<AdminEntry>;
+        if (rawData.active === false) {
+          throw new Error('تم تعطيل صلاحية هذا الحساب الإداري.');
+        }
+        adminDoc = rawData;
       }
-    } catch {
+    } catch (docErr) {
+      if (docErr instanceof Error && docErr.message.includes('تعطيل')) {
+        throw docErr;
+      }
       // Fall back to verified abkRole custom claim if /admins/{uid} read fails temporarily
     }
 

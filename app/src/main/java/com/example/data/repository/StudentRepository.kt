@@ -122,16 +122,25 @@ class StudentRepository(
         check(uid == userId)
         val claims = runCatching { auth.currentUser?.getIdToken(false)?.await()?.claims }.getOrNull().orEmpty()
         val claimRole = claims["abkRole"] as? String
-        val hasStaffClaim = claims["abkStaff"] == true || (claimRole != null && claimRole in STAFF_CLAIMS_ROLES)
+        val hasStaffClaim = claimRole != null && claimRole in STAFF_CLAIMS_ROLES
+        val path = "admins/$userId"
+        val currentAdminSnap = runCatching { db.collection("admins").document(userId).get().await() }.getOrNull()
+        if (currentAdminSnap?.exists() == true && currentAdminSnap.getBoolean("active") == false) {
+            emit(false)
+            return@flow
+        }
         if (hasStaffClaim) {
             emit(true)
             return@flow
         }
-        val path = "admins/$userId"
         emitAll(
             db.collection("admins").document(userId)
                 .snapshots()
-                .map { snap -> snap.exists() && snap.getBoolean("active") != false }
+                .map { snap ->
+                    snap.exists() &&
+                        snap.getBoolean("active") == true &&
+                        (snap.getString("role") in STAFF_CLAIMS_ROLES)
+                }
                 .catch { error ->
                     logStreamError(error, uid, OperationType.GET, path)
                     emit(false)

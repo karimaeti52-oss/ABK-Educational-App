@@ -41,8 +41,9 @@ export function initFirebaseAdmin(config) {
         projectId: config.projectId || parsed.project_id,
       });
     } else {
-      // Fallback to Application Default Credentials when available
+      // Fallback to Application Default Credentials (WIF external_account / GCP runtime)
       admin.initializeApp({
+        credential: admin.credential.applicationDefault(),
         projectId: config.projectId,
       });
     }

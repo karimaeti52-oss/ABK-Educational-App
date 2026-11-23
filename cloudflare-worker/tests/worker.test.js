@@ -810,3 +810,60 @@ test('Worker strictly ignores Firestore b2Enabled=true without B2 secrets, enfor
   );
   assert.equal(evilCorsRes.headers.get('Access-Control-Allow-Origin'), null);
 });
+
+test('Worker auth enforces unified strict /admins/{uid} policy (active === true + valid role) and blocks disabled admin claims', async () => {
+  clearJwksCacheForTests();
+  clearLimitsCacheForTests();
+  const { privateKey, publicJwk } = await generateTestKeyPair();
+  const bucket = createMockR2Bucket();
+  const worker = createWorkerHandler({
+    fetchImpl: createMockFetch({
+      publicJwk,
+      firestoreDocs: {
+        'documents/admins/doc_active_valid': {
+          active: { booleanValue: true },
+          role: { stringValue: 'CONTENT_MANAGER' },
+        },
+        'documents/admins/doc_missing_active': {
+          role: { stringValue: 'SUPER_ADMIN' },
+        },
+        'documents/admins/doc_missing_role': {
+          active: { booleanValue: true },
+        },
+        'documents/admins/doc_invalid_role': {
+          active: { booleanValue: true },
+          role: { stringValue: 'STUDENT' },
+        },
+        'documents/admins/doc_disabled_with_claim': {
+          active: { booleanValue: false },
+          role: { stringValue: 'SUPER_ADMIN' },
+        },
+      },
+    }),
+  });
+  const env = { ...BASE_ENV, MEDIA_BUCKET: bucket };
+
+  const activeToken = await signTestJwt(privateKey, makeClaims('doc_active_valid', 'cm@midad.test'));
+  const missingActiveToken = await signTestJwt(privateKey, makeClaims('doc_missing_active', 'ma@midad.test'));
+  const missingRoleToken = await signTestJwt(privateKey, makeClaims('doc_missing_role', 'mr@midad.test'));
+  const invalidRoleToken = await signTestJwt(privateKey, makeClaims('doc_invalid_role', 'ir@midad.test'));
+  const disabledWithClaimToken = await signTestJwt(
+    privateKey,
+    makeClaims('doc_disabled_with_claim', 'dis@midad.test', { abkRole: 'SUPER_ADMIN' })
+  );
+
+  const okRes = await worker.fetch(
+    new Request('https://r2.midad.edu/quota', { headers: { Authorization: `Bearer ${activeToken}` } }),
+    env
+  );
+  assert.equal(okRes.status, 200);
+
+  for (const deniedToken of [missingActiveToken, missingRoleToken, invalidRoleToken, disabledWithClaimToken]) {
+    const res = await worker.fetch(
+      new Request('https://r2.midad.edu/quota', { headers: { Authorization: `Bearer ${deniedToken}` } }),
+      env
+    );
+    assert.equal(res.status, 403);
+  }
+});
+
