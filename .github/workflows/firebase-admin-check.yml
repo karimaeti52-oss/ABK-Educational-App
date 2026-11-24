@@ -78,12 +78,13 @@ jobs:
               echo "يستخدم وضع \`verify_only\` حساب خدمة منفصلاً بصلاحيات **قراءة فقط** عبر GitHub OIDC (بدون مفاتيح JSON دائمة)."
               echo ""
               echo "أضف القيمتين التاليتين في **Settings → Secrets and variables → Actions**:"
-              echo "- \`GCP_WIF_PROVIDER\`: مسار مزود WIF الموجود مسبقاً (\`projects/<PROJECT_NUMBER>/locations/global/workloadIdentityPools/<POOL_ID>/providers/<PROVIDER_ID>\`)."
-              echo "- \`GCP_WIF_VERIFY_SERVICE_ACCOUNT\`: بريد حساب الخدمة المخصص للقراءة فقط."
+              echo "- \`GCP_WIF_PROVIDER\`: مسار مزود WIF الموجود مسبقاً (\`projects/438492626356/locations/global/workloadIdentityPools/<POOL_ID>/providers/<PROVIDER_ID>\`)."
+              echo "- \`GCP_WIF_VERIFY_SERVICE_ACCOUNT\`: بريد حساب الخدمة المخصص **للقراءة فقط** (مثل \`midad-admin-readonly@gen-lang-client-0343268738.iam.gserviceaccount.com\`؛ **لا** تستخدم \`abk-github-deployer\` لهذا الوضع)."
               echo ""
-              echo "الصلاحيات المطلوبة لحساب القراءة فقط:"
+              echo "الصلاحيات المطلوبة لحساب القراءة فقط (بدون أي صلاحية تعديل أو حذف):"
               echo "- Firebase Auth: \`roles/firebaseauth.viewer\` (أو دور مخصص بصلاحية \`firebaseauth.users.get\` فقط)."
               echo "- Firestore: \`roles/datastore.viewer\` (أو دور مخصص بصلاحيتي \`datastore.entities.get\` و \`datastore.entities.list\` فقط)."
+              echo "- شرط ربط OIDC في Workload Identity: \`attribute.repository=='karimaeti52-oss/ABK-Educational-App'\`."
               echo "- ملاحظة: صلاحيات IAM على Firestore تنطبق على مستوى المشروع/قاعدة البيانات ولا تحصر الوصول بمجموعة \`admins\` وحدها، كما أن Admin SDK يتجاوز Firestore Security Rules."
             } >> "$GITHUB_STEP_SUMMARY"
             echo "::error::Missing GCP_WIF_PROVIDER or GCP_WIF_VERIFY_SERVICE_ACCOUNT."
@@ -194,7 +195,9 @@ jobs:
               "### الجاهزية:",
               f"- **Firestore Rules:** {'جاهز' if final.get('checks', {}).get('readyForFirestore') else 'غير جاهز'}",
               f"- **Storage Rules (`abkRole`):** {'جاهز' if final.get('checks', {}).get('readyForStorage') else 'غير جاهز'}",
+              f"- **توافق Custom Claims ووثيقة Firestore:** {'يوجد تعارض' if final.get('checks', {}).get('hasClaimDocConflict') else 'متطابق (لا يوجد تعارض)'}",
               f"- **الصلاحية الكاملة للإدارة:** {'جاهز' if final.get('checks', {}).get('readyForFullAdmin') else 'غير مكتمل'}",
+              f"- **جاهزية SUPER_ADMIN الكاملة (`active === true` + `SUPER_ADMIN` + Claim):** {'جاهز' if final.get('checks', {}).get('isSuperAdminReady') else 'غير مكتمل'}",
           ]
           if not final.get("checks", {}).get("readyForFullAdmin"):
               lines.extend([

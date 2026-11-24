@@ -899,6 +899,27 @@ test('adminCliCore rejects missing user, unverified email, disabled Auth user, m
   assert.equal(invalidRoleState.adminsDoc.roleValid, false);
   assert.equal(invalidRoleState.checks.hasActiveAdminDoc, false);
   assert.equal(invalidRoleState.checks.readyForFullAdmin, false);
+  assert.equal(invalidRoleState.checks.isSuperAdminReady, false);
+
+  // Claim vs /admins/{uid} role conflict -> hasClaimDocConflict=true, isSuperAdminReady=false
+  authUsers.get('uid_partial').customClaims = { abkRole: 'ADMIN' };
+  adminsMap.set('uid_partial', {
+    uid: 'uid_partial',
+    email: 'partial@abk.edu',
+    role: 'SUPER_ADMIN',
+    active: true,
+  });
+  const conflictState = await verifyAdminAccountState({ auth, db, config, email: 'partial@abk.edu' });
+  assert.equal(conflictState.checks.hasClaimDocConflict, true);
+  assert.equal(conflictState.checks.isSuperAdminReady, false);
+  assert.equal(conflictState.adminsDoc.uidMatchesDoc, true);
+  assert.equal(conflictState.adminsDoc.emailMatchesDoc, true);
+
+  // Clean SUPER_ADMIN match -> hasClaimDocConflict=false, isSuperAdminReady=true
+  authUsers.get('uid_partial').customClaims = { abkRole: 'SUPER_ADMIN' };
+  const cleanSuperState = await verifyAdminAccountState({ auth, db, config, email: 'partial@abk.edu' });
+  assert.equal(cleanSuperState.checks.hasClaimDocConflict, false);
+  assert.equal(cleanSuperState.checks.isSuperAdminReady, true);
 });
 
 test('Portal API rejects non-SUPER_ADMIN self-upgrade and blocks removing the sole remaining SUPER_ADMIN doc', async () => {

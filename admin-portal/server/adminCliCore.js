@@ -95,6 +95,24 @@ export async function verifyAdminAccountState({ auth, db, config, email = '', ui
     Boolean(hasActiveAdminDoc && (docRole === 'SUPER_ADMIN' || docRole === 'ADMIN')) &&
     !userRecord.disabled &&
     !userProfileBlocked;
+  const hasClaimDocConflict =
+    (Boolean(rawClaimRole) && Boolean(rawDocRole) && rawClaimRole !== rawDocRole) ||
+    (isAdminDocDisabled && Boolean(claimRole)) ||
+    (hasStaffClaim !== hasActiveAdminDoc);
+  const isSuperAdminReady =
+    !isAdminDocDisabled &&
+    claimRole === 'SUPER_ADMIN' &&
+    docRole === 'SUPER_ADMIN' &&
+    Boolean(adminDoc && adminDoc.active === true) &&
+    !userRecord.disabled &&
+    Boolean(userRecord.emailVerified) &&
+    !userProfileBlocked;
+  const uidMatchesDoc = Boolean(adminDoc && String(adminDoc.uid || '').trim() === targetUid);
+  const emailMatchesDoc = Boolean(
+    adminDoc &&
+      String(adminDoc.email || '').trim().toLowerCase() ===
+        String(userRecord.email || '').trim().toLowerCase()
+  );
 
   return {
     projectId: config.projectId,
@@ -113,9 +131,19 @@ export async function verifyAdminAccountState({ auth, db, config, email = '', ui
           active: adminDoc.active === true,
           role: rawDocRole,
           roleValid: Boolean(validDocRole),
+          uidMatchesDoc,
+          emailMatchesDoc,
           grantedBy: adminDoc.grantedBy || null,
         }
-      : { exists: false, active: false, role: null, roleValid: false, grantedBy: null },
+      : {
+          exists: false,
+          active: false,
+          role: null,
+          roleValid: false,
+          uidMatchesDoc: false,
+          emailMatchesDoc: false,
+          grantedBy: null,
+        },
     userProfile: userDoc
       ? {
           exists: true,
@@ -130,9 +158,11 @@ export async function verifyAdminAccountState({ auth, db, config, email = '', ui
     checks: {
       hasStaffClaim,
       hasActiveAdminDoc,
+      hasClaimDocConflict,
       readyForFirestore,
       readyForStorage,
       readyForFullAdmin,
+      isSuperAdminReady,
     },
   };
 }

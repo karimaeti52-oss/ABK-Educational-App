@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   onAuthStateChanged,
   reauthenticateWithPopup,
@@ -8,7 +8,7 @@ import {
 } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import { AlertCircle, CheckCircle2, Copy, Lock, LogIn, RefreshCw, ShieldAlert, ShieldCheck } from 'lucide-react';
-import { ApiError, checkBackendHealth, fetchBackendSession } from './api';
+import { checkBackendHealth, fetchBackendSession } from './api';
 import { AdminLayout } from './components/Layout';
 import {
   firebaseAuth,
@@ -66,7 +66,12 @@ import type {
   UnitItem,
   UserProfile,
 } from './types';
-import { resolveFrontendStaffRole } from './utils/staffRole';
+import {
+  createAuthRequestGuard,
+  formatGooglePopupErrorMessage,
+  resolveAdminPortalSession,
+  type ClientAdminAccessDiagnosis,
+} from './utils/staffRole';
 
 const IDLE_TIMEOUT_SECONDS = 30 * 60;
 
@@ -95,6 +100,8 @@ export default function App() {
   const [staff, setStaff] = useState<StaffSession | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [authDiagnosis, setAuthDiagnosis] = useState<ClientAdminAccessDiagnosis | null>(null);
+  const authGuardRef = useRef(createAuthRequestGuard());
 
   const [activeSection, setActiveSection] = useState<NavSectionId>('dashboard');
   const [store, setStore] = useState<CmsStore>(EMPTY_STORE);
@@ -112,98 +119,91 @@ export default function App() {
     return () => window.clearTimeout(t);
   }, [toast]);
 
-  const resolveStaffSession = useCallback(async (user: User): Promise<StaffSession | null> => {
-    const backendUp = await checkBackendHealth();
+  const resolveStaffSession = useCallback(
+    async (
+      user: User,
+      forceRefreshToken = false
+    ): Promise<{ session: StaffSession | null; diagnosis: ClientAdminAccessDiagnosis | null }> => {
+      return resolveAdminPortalSession({
+        user,
+        forceRefreshToken,
+        checkBackendHealth,
+        fetchBackendSession,
+        readIdTokenResult: (forceRefresh) => user.getIdTokenResult(forceRefresh),
+        readOwnAdminDoc: (targetUid) => getDoc(doc(firestoreDb, 'admins', targetUid)),
+      });
+    },
+    []
+  );
 
-    if (backendUp) {
-      try {
-        const session = await fetchBackendSession();
-        return {
-          ...session,
-          backendOnline: true,
-        };
-      } catch (err) {
-        if (err instanceof ApiError && err.status === 403) {
-          throw new Error(err.message);
-        }
-        // Fall through to Firestore/claims check only if backend unavailable
-      }
-    }
-
-    // Fallback when running static frontend without Node server:
-    // Verify Firebase Custom Claim (abkRole only) + Firestore /admins/{uid} (active === true & valid role)
-    const tokenResult = await user.getIdTokenResult();
-
-    let adminDoc: Partial<AdminEntry> | null = null;
-    try {
-      const snap = await getDoc(doc(firestoreDb, 'admins', user.uid));
-      if (snap.exists()) {
-        const rawData = snap.data() as Partial<AdminEntry>;
-        if (rawData.active === false) {
-          throw new Error('تم تعطيل صلاحية هذا الحساب الإداري.');
-        }
-        adminDoc = rawData;
-      }
-    } catch (docErr) {
-      if (docErr instanceof Error && docErr.message.includes('تعطيل')) {
-        throw docErr;
-      }
-      // Fall back to verified abkRole custom claim if /admins/{uid} read fails temporarily
-    }
-
-    const resolved = resolveFrontendStaffRole({
-      claims: tokenResult.claims as Record<string, unknown>,
-      adminDoc,
-    });
-
-    if (!resolved) {
-      return null;
-    }
-
-    return {
-      uid: user.uid,
-      email: user.email || '',
-      name: user.displayName || user.email || 'مشرف مداد',
-      role: resolved.role,
-      permissions: resolved.permissions,
-      teacherId: resolved.teacherId,
-      authTime: Math.floor(Date.now() / 1000),
-      mfaVerified: Boolean((tokenResult.claims.firebase as { sign_in_second_factor?: unknown } | undefined)?.sign_in_second_factor),
-      backendOnline: false,
-    };
-  }, []);
-
-  useEffect(() => {
-    const unsub = onAuthStateChanged(firebaseAuth, async (user) => {
-      setFirebaseUser(user);
-      setAuthError(null);
-      if (!user) {
-        setStaff(null);
-        setAuthReady(true);
+  const applyUserSessionEvaluation = useCallback(
+    async (
+      user: User,
+      requestId: number,
+      forceRefreshToken: boolean,
+      toastOnSuccess?: string
+    ) => {
+      if (!authGuardRef.current.isCurrent(requestId, user.uid)) {
         return;
       }
       setAuthLoading(true);
       try {
-        const resolved = await resolveStaffSession(user);
-        if (!resolved) {
+        const { session, diagnosis } = await resolveStaffSession(user, forceRefreshToken);
+        if (!authGuardRef.current.isCurrent(requestId, user.uid)) {
+          return;
+        }
+        if (!session) {
           setStaff(null);
+          setAuthDiagnosis(diagnosis);
           setAuthError(
-            `الحساب (${user.email}) غير مخوّل للدخول إلى لوحة الإدارة. يجب منحه صلاحية إدارية من المدير العام.`
+            diagnosis?.primaryMessage ||
+              `الحساب (${user.email}) غير مخوّل للدخول إلى لوحة الإدارة. يجب منحه صلاحية إدارية من المدير العام.`
           );
         } else {
-          setStaff(resolved);
+          setStaff(session);
+          setAuthDiagnosis(null);
+          setAuthError(null);
           setIdleSecondsLeft(IDLE_TIMEOUT_SECONDS);
+          if (toastOnSuccess) {
+            showToast(toastOnSuccess);
+          }
         }
       } catch (err) {
+        if (!authGuardRef.current.isCurrent(requestId, user.uid)) {
+          return;
+        }
         setStaff(null);
+        setAuthDiagnosis(null);
         setAuthError(err instanceof Error ? err.message : 'تعذر التحقق من صلاحيات الحساب.');
       } finally {
+        if (authGuardRef.current.isCurrent(requestId, user.uid)) {
+          setAuthLoading(false);
+          setAuthReady(true);
+        }
+      }
+    },
+    [resolveStaffSession, showToast]
+  );
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(firebaseAuth, (user) => {
+      const requestId = authGuardRef.current.begin(user?.uid ?? null);
+      setFirebaseUser(user);
+      setAuthError(null);
+      setAuthDiagnosis(null);
+      if (!user) {
+        setStaff(null);
         setAuthLoading(false);
         setAuthReady(true);
+        return;
       }
+      void applyUserSessionEvaluation(user, requestId, false);
     });
-    return () => unsub();
-  }, [resolveStaffSession]);
+    return () => {
+      unsub();
+      authGuardRef.current.invalidate();
+    };
+  }, [applyUserSessionEvaluation]);
 
   // Live Firestore subscriptions while verified staff is signed in
   useEffect(() => {
@@ -276,9 +276,13 @@ export default function App() {
   }, [staff]);
 
   const handleSignOut = useCallback(async () => {
-    await signOut(firebaseAuth);
+    authGuardRef.current.invalidate();
     setStaff(null);
+    setAuthError(null);
+    setAuthDiagnosis(null);
+    setAuthLoading(false);
     setActiveSection('dashboard');
+    await signOut(firebaseAuth);
   }, []);
 
   // Session idle timeout monitor
@@ -305,28 +309,51 @@ export default function App() {
   }, [staff, handleSignOut]);
 
   async function handleGoogleLogin() {
+    authGuardRef.current.invalidate();
     setAuthError(null);
+    setAuthDiagnosis(null);
     setAuthLoading(true);
+    const previousUid = firebaseAuth.currentUser?.uid ?? null;
     try {
-      await signInWithPopup(firebaseAuth, googleProvider);
+      const credential = await signInWithPopup(firebaseAuth, googleProvider);
+      if (credential?.user && previousUid && credential.user.uid === previousUid) {
+        const requestId = authGuardRef.current.begin(credential.user.uid);
+        await applyUserSessionEvaluation(credential.user, requestId, true);
+      }
     } catch (err) {
-      setAuthError(
-        err instanceof Error ? err.message : 'فشل تسجيل الدخول بحساب Google. تأكد من السماح بالنوافذ المنبثقة.'
-      );
+      authGuardRef.current.invalidate();
+      setAuthDiagnosis(null);
+      setAuthError(formatGooglePopupErrorMessage(err));
       setAuthLoading(false);
     }
   }
 
   async function handleReauthConfirm() {
-    if (!firebaseAuth.currentUser) return;
+    const current = firebaseAuth.currentUser;
+    if (!current) return;
+    const requestId = authGuardRef.current.begin(current.uid);
     try {
-      await reauthenticateWithPopup(firebaseAuth.currentUser, googleProvider);
-      await firebaseAuth.currentUser.getIdToken(true);
-      const updated = await resolveStaffSession(firebaseAuth.currentUser);
-      if (updated) setStaff(updated);
-      setShowReauthModal(false);
-      showToast('تم إعادة توثيق الجلسة وتحديث التوكن بنجاح');
+      await reauthenticateWithPopup(current, googleProvider);
+      const { session, diagnosis } = await resolveStaffSession(current, true);
+      if (!authGuardRef.current.isCurrent(requestId, current.uid)) {
+        return;
+      }
+      if (session) {
+        setStaff(session);
+        setAuthDiagnosis(null);
+        setAuthError(null);
+        setShowReauthModal(false);
+        showToast('تم إعادة توثيق الجلسة وتحديث التوكن بنجاح');
+      } else {
+        setStaff(null);
+        setAuthDiagnosis(diagnosis);
+        setAuthError(diagnosis?.primaryMessage || 'تم رفض الجلسة بعد إعادة التوثيق.');
+        setShowReauthModal(false);
+      }
     } catch (err) {
+      if (!authGuardRef.current.isCurrent(requestId, current.uid)) {
+        return;
+      }
       showToast(err instanceof Error ? err.message : 'فشلت إعادة التوثيق', true);
     }
   }
@@ -334,27 +361,15 @@ export default function App() {
   async function handleRefreshAuthCheck() {
     const current = firebaseAuth.currentUser;
     if (!current) return;
+    const requestId = authGuardRef.current.begin(current.uid);
     setAuthError(null);
-    setAuthLoading(true);
-    try {
-      await current.getIdToken(true);
-      const resolved = await resolveStaffSession(current);
-      if (!resolved) {
-        setStaff(null);
-        setAuthError(
-          `الحساب (${current.email}) غير مخوّل للدخول إلى لوحة الإدارة. تأكد من منح Custom Claim (abkRole) أو إضافة وثيقة فعالة في /admins/${current.uid}.`
-        );
-      } else {
-        setStaff(resolved);
-        setIdleSecondsLeft(IDLE_TIMEOUT_SECONDS);
-        showToast('تم التحقق من الصلاحيات وتحديث الجلسة بنجاح');
-      }
-    } catch (err) {
-      setStaff(null);
-      setAuthError(err instanceof Error ? err.message : 'تعذر إعادة فحص صلاحيات الحساب.');
-    } finally {
-      setAuthLoading(false);
-    }
+    setAuthDiagnosis(null);
+    await applyUserSessionEvaluation(
+      current,
+      requestId,
+      true,
+      'تم التحقق من الصلاحيات وتحديث الجلسة بنجاح'
+    );
   }
 
   async function handleCopyUid(uid: string) {
@@ -405,9 +420,9 @@ export default function App() {
                 <ShieldAlert className="h-4 w-4 text-rose-600" />
                 تعذر الدخول
               </div>
-              <p>{authError}</p>
+              <p className="font-semibold leading-relaxed">{authError}</p>
               {firebaseUser && (
-                <div className="mt-2.5 space-y-2 rounded-xl border border-rose-200 bg-white/80 p-2.5">
+                <div className="mt-2.5 space-y-2 rounded-xl border border-rose-200 bg-white/85 p-2.5">
                   <div className="flex items-center justify-between gap-2">
                     <p className="select-all truncate font-mono text-[11px] text-rose-900" dir="ltr">
                       UID: {firebaseUser.uid}
@@ -421,6 +436,53 @@ export default function App() {
                       نسخ UID
                     </button>
                   </div>
+
+                  {authDiagnosis && (
+                    <div className="space-y-1.5 rounded-lg border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-700">
+                      <p className="font-bold text-slate-900">
+                        تشخيص الصلاحية (Firebase Client SDK — لحسابك فقط):
+                      </p>
+                      <div className="space-y-1">
+                        <p>
+                          <span className="font-semibold">Custom Claim (abkRole): </span>
+                          {authDiagnosis.claimCheck.validRole
+                            ? `صالح (${authDiagnosis.claimCheck.validRole})`
+                            : authDiagnosis.claimCheck.rawRole
+                              ? `غير صالح (${authDiagnosis.claimCheck.rawRole})`
+                              : authDiagnosis.adminDocCheck.status === 'SKIPPED_BACKEND_ERROR'
+                                ? 'لم يُعتمد (توقف التحقق عند الخادم)'
+                                : 'غير مضبوط'}
+                        </p>
+                        <p>
+                          <span className="font-semibold">وثيقة admins/{'{uid}'}: </span>
+                          {authDiagnosis.adminDocCheck.status === 'NOT_FOUND'
+                            ? 'الوثيقة غير موجودة'
+                            : authDiagnosis.adminDocCheck.status === 'ACTIVE_NOT_TRUE'
+                              ? `active ليست true (${String(authDiagnosis.adminDocCheck.activeValue ?? 'مفقود')})`
+                              : authDiagnosis.adminDocCheck.status === 'INVALID_ROLE'
+                                ? `الدور غير صالح (${authDiagnosis.adminDocCheck.rawRole || 'مفقود'})`
+                                : authDiagnosis.adminDocCheck.status === 'READ_ERROR'
+                                  ? `خطأ قراءة (${authDiagnosis.adminDocCheck.errorKind} / ${authDiagnosis.adminDocCheck.errorCode})`
+                                  : authDiagnosis.adminDocCheck.status === 'SKIPPED_BACKEND_ERROR'
+                                    ? 'لم يُستخدم لتجاوز قرار الخادم'
+                                    : `نشطة (${authDiagnosis.adminDocCheck.validRole})`}
+                        </p>
+                        <p>
+                          <span className="font-semibold">توافق Claim مع Firestore: </span>
+                          {authDiagnosis.conflictCheck.hasConflict ? 'يوجد تعارض' : 'لا يوجد تعارض'}
+                        </p>
+                      </div>
+                      <ul className="list-disc space-y-0.5 pr-4 text-[10.5px] text-slate-600">
+                        {authDiagnosis.findings.map((line, idx) => (
+                          <li key={idx}>{line}</li>
+                        ))}
+                      </ul>
+                      <p className="text-[10px] text-slate-500">
+                        تم الفحص عبر Client SDK وفق قواعد Firestore الحالية على حسابك فقط دون قراءة قائمة المسؤولين أو بيانات أي طلاب.
+                      </p>
+                    </div>
+                  )}
+
                   <button
                     type="button"
                     onClick={() => void handleRefreshAuthCheck()}

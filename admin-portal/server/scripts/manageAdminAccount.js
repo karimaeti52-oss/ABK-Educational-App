@@ -74,7 +74,9 @@ async function main() {
     console.log(`عدد المسؤولين الفعالين في /admins: ${report.counts.activeAdminCount} (SUPER_ADMIN: ${report.counts.activeSuperAdminCount})`);
     console.log(`جاهزية Firestore Rules: ${report.checks.readyForFirestore ? 'جاهز' : 'غير جاهز'}`);
     console.log(`جاهزية Storage Rules: ${report.checks.readyForStorage ? 'جاهز' : 'غير جاهز (يتطلب abkRole Claim)'}`);
+    console.log(`تعارض Claims و/admins: ${report.checks.hasClaimDocConflict ? 'يوجد تعارض' : 'لا يوجد تعارض'}`);
     console.log(`جاهزية الإدارة الكاملة: ${report.checks.readyForFullAdmin ? 'جاهز' : 'غير مكتمل'}`);
+    console.log(`جاهزية SUPER_ADMIN الكاملة: ${report.checks.isSuperAdminReady ? 'جاهز' : 'غير مكتمل'}`);
     if (args.mode === 'grant') {
       console.log('تنبيه: يجب تسجيل الخروج وإعادة تسجيل الدخول (أو تحديث ID Token) لتفعيل Custom Claims الجديدة في الجلسة.');
     }
