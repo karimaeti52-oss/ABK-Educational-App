@@ -392,17 +392,29 @@ jobs:
             exit 1
           fi
 
-          if ! "$AAPT2_BIN" dump resources "$PERMANENT_ASSET_NAME" | python3 - <<'PY'
-          import re, sys
-          dump = sys.stdin.read()
-          m = re.search(r"resource\s+0x[0-9a-fA-F]+\s+string/default_web_client_id\b(.*?)(?=\n\s*resource\s+0x|\Z)", dump, re.S)
+          RES_DUMP_FILE="${RUNNER_TEMP}/apk-resources.txt"
+          if ! "$AAPT2_BIN" dump resources "$PERMANENT_ASSET_NAME" > "$RES_DUMP_FILE"; then
+            rm -f "$RES_DUMP_FILE"
+            echo "::error::Failed to dump resources from Release APK ($PERMANENT_ASSET_NAME)."
+            exit 1
+          fi
+          if ! python3 - "$RES_DUMP_FILE" <<'PY'
+          import pathlib, re, sys
+          dump = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+          m = re.search(
+              r"resource\s+0x[0-9a-fA-F]+\s+(?:[A-Za-z0-9_.]+:)?string/default_web_client_id\b(.*?)(?=\n\s*resource\s+0x|\Z)",
+              dump,
+              re.S,
+          )
           if not m or ".apps.googleusercontent.com" not in m.group(1):
               sys.exit(1)
           PY
           then
+            rm -f "$RES_DUMP_FILE"
             echo "::error::string/default_web_client_id was stripped or invalid inside final Release APK ($PERMANENT_ASSET_NAME)."
             exit 1
           fi
+          rm -f "$RES_DUMP_FILE"
           echo "Verified string/default_web_client_id is preserved inside final Release APK ($PERMANENT_ASSET_NAME)."
 
           echo "permanent_asset=${PERMANENT_ASSET_NAME}" >> "$GITHUB_OUTPUT"

@@ -2,7 +2,7 @@
 FIREBASE_PROJECT_ID="gen-lang-client-0343268738"
 FIREBASE_DATABASE_ID="ai-studio-android-abk-452af8d1-cf14-40e7-aead-48a40e7f239d"
 SUPER_ADMIN_EMAIL=""
-ALLOWED_ORIGINS="http://localhost:5173,http://localhost:4173,https://gen-lang-client-0343268738.web.app"
+ALLOWED_ORIGINS="http://localhost:5173,http://localhost:4173,https://gen-lang-client-0343268738.web.app,https://abk-educational-app.pages.dev,https://abk-admin-portal.pages.dev"
 READ_ACCESS_MODE="authenticated"
 DEFAULT_R2_LIMIT_GB="10"
 DEFAULT_TOTAL_LIMIT_GB="10"

@@ -867,3 +867,68 @@ test('Worker auth enforces unified strict /admins/{uid} policy (active === true 
   }
 });
 
+test('Worker CORS permits https://abk-educational-app.pages.dev when configured in ALLOWED_ORIGINS', async () => {
+  clearJwksCacheForTests();
+  clearLimitsCacheForTests();
+  const { privateKey, publicJwk } = await generateTestKeyPair();
+  const bucket = createMockR2Bucket();
+  const worker = createWorkerHandler({
+    fetchImpl: createMockFetch({
+      publicJwk,
+      firestoreDocs: {
+        'documents/admins/admin_pages': {
+          active: { booleanValue: true },
+          role: { stringValue: 'SUPER_ADMIN' },
+        },
+      },
+    }),
+  });
+  const env = {
+    ...BASE_ENV,
+    MEDIA_BUCKET: bucket,
+    ALLOWED_ORIGINS:
+      'https://gen-lang-client-0343268738.web.app,https://abk-educational-app.pages.dev,https://abk-admin-portal.pages.dev',
+  };
+  const token = await signTestJwt(privateKey, makeClaims('admin_pages', 'pages@midad.test'));
+
+  const preflight = await worker.fetch(
+    new Request('https://r2.midad.edu/quota', {
+      method: 'OPTIONS',
+      headers: { Origin: 'https://abk-educational-app.pages.dev' },
+    }),
+    env
+  );
+  assert.equal(preflight.status, 204);
+  assert.equal(
+    preflight.headers.get('Access-Control-Allow-Origin'),
+    'https://abk-educational-app.pages.dev'
+  );
+
+  const allowedRes = await worker.fetch(
+    new Request('https://r2.midad.edu/quota', {
+      headers: {
+        Origin: 'https://abk-educational-app.pages.dev',
+        Authorization: `Bearer ${token}`,
+      },
+    }),
+    env
+  );
+  assert.equal(allowedRes.status, 200);
+  assert.equal(
+    allowedRes.headers.get('Access-Control-Allow-Origin'),
+    'https://abk-educational-app.pages.dev'
+  );
+
+  const blockedRes = await worker.fetch(
+    new Request('https://r2.midad.edu/quota', {
+      headers: {
+        Origin: 'https://untrusted.pages.dev',
+        Authorization: `Bearer ${token}`,
+      },
+    }),
+    env
+  );
+  assert.equal(blockedRes.headers.get('Access-Control-Allow-Origin'), null);
+});
+
+

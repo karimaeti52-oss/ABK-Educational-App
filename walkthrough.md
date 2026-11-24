@@ -43,7 +43,14 @@
   - التحقق من رفض القراءة للزوار غير المسجلين (`unauthenticatedContext`) لكل المجموعات بما فيها `appConfig/android_release`.
   - التحقق من رفض كتابة الطلاب العاديين أو الحسابات المحظورة (`BANNED`) أو المشرفين المزيفين (`email_verified = false`) في `appConfig/android_release`.
   - التحقق من رفض الروابط غير المشفرة (`http://...`) أو بصمات `SHA-256` غير الصالحة حتى عند كتابتها من حساب المشرف، وقبول الروابط المشفرة (`https://...`) مع 64 خانة `SHA-256` صالحة فقط.
-- **اختبارات سلامة الروابط والتحديثات (`UrlUtilsTest.kt`, `AppUpdateTest.kt`)**:
+- **حماية `default_web_client_id` وموارد Google Sign-In في نسخ Release (`keep.xml` + `AuthHelper.kt` + `android-apk.yml`)**:
+  - حفظ موارد Firebase الأساسية عبر `app/src/main/res/raw/keep.xml` لمنع `isShrinkResources = true` من حذف `string/default_web_client_id`.
+  - توسيع `resolveWebClientId` في `AuthHelper.kt` للتحقق من `context.packageName` و`appContext.packageName` وبنية `.apps.googleusercontent.com`.
+  - فحص APK النهائي عبر `aapt2 dump resources` إلى ملف مؤقت لتلافي تعارض `stdin` مع `python3` والتحقق من بقاء `default_web_client_id`.
+- **توحيد سياسة CORS والصلاحيات (Worker + Admin Portal + Rules)**:
+  - إضافة النطاق الفعلي للوحة الإدارة `https://abk-educational-app.pages.dev` إلى `ALLOWED_ORIGINS` في `cloudflare-worker/wrangler.toml` وملفات `.dev.vars.example` و`admin-portal/.env.example`.
+  - فرض `active === true` ودور صالح ضمن `[SUPER_ADMIN, ADMIN, CONTENT_MANAGER, TEACHER, VIEWER]` عبر `firestore.rules` و`staffRole.ts` و`cloudflare-worker/src/auth.js` و`StudentRepository.kt`.
+- **اختبارات سلامة الروابط والتحديثات (`UrlUtilsTest.kt`, `AppUpdateTest.kt`, `AuthHelperTest.kt`, `VideoPlayerPlaybackTest.kt`)**:
   - إثبات رفض بروتوكولات `http://`, `javascript:`, `intent://`, `file://`, `data:` وقبول `https://` فقط في `UrlUtils.isSafeHttpsUrl`.
   - إثبات اكتشاف ورفض ملفات APK المعدّلة أو التالفة عبر `AppUpdateManager.verifyFileSha256` مقارنةً بالملف السليم.
 
@@ -78,21 +85,17 @@
 
 ### التقييم الصادق للسعة الفعلية على الخطة المجانية:
 - **قاعدة طلاب إجمالية 10,000 مستخدم مسجل (بنسبة نشاط يومي ~20% أي قرابة 2,000 طالب نشط يومياً):**
-  - بفضل الكاش المحلي وتقليل كتابة التقدم (بمتوسط ~25 قراءة فعلية من السحابة و ~10 كتابات يومياً للطالب النشط)، يبقى الاستهلاك في حدود `50,000` قراءة و `20,000` كتابة يومياً وهو متوافق مع خطة Spark المجانية.
+  - مع الكاش المحلي واستقرار المستندات، قد تكفي الحصة عند قلة المستندات المتغيرة، غير أن فتح مستمعين مباشرين (`snapshots`) لـ **11 مجموعة محتوى** بالإضافة إلى مستمعي حساب الطالب يرفع عدد القراءات عند التثبيت الجديد أو انتهاء صلاحية جلسة المستمع أو تعديل المحتوى.
 - **ذروة 10,000 طالب نشط ومتزامن في نفس اليوم الواحد (موسم امتحانات مثلاً):**
-  - إذا فتح 10,000 طالب التطبيق وتفاعلوا جميعاً في يوم واحد (بمتوسط 25 قراءة و 10 كتابات لكل طالب = ~250,000 قراءة و ~100,000 كتابة)، سيتجاوز الاستهلاك الحدود اليومية الثابتة لخطة Spark المجانية، وسيلزم حينها الترقية إلى خطة **Blaze (الدفع حسب الاستخدام)**.
+  - إذا فتح 10,000 طالب التطبيق وتفاعلوا جميعاً في يوم واحد، سيتجاوز الاستهلاك الحدود اليومية الثابتة لخطة Spark المجانية (`50,000 قراءة` / `20,000 كتابة`)، وسيلزم حينها الترقية إلى خطة **Blaze (الدفع حسب الاستخدام)**.
 
 ---
 
 ## ملخص نتائج الاختبارات والتحقق المنفّذة
 
 - **بناء Android (`compile_applet`)**: نجاح كامل (`Build succeeded - the applet is compiled`).
-- **اختبارات Android (`gradle :app:testDebugUnitTest`)**: نجاح جميع الاختبارات الـ **30** (`BUILD SUCCESSFUL`) بما فيها:
-  - `ExampleRobolectricTest` (التحقق من `app_name = "مداد التعليمية"`).
-  - `MainActivityStartupTest` (التحقق من إقلاع `MainActivity` سواءً مع تهيئة Firebase أو بدونها).
-  - `AbkUiScreensRobolectricTest` (التحقق من شاشة الدخول، الرئيسية بهوية مداد، الحفاظ على الهوية المخصصة، شاشة الحساب والوضع الليلي، الاختبارات والأسئلة، والـ YouTube Shorts داخل التطبيق).
-  - `AppUpdateTest` (التحقق من شروط `AppReleaseManifest`, بصمة `SHA-256`, رفض APK معدل، وحالات `UpdateDialog`).
-  - `PerformanceBenchmarkTest` (تصفية وترقيم 10,000 درس دون بطء + سرعة حساب `SHA-256` + ميزانية Spark).
-  - `UrlUtilsTest` (استخراج معرفات YouTube وفحص روابط `https://` فقط).
-- **اختبارات قواعد Firestore على المحاكي (`firestore.test.js`)**: نجاح **9 / 9** اختبارات شاملة الصلاحيات ومنع الاختراق والتحقق من `appConfig/android_release`.
+- **اختبارات Android (`gradle :app:testDebugUnitTest --no-daemon`)**: تشغيل جميع اختبارات الوحدة وRobolectric (`ExampleRobolectricTest`, `MainActivityStartupTest`, `AbkUiScreensRobolectricTest`, `AuthHelperTest`, `AppUpdateTest`, `VideoPlayerPlaybackTest`, `PerformanceBenchmarkTest`, `UrlUtilsTest`).
+- **اختبارات Cloudflare Worker (`cloudflare-worker/tests/worker.test.js`)**: التحقق من توقيع JWT، حدود R2/B2، منع Path Traversal، سياسة `/admins/{uid}` الصارمة، وسماح CORS لنطاق `https://abk-educational-app.pages.dev`.
+- **اختبارات لوحة الإدارة (`admin-portal`)**: التحقق من اختبارات الخادم والـ RBAC (`staffRole.test.ts`) وفحص الأنواع `tsc --noEmit` وبناء `vite build`.
+
 
