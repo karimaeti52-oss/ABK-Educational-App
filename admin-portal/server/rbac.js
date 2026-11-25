@@ -53,6 +53,18 @@ export const ROLE_DEFAULT_PERMISSIONS = {
   VIEWER: [PERMISSIONS.VIEW_AUDIT],
 };
 
+const INVISIBLE_FORMAT_CHARS_RE = /[\u00AD\u061C\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]/g;
+
+export function normalizeIdentifierValue(value) {
+  if (typeof value !== 'string') return '';
+  return value.replace(INVISIBLE_FORMAT_CHARS_RE, '').trim();
+}
+
+export function normalizeStaffRole(value) {
+  const cleaned = normalizeIdentifierValue(value);
+  return STAFF_ROLES.includes(cleaned) ? cleaned : null;
+}
+
 export function resolveEffectiveRole(decodedToken, adminDoc, superAdminEmail = '') {
   const email = (decodedToken?.email || '').trim().toLowerCase();
   const emailVerified = Boolean(decodedToken?.email_verified);
@@ -66,14 +78,17 @@ export function resolveEffectiveRole(decodedToken, adminDoc, superAdminEmail = '
     return 'STUDENT';
   }
 
-  const claimRole = decodedToken?.abkRole;
-  if (typeof claimRole === 'string' && STAFF_ROLES.includes(claimRole)) {
+  const claimRole = normalizeStaffRole(decodedToken?.abkRole);
+  if (claimRole) {
     return claimRole;
   }
 
   if (adminDoc && adminDoc.active === true) {
-    const docRole = adminDoc.role;
-    if (typeof docRole === 'string' && STAFF_ROLES.includes(docRole)) {
+    const tokenUid = normalizeIdentifierValue(decodedToken?.uid);
+    const docUid = normalizeIdentifierValue(adminDoc.uid);
+    const uidValid = tokenUid ? docUid === tokenUid : !adminDoc.uid || docUid.length > 0;
+    const docRole = normalizeStaffRole(adminDoc.role);
+    if (uidValid && docRole) {
       return docRole;
     }
   }

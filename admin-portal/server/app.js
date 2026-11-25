@@ -5,6 +5,8 @@ import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import {
   hasPermission,
   isRecentAuth,
+  normalizeIdentifierValue,
+  normalizeStaffRole,
   PERMISSIONS,
   resolveEffectivePermissions,
   resolveEffectiveRole,
@@ -232,18 +234,19 @@ export function createAdminApp({ config, firebaseServices }) {
     const adminEntries = new Map();
     for (const d of adminsSnap.docs || []) {
       const data = d.data() || {};
-      const validRole = typeof data.role === 'string' && STAFF_ROLES.includes(data.role) ? data.role : null;
+      const validRole = normalizeStaffRole(data.role);
+      const docUid = normalizeIdentifierValue(data.uid);
+      const uidValid = docUid === d.id;
       adminEntries.set(d.id, {
         uid: d.id,
         role: validRole,
-        active: data.active === true && Boolean(validRole),
+        active: data.active === true && uidValid && Boolean(validRole),
         isDisabled: data.active === false,
       });
     }
 
     const existingDoc = adminEntries.get(targetUid) || null;
-    const rawClaimRole = targetUser?.customClaims?.abkRole;
-    const validClaimRole = typeof rawClaimRole === 'string' && STAFF_ROLES.includes(rawClaimRole) ? rawClaimRole : null;
+    const validClaimRole = normalizeStaffRole(targetUser?.customClaims?.abkRole);
     const currentEffectiveRole =
       (existingDoc && existingDoc.active ? existingDoc.role : null) ||
       (existingDoc?.isDisabled ? null : validClaimRole) ||
@@ -486,14 +489,10 @@ export function createAdminApp({ config, firebaseServices }) {
     for (const u of authUsers) {
       const profile = profileMap.get(u.uid) || null;
       const adminDoc = adminMap.get(u.uid) || null;
-      const claimsRole =
-        typeof u.customClaims?.abkRole === 'string' && STAFF_ROLES.includes(u.customClaims.abkRole)
-          ? u.customClaims.abkRole
-          : null;
+      const claimsRole = normalizeStaffRole(u.customClaims?.abkRole);
+      const docUidValid = adminDoc && normalizeIdentifierValue(adminDoc.uid) === u.uid;
       const docRole =
-        adminDoc && adminDoc.active === true && typeof adminDoc.role === 'string' && STAFF_ROLES.includes(adminDoc.role)
-          ? adminDoc.role
-          : null;
+        adminDoc && adminDoc.active === true && docUidValid ? normalizeStaffRole(adminDoc.role) : null;
       const effectiveRole =
         (adminDoc && adminDoc.active === false ? null : claimsRole) ||
         docRole ||

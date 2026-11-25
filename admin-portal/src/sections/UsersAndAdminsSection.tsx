@@ -22,7 +22,10 @@ import {
 } from '../api';
 import { EmptyBox, SectionHeader } from '../components/CommonUi';
 import { recordAudit, type CmsStore } from '../services/firestoreCms';
-import { VALID_STAFF_ROLES } from '../utils/staffRole';
+import {
+  normalizeIdentifierValue,
+  normalizeStaffRole,
+} from '../utils/staffRole';
 import {
   ROLE_LABELS,
   type AuthUserRecord,
@@ -689,18 +692,26 @@ export function AdminsRbacSection({
     () => store.admins.find((a) => a.uid === staff.uid || a.id === staff.uid) || null,
     [store.admins, staff.uid]
   );
+  const normalizedSelfRole = normalizeStaffRole(selfAdminDoc?.role);
+  const selfUidMatches = Boolean(
+    selfAdminDoc &&
+      typeof selfAdminDoc.uid === 'string' &&
+      normalizeIdentifierValue(selfAdminDoc.uid) === staff.uid
+  );
   const selfDocValid = Boolean(
-    selfAdminDoc && selfAdminDoc.active === true && selfAdminDoc.role && VALID_STAFF_ROLES.has(selfAdminDoc.role)
+    selfAdminDoc && selfAdminDoc.active === true && selfUidMatches && normalizedSelfRole
   );
   const activeAdminsCount = useMemo(
     () =>
       store.admins.filter(
-        (a) => a.active === true && (a.role === 'SUPER_ADMIN' || a.role === 'ADMIN')
+        (a) => a.active === true && (normalizeStaffRole(a.role) === 'SUPER_ADMIN' || normalizeStaffRole(a.role) === 'ADMIN')
       ).length,
     [store.admins]
   );
+  const normalizedClaimRole = normalizeStaffRole(claimRole);
   const storageReady = Boolean(
-    claimRole && ['SUPER_ADMIN', 'ADMIN', 'CONTENT_MANAGER', 'TEACHER'].includes(claimRole)
+    normalizedClaimRole &&
+      ['SUPER_ADMIN', 'ADMIN', 'CONTENT_MANAGER', 'TEACHER'].includes(normalizedClaimRole)
   );
 
   async function handleCopySelfUid() {
@@ -826,9 +837,11 @@ export function AdminsRbacSection({
               الحالة:{' '}
               {selfAdminDoc
                 ? selfAdminDoc.active === true
-                  ? selfAdminDoc.role && VALID_STAFF_ROLES.has(selfAdminDoc.role)
-                    ? 'نشطة (active=true)'
-                    : 'دور غير صالح — يلزم تحديد دور معتمد'
+                  ? !selfUidMatches
+                    ? 'معرف UID غير مطابق — يلزم مطابقة الحقل uid مع معرف الحساب'
+                    : normalizedSelfRole
+                      ? 'نشطة (active=true)'
+                      : 'دور غير صالح — يلزم تحديد دور معتمد'
                   : selfAdminDoc.active === false
                     ? 'معطلة (active=false)'
                     : 'ناقصة — حقل active غير مضبوط على true'

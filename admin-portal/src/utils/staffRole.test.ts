@@ -5,6 +5,8 @@ import {
   createAuthRequestGuard,
   diagnoseClientAdminAccess,
   formatGooglePopupErrorMessage,
+  formatRawValueForDiagnostics,
+  normalizeStaffRole,
   resolveAdminPortalSession,
   resolveFrontendStaffRole,
   runClientAdminDiagnostic,
@@ -510,5 +512,102 @@ test('resolveAdminPortalSession enforces backend 403, 401, and 500 errors withou
   assert.equal(staticGranted.session?.backendOnline, false);
   assert.equal(clientDocReadCount, 1);
 });
+
+test('SUPER_ADMIN console bootstrap doc without Custom Claim is accepted, hidden whitespace/Unicode chars are normalized with warning, and UID mismatch is rejected', async () => {
+  // 1. Clean owner bootstrap document with NO Custom Claim (abkRole missing)
+  const cleanOwnerSession = await resolveAdminPortalSession({
+    user: {
+      uid: '5bIqNT2H3pVniVd6ULYkwps55c43',
+      email: 'karimaeti07@gmail.com',
+      displayName: 'Owner',
+    },
+    checkBackendHealth: async () => false,
+    fetchBackendSession: async () => {
+      throw new Error('unused');
+    },
+    readIdTokenResult: async () => ({ claims: {} }),
+    readOwnAdminDoc: async (targetUid) => ({
+      exists: () => true,
+      data: () => ({
+        uid: targetUid,
+        email: 'karimaeti07@gmail.com',
+        role: 'SUPER_ADMIN',
+        active: true,
+        grantedBy: 'FIREBASE_CONSOLE_BOOTSTRAP',
+      }),
+    }),
+  });
+  assert.equal(cleanOwnerSession.session?.role, 'SUPER_ADMIN');
+  assert.equal(cleanOwnerSession.session?.uid, '5bIqNT2H3pVniVd6ULYkwps55c43');
+  assert.equal(cleanOwnerSession.diagnosis?.allowed, true);
+  assert.equal(cleanOwnerSession.diagnosis?.adminDocCheck.status, 'VALID_ACTIVE');
+  assert.deepEqual(cleanOwnerSession.session?.warnings, []);
+
+  // 2. Role pasted from mobile browser with trailing space and RTL/zero-width invisible markers
+  const formattedRoleSession = await resolveAdminPortalSession({
+    user: {
+      uid: '5bIqNT2H3pVniVd6ULYkwps55c43',
+      email: 'karimaeti07@gmail.com',
+    },
+    checkBackendHealth: async () => false,
+    fetchBackendSession: async () => {
+      throw new Error('unused');
+    },
+    readIdTokenResult: async () => ({ claims: {} }),
+    readOwnAdminDoc: async (targetUid) => ({
+      exists: () => true,
+      data: () => ({
+        uid: targetUid,
+        email: 'karimaeti07@gmail.com',
+        role: ' \u200FSUPER\u200B_ADMIN\u00A0 ' as unknown as 'SUPER_ADMIN',
+        active: true,
+        grantedBy: 'FIREBASE_CONSOLE_BOOTSTRAP',
+      }),
+    }),
+  });
+  assert.equal(formattedRoleSession.session?.role, 'SUPER_ADMIN');
+  assert.equal(formattedRoleSession.diagnosis?.allowed, true);
+  assert.equal(formattedRoleSession.diagnosis?.adminDocCheck.hasRoleFormattingArtifacts, true);
+  assert.equal((formattedRoleSession.session?.warnings?.length || 0) > 0, true);
+
+  // 3. UID mismatch or missing UID in /admins/{uid} must be strictly rejected
+  const uidMismatchSession = await resolveAdminPortalSession({
+    user: {
+      uid: '5bIqNT2H3pVniVd6ULYkwps55c43',
+      email: 'karimaeti07@gmail.com',
+    },
+    checkBackendHealth: async () => false,
+    fetchBackendSession: async () => {
+      throw new Error('unused');
+    },
+    readIdTokenResult: async () => ({ claims: {} }),
+    readOwnAdminDoc: async () => ({
+      exists: () => true,
+      data: () => ({
+        uid: 'different_uid_value',
+        email: 'karimaeti07@gmail.com',
+        role: 'SUPER_ADMIN',
+        active: true,
+      }),
+    }),
+  });
+  assert.equal(uidMismatchSession.session, null);
+  assert.equal(uidMismatchSession.diagnosis?.allowed, false);
+  assert.equal(uidMismatchSession.diagnosis?.primaryReasonCode, 'ADMIN_DOC_UID_MISMATCH');
+  assert.equal(uidMismatchSession.diagnosis?.adminDocCheck.status, 'UID_MISMATCH');
+
+  const missingUidResult = resolveFrontendStaffRole({
+    uid: '5bIqNT2H3pVniVd6ULYkwps55c43',
+    claims: {},
+    adminDoc: { role: 'SUPER_ADMIN', active: true },
+  });
+  assert.equal(missingUidResult, null);
+
+  // 4. Invisible/non-ASCII characters in invalid roles are visualized explicitly for diagnostics
+  assert.equal(normalizeStaffRole('SUPER_ADMIN\u200F '), 'SUPER_ADMIN');
+  assert.equal(normalizeStaffRole('STUDENT'), null);
+  assert.equal(formatRawValueForDiagnostics('SUPER_ADMIN\u200F '), 'SUPER_ADMIN[U+200F]·');
+});
+
 
 

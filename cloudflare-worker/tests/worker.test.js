@@ -821,20 +821,44 @@ test('Worker auth enforces unified strict /admins/{uid} policy (active === true 
       publicJwk,
       firestoreDocs: {
         'documents/admins/doc_active_valid': {
+          uid: { stringValue: 'doc_active_valid' },
           active: { booleanValue: true },
           role: { stringValue: 'CONTENT_MANAGER' },
         },
+        'documents/admins/doc_super_whitespace': {
+          uid: { stringValue: 'doc_super_whitespace' },
+          active: { booleanValue: true },
+          role: { stringValue: ' \u200FSUPER_ADMIN ' },
+        },
+        'documents/admins/doc_uid_mismatch': {
+          uid: { stringValue: 'other_uid' },
+          active: { booleanValue: true },
+          role: { stringValue: 'SUPER_ADMIN' },
+        },
+        'documents/admins/doc_missing_uid': {
+          active: { booleanValue: true },
+          role: { stringValue: 'SUPER_ADMIN' },
+        },
+        'documents/admins/doc_viewer': {
+          uid: { stringValue: 'doc_viewer' },
+          active: { booleanValue: true },
+          role: { stringValue: 'VIEWER' },
+        },
         'documents/admins/doc_missing_active': {
+          uid: { stringValue: 'doc_missing_active' },
           role: { stringValue: 'SUPER_ADMIN' },
         },
         'documents/admins/doc_missing_role': {
+          uid: { stringValue: 'doc_missing_role' },
           active: { booleanValue: true },
         },
         'documents/admins/doc_invalid_role': {
+          uid: { stringValue: 'doc_invalid_role' },
           active: { booleanValue: true },
           role: { stringValue: 'STUDENT' },
         },
         'documents/admins/doc_disabled_with_claim': {
+          uid: { stringValue: 'doc_disabled_with_claim' },
           active: { booleanValue: false },
           role: { stringValue: 'SUPER_ADMIN' },
         },
@@ -858,7 +882,26 @@ test('Worker auth enforces unified strict /admins/{uid} policy (active === true 
   );
   assert.equal(okRes.status, 200);
 
-  for (const deniedToken of [missingActiveToken, missingRoleToken, invalidRoleToken, disabledWithClaimToken]) {
+  const superWhitespaceToken = await signTestJwt(privateKey, makeClaims('doc_super_whitespace', 'super@midad.test'));
+  const uidMismatchToken = await signTestJwt(privateKey, makeClaims('doc_uid_mismatch', 'um@midad.test'));
+  const missingUidToken = await signTestJwt(privateKey, makeClaims('doc_missing_uid', 'mu@midad.test'));
+  const viewerToken = await signTestJwt(privateKey, makeClaims('doc_viewer', 'vw@midad.test'));
+
+  const superOkRes = await worker.fetch(
+    new Request('https://r2.midad.edu/quota', { headers: { Authorization: `Bearer ${superWhitespaceToken}` } }),
+    env
+  );
+  assert.equal(superOkRes.status, 200);
+
+  for (const deniedToken of [
+    missingActiveToken,
+    missingRoleToken,
+    invalidRoleToken,
+    disabledWithClaimToken,
+    uidMismatchToken,
+    missingUidToken,
+    viewerToken,
+  ]) {
     const res = await worker.fetch(
       new Request('https://r2.midad.edu/quota', { headers: { Authorization: `Bearer ${deniedToken}` } }),
       env
@@ -877,6 +920,7 @@ test('Worker CORS permits https://abk-educational-app.pages.dev when configured 
       publicJwk,
       firestoreDocs: {
         'documents/admins/admin_pages': {
+          uid: { stringValue: 'admin_pages' },
           active: { booleanValue: true },
           role: { stringValue: 'SUPER_ADMIN' },
         },

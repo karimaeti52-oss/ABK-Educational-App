@@ -8,6 +8,44 @@ export const VALID_STAFF_ROLES = new Set<StaffRole>([
   'VIEWER',
 ]);
 
+const INVISIBLE_FORMAT_CHARS_RE = /[\u00AD\u061C\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]/g;
+
+export function normalizeIdentifierValue(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value.replace(INVISIBLE_FORMAT_CHARS_RE, '').trim();
+}
+
+export function normalizeStaffRole(value: unknown): StaffRole | null {
+  const cleaned = normalizeIdentifierValue(value);
+  return VALID_STAFF_ROLES.has(cleaned as StaffRole) ? (cleaned as StaffRole) : null;
+}
+
+export function formatRawValueForDiagnostics(value: string): string {
+  return Array.from(value)
+    .map((ch) => {
+      const code = ch.charCodeAt(0);
+      if (ch === ' ') return '·';
+      if (ch === '\u00A0') return '[NBSP]';
+      if (ch === '\t') return '\\t';
+      if (ch === '\n') return '\\n';
+      if (ch === '\r') return '\\r';
+      if (
+        (code >= 0x200b && code <= 0x200f) ||
+        (code >= 0x202a && code <= 0x202e) ||
+        (code >= 0x2060 && code <= 0x2069) ||
+        code === 0x00ad ||
+        code === 0x061c ||
+        code === 0xfeff ||
+        code < 0x20 ||
+        code > 0x7e
+      ) {
+        return `[U+${code.toString(16).toUpperCase().padStart(4, '0')}]`;
+      }
+      return ch;
+    })
+    .join('');
+}
+
 export interface FrontendStaffRoleResult {
   role: StaffRole;
   permissions: string[];
@@ -15,9 +53,11 @@ export interface FrontendStaffRoleResult {
 }
 
 export function resolveFrontendStaffRole({
+  uid,
   claims,
   adminDoc,
 }: {
+  uid?: string;
   claims: Record<string, unknown> | null | undefined;
   adminDoc: Partial<AdminEntry> | null | undefined;
 }): FrontendStaffRoleResult | null {
@@ -25,21 +65,23 @@ export function resolveFrontendStaffRole({
     throw new Error('تم تعطيل صلاحية هذا الحساب الإداري.');
   }
 
-  const rawClaimRole = typeof claims?.abkRole === 'string' ? claims.abkRole : undefined;
-  const validClaimRole =
-    rawClaimRole && VALID_STAFF_ROLES.has(rawClaimRole as StaffRole)
-      ? (rawClaimRole as StaffRole)
-      : undefined;
+  const validClaimRole = normalizeStaffRole(claims?.abkRole) ?? undefined;
 
   let adminDocRole: StaffRole | undefined;
   let adminPermissions: string[] = [];
   let docTeacherId: string | null = null;
 
-  // Enforce strict active === true and an explicit role within VALID_STAFF_ROLES
+  // Enforce strict active === true, matching UID (when uid is provided), and explicit role within VALID_STAFF_ROLES
   if (adminDoc && adminDoc.active === true) {
-    const rawDocRole = adminDoc.role;
-    if (typeof rawDocRole === 'string' && VALID_STAFF_ROLES.has(rawDocRole as StaffRole)) {
-      adminDocRole = rawDocRole as StaffRole;
+    const cleanExpectedUid = normalizeIdentifierValue(uid);
+    const cleanDocUid = normalizeIdentifierValue(adminDoc.uid);
+    const uidValid = cleanExpectedUid
+      ? cleanDocUid === cleanExpectedUid
+      : adminDoc.uid === undefined || cleanDocUid.length > 0;
+
+    const validDocRole = normalizeStaffRole(adminDoc.role);
+    if (uidValid && validDocRole) {
+      adminDocRole = validDocRole;
       adminPermissions = Array.isArray(adminDoc.permissions)
         ? adminDoc.permissions.filter((p): p is string => typeof p === 'string')
         : [];
@@ -71,6 +113,7 @@ export type AdminDocDiagnosticStatus =
   | 'VALID_ACTIVE'
   | 'NOT_FOUND'
   | 'ACTIVE_NOT_TRUE'
+  | 'UID_MISMATCH'
   | 'INVALID_ROLE'
   | 'READ_ERROR'
   | 'SKIPPED_BACKEND_ERROR';
@@ -86,6 +129,7 @@ export type AccessDenialReasonCode =
   | 'ADMIN_DISABLED'
   | 'ADMIN_DOC_MISSING'
   | 'ADMIN_DOC_INACTIVE'
+  | 'ADMIN_DOC_UID_MISMATCH'
   | 'ADMIN_DOC_INVALID_ROLE'
   | 'CLAIM_DOC_CONFLICT'
   | 'FIRESTORE_PERMISSION_ERROR'
@@ -114,8 +158,11 @@ export interface ClientAdminAccessDiagnosis {
     activeValue: unknown;
     activeIsTrue: boolean;
     rawRole: string | null;
+    rawRoleDisplay: string | null;
     validRole: StaffRole | null;
     uidMatches: boolean | null;
+    hasRoleFormattingArtifacts: boolean;
+    hasUidFormattingArtifacts: boolean;
     errorKind: AdminReadErrorKind | null;
     errorCode: string | null;
     errorMessage: string | null;
@@ -131,6 +178,7 @@ export interface ClientAdminAccessDiagnosis {
     summary: string;
   };
   findings: string[];
+  warnings: string[];
 }
 
 export interface OwnAdminDocSnapshotLike {
@@ -229,10 +277,7 @@ export function diagnoseClientAdminAccess({
 }): ClientAdminAccessDiagnosis {
   const rawClaimRole =
     typeof claims?.abkRole === 'string' && claims.abkRole.length > 0 ? claims.abkRole : null;
-  const validClaimRole =
-    rawClaimRole && VALID_STAFF_ROLES.has(rawClaimRole as StaffRole)
-      ? (rawClaimRole as StaffRole)
-      : null;
+  const validClaimRole = normalizeStaffRole(rawClaimRole);
 
   const claimCheck = {
     rawRole: rawClaimRole,
@@ -242,7 +287,7 @@ export function diagnoseClientAdminAccess({
     summary: validClaimRole
       ? `Custom Claim (abkRole) مضبوط وصالح: ${validClaimRole}.`
       : rawClaimRole
-        ? `قيمة Custom Claim (abkRole) غير صالحة: ${rawClaimRole}.`
+        ? `قيمة Custom Claim (abkRole) غير صالحة (${formatRawValueForDiagnostics(rawClaimRole)}).`
         : 'Custom Claim (abkRole) غير مضبوط في التوكن الحالي.',
   };
 
@@ -256,8 +301,11 @@ export function diagnoseClientAdminAccess({
       activeValue: undefined,
       activeIsTrue: false,
       rawRole: null,
+      rawRoleDisplay: null,
       validRole: null,
       uidMatches: null,
+      hasRoleFormattingArtifacts: false,
+      hasUidFormattingArtifacts: false,
       errorKind: classified.kind,
       errorCode: classified.code,
       errorMessage: classified.message || null,
@@ -270,8 +318,11 @@ export function diagnoseClientAdminAccess({
       activeValue: undefined,
       activeIsTrue: false,
       rawRole: null,
+      rawRoleDisplay: null,
       validRole: null,
       uidMatches: null,
+      hasRoleFormattingArtifacts: false,
+      hasUidFormattingArtifacts: false,
       errorKind: null,
       errorCode: null,
       errorMessage: null,
@@ -280,15 +331,15 @@ export function diagnoseClientAdminAccess({
   } else {
     const rawDocRole =
       typeof adminDoc.role === 'string' && adminDoc.role.length > 0 ? adminDoc.role : null;
-    const validDocRole =
-      rawDocRole && VALID_STAFF_ROLES.has(rawDocRole as StaffRole)
-        ? (rawDocRole as StaffRole)
-        : null;
+    const validDocRole = normalizeStaffRole(rawDocRole);
+    const hasRoleFormattingArtifacts = Boolean(rawDocRole && validDocRole && rawDocRole !== validDocRole);
+    const rawRoleDisplay = rawDocRole ? formatRawValueForDiagnostics(rawDocRole) : null;
     const activeIsTrue = adminDoc.active === true;
-    const uidMatches =
-      typeof adminDoc.uid === 'string' && adminDoc.uid.trim().length > 0
-        ? adminDoc.uid.trim() === uid
-        : false;
+    const cleanDocUid = normalizeIdentifierValue(adminDoc.uid);
+    const uidMatches = cleanDocUid.length > 0 ? cleanDocUid === uid : false;
+    const hasUidFormattingArtifacts = Boolean(
+      typeof adminDoc.uid === 'string' && uidMatches && adminDoc.uid !== uid
+    );
 
     let status: AdminDocDiagnosticStatus;
     let summary: string;
@@ -302,10 +353,15 @@ export function diagnoseClientAdminAccess({
         adminDoc.active === undefined
           ? 'الحقل active مفقود في وثيقة admins/{uid} (يجب أن يساوي true).'
           : `قيمة الحقل active في وثيقة admins/{uid} ليست true (${String(adminDoc.active)}).`;
+    } else if (!uidMatches) {
+      status = 'UID_MISMATCH';
+      summary = cleanDocUid
+        ? 'الحقل uid داخل وثيقة admins/{uid} لا يطابق معرف الحساب الحالي.'
+        : 'الحقل uid مفقود في وثيقة admins/{uid} (يجب أن يطابق معرف الحساب الحالي).';
     } else if (!validDocRole) {
       status = 'INVALID_ROLE';
       summary = rawDocRole
-        ? `الدور في وثيقة admins/{uid} غير صالح (${rawDocRole}).`
+        ? `الدور في وثيقة admins/{uid} غير صالح (${rawRoleDisplay}).`
         : 'حقل الدور (role) مفقود في وثيقة admins/{uid}.';
     } else {
       status = 'VALID_ACTIVE';
@@ -318,8 +374,11 @@ export function diagnoseClientAdminAccess({
       activeValue: adminDoc.active,
       activeIsTrue,
       rawRole: rawDocRole,
+      rawRoleDisplay,
       validRole: validDocRole,
       uidMatches,
+      hasRoleFormattingArtifacts,
+      hasUidFormattingArtifacts,
       errorKind: null,
       errorCode: null,
       errorMessage: null,
@@ -328,6 +387,10 @@ export function diagnoseClientAdminAccess({
   }
 
   let conflictCheck: ClientAdminAccessDiagnosis['conflictCheck'];
+  const normalizedClaimForCompare = validClaimRole || normalizeIdentifierValue(rawClaimRole) || null;
+  const normalizedDocForCompare =
+    adminDocCheck.validRole || normalizeIdentifierValue(adminDocCheck.rawRole) || null;
+
   if (adminDocCheck.status === 'READ_ERROR') {
     conflictCheck = {
       hasConflict: false,
@@ -335,14 +398,14 @@ export function diagnoseClientAdminAccess({
       summary: 'تعذر فحص التطابق بين Claim وFirestore بسبب تعذر قراءة وثيقة admins/{uid}.',
     };
   } else if (
-    rawClaimRole &&
-    adminDocCheck.rawRole &&
-    rawClaimRole !== adminDocCheck.rawRole
+    normalizedClaimForCompare &&
+    normalizedDocForCompare &&
+    normalizedClaimForCompare !== normalizedDocForCompare
   ) {
     conflictCheck = {
       hasConflict: true,
       conflictType: 'ROLE_MISMATCH',
-      summary: `تعارض بين Custom Claim (abkRole=${rawClaimRole}) والدور في وثيقة admins/{uid} (${adminDocCheck.rawRole}).`,
+      summary: `تعارض بين Custom Claim (abkRole=${normalizedClaimForCompare}) والدور في وثيقة admins/{uid} (${normalizedDocForCompare}).`,
     };
   } else if (validClaimRole && adminDocCheck.status !== 'VALID_ACTIVE') {
     conflictCheck = {
@@ -354,7 +417,7 @@ export function diagnoseClientAdminAccess({
     conflictCheck = {
       hasConflict: true,
       conflictType: 'DOC_WITHOUT_VALID_CLAIM',
-      summary: `تعارض: وثيقة admins/{uid} نشطة بدور ${adminDocCheck.validRole}، لكن Custom Claim (abkRole) غير مضبوط أو غير صالح في التوكن.`,
+      summary: `تعارض غير مانع للدخول: وثيقة admins/{uid} نشطة بدور ${adminDocCheck.validRole}، لكن Custom Claim (abkRole) غير مضبوط في التوكن (قواعد Storage فقط تتطلب Claim).`,
     };
   } else {
     conflictCheck = {
@@ -403,10 +466,13 @@ export function diagnoseClientAdminAccess({
   } else if (adminDocCheck.status === 'NOT_FOUND') {
     primaryReasonCode = 'ADMIN_DOC_MISSING';
     primaryMessage = rawClaimRole
-      ? `رفض الدخول: وثيقة admins/{uid} غير موجودة، وقيمة Custom Claim (abkRole=${rawClaimRole}) غير صالحة.`
+      ? `رفض الدخول: وثيقة admins/{uid} غير موجودة، وقيمة Custom Claim (abkRole=${formatRawValueForDiagnostics(rawClaimRole)}) غير صالحة.`
       : 'رفض الدخول: وثيقة admins/{uid} غير موجودة في قاعدة البيانات، وCustom Claim (abkRole) غير مضبوط في التوكن.';
   } else if (adminDocCheck.status === 'ACTIVE_NOT_TRUE') {
     primaryReasonCode = 'ADMIN_DOC_INACTIVE';
+    primaryMessage = `رفض الدخول: ${adminDocCheck.summary} ولا يوجد Custom Claim (abkRole) صالح.`;
+  } else if (adminDocCheck.status === 'UID_MISMATCH') {
+    primaryReasonCode = 'ADMIN_DOC_UID_MISMATCH';
     primaryMessage = `رفض الدخول: ${adminDocCheck.summary} ولا يوجد Custom Claim (abkRole) صالح.`;
   } else {
     primaryReasonCode = 'ADMIN_DOC_INVALID_ROLE';
@@ -414,11 +480,28 @@ export function diagnoseClientAdminAccess({
   }
 
   const findings: string[] = [claimCheck.summary, adminDocCheck.summary];
+  const warnings: string[] = [];
+
   if (conflictCheck.hasConflict) {
     findings.push(conflictCheck.summary);
   }
   if (adminDocCheck.exists && adminDocCheck.uidMatches === false) {
     findings.push('تنبيه: الحقل uid داخل وثيقة admins/{uid} مفقود أو لا يطابق معرف الحساب الحالي.');
+  }
+  if (adminDocCheck.hasRoleFormattingArtifacts && adminDocCheck.rawRoleDisplay) {
+    const roleWarn = `تنبيه: الحقل role في Firestore يحتوي مسافات أو محارف غير مرئية (${adminDocCheck.rawRoleDisplay}) — أعد كتابة SUPER_ADMIN نظيفاً في Firestore Console لضمان عمل قواعد Firestore بدون Custom Claim.`;
+    findings.push(roleWarn);
+    if (!validClaimRole) {
+      warnings.push(roleWarn);
+    }
+  }
+  if (adminDocCheck.hasUidFormattingArtifacts) {
+    const uidWarn =
+      'تنبيه: الحقل uid في Firestore يحتوي مسافات أو محارف غير مرئية — أعد كتابة UID نظيفاً في Firestore Console لضمان عمل قواعد Firestore.';
+    findings.push(uidWarn);
+    if (!validClaimRole) {
+      warnings.push(uidWarn);
+    }
   }
   if (adminDocCheck.status === 'READ_ERROR' && allowed) {
     findings.push('تنبيه: تم السماح مؤقتاً استناداً إلى Custom Claim (abkRole) الصالح رغم تعذر قراءة وثيقة admins/{uid}.');
@@ -433,6 +516,7 @@ export function diagnoseClientAdminAccess({
     adminDocCheck,
     conflictCheck,
     findings,
+    warnings,
   };
 }
 
@@ -587,8 +671,11 @@ export function createBackendErrorDiagnosis({
       activeValue: undefined,
       activeIsTrue: false,
       rawRole: null,
+      rawRoleDisplay: null,
       validRole: null,
       uidMatches: null,
+      hasRoleFormattingArtifacts: false,
+      hasUidFormattingArtifacts: false,
       errorKind: null,
       errorCode: status ? String(status) : null,
       errorMessage: cleanMsg || null,
@@ -600,6 +687,7 @@ export function createBackendErrorDiagnosis({
       summary: 'توقف التحقق عند استجابة الخادم.',
     },
     findings: [detailLine],
+    warnings: [],
   };
 }
 
@@ -704,6 +792,7 @@ export async function resolveAdminPortalSession({
   }
 
   const resolved = resolveFrontendStaffRole({
+    uid: user.uid,
     claims,
     adminDoc,
   });
@@ -726,6 +815,7 @@ export async function resolveAdminPortalSession({
           ?.sign_in_second_factor
       ),
       backendOnline: false,
+      warnings: diagnosis.warnings,
     },
     diagnosis,
   };

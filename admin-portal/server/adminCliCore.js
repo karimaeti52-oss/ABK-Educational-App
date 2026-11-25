@@ -1,4 +1,9 @@
-import { STAFF_ROLES, resolveEffectivePermissions } from './rbac.js';
+import {
+  normalizeIdentifierValue,
+  normalizeStaffRole,
+  resolveEffectivePermissions,
+  STAFF_ROLES,
+} from './rbac.js';
 
 export function parseAdminCliArgs(argv) {
   const result = {
@@ -66,11 +71,12 @@ export async function verifyAdminAccountState({ auth, db, config, email = '', ui
 
   const customClaims = userRecord.customClaims && typeof userRecord.customClaims === 'object' ? userRecord.customClaims : {};
   const rawClaimRole = typeof customClaims.abkRole === 'string' ? customClaims.abkRole : null;
-  const claimRole = rawClaimRole && STAFF_ROLES.includes(rawClaimRole) ? rawClaimRole : null;
+  const claimRole = normalizeStaffRole(rawClaimRole);
   const hasStaffClaim = Boolean(claimRole);
   const rawDocRole = adminDoc && typeof adminDoc.role === 'string' ? adminDoc.role : null;
-  const validDocRole = rawDocRole && STAFF_ROLES.includes(rawDocRole) ? rawDocRole : null;
-  const hasActiveAdminDoc = Boolean(adminDoc && adminDoc.active === true && validDocRole);
+  const validDocRole = normalizeStaffRole(rawDocRole);
+  const uidMatchesDoc = Boolean(adminDoc && normalizeIdentifierValue(adminDoc.uid) === targetUid);
+  const hasActiveAdminDoc = Boolean(adminDoc && adminDoc.active === true && uidMatchesDoc && validDocRole);
   const docRole = hasActiveAdminDoc ? validDocRole : null;
   const isAdminDocDisabled = Boolean(adminDoc && adminDoc.active === false);
   const storageReady = Boolean(claimRole && ['SUPER_ADMIN', 'ADMIN', 'CONTENT_MANAGER', 'TEACHER'].includes(claimRole));
@@ -81,8 +87,9 @@ export async function verifyAdminAccountState({ auth, db, config, email = '', ui
   for (const d of adminsCollectionSnap.docs || []) {
     const data = d.data() || {};
     if (data.active !== true) continue;
-    const r = data.role;
-    if (typeof r !== 'string' || !STAFF_ROLES.includes(r)) continue;
+    if (normalizeIdentifierValue(data.uid) !== d.id) continue;
+    const r = normalizeStaffRole(data.role);
+    if (!r) continue;
     if (r === 'SUPER_ADMIN' || r === 'ADMIN') activeAdminCount += 1;
     if (r === 'SUPER_ADMIN') activeSuperAdminCount += 1;
   }
@@ -95,19 +102,22 @@ export async function verifyAdminAccountState({ auth, db, config, email = '', ui
     Boolean(hasActiveAdminDoc && (docRole === 'SUPER_ADMIN' || docRole === 'ADMIN')) &&
     !userRecord.disabled &&
     !userProfileBlocked;
+  const normalizedRawClaimForConflict = claimRole || normalizeIdentifierValue(rawClaimRole) || null;
+  const normalizedRawDocForConflict = validDocRole || normalizeIdentifierValue(rawDocRole) || null;
   const hasClaimDocConflict =
-    (Boolean(rawClaimRole) && Boolean(rawDocRole) && rawClaimRole !== rawDocRole) ||
+    (Boolean(normalizedRawClaimForConflict) &&
+      Boolean(normalizedRawDocForConflict) &&
+      normalizedRawClaimForConflict !== normalizedRawDocForConflict) ||
     (isAdminDocDisabled && Boolean(claimRole)) ||
     (hasStaffClaim !== hasActiveAdminDoc);
   const isSuperAdminReady =
     !isAdminDocDisabled &&
     claimRole === 'SUPER_ADMIN' &&
     docRole === 'SUPER_ADMIN' &&
-    Boolean(adminDoc && adminDoc.active === true) &&
+    Boolean(adminDoc && adminDoc.active === true && uidMatchesDoc) &&
     !userRecord.disabled &&
     Boolean(userRecord.emailVerified) &&
     !userProfileBlocked;
-  const uidMatchesDoc = Boolean(adminDoc && String(adminDoc.uid || '').trim() === targetUid);
   const emailMatchesDoc = Boolean(
     adminDoc &&
       String(adminDoc.email || '').trim().toLowerCase() ===

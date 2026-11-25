@@ -67,6 +67,7 @@ export interface StaffSession {
   authTime: number;
   mfaVerified: boolean;
   backendOnline: boolean;
+  warnings?: string[];
 }
 
 export interface QaItem {

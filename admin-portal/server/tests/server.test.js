@@ -1110,3 +1110,128 @@ test('All auth/RBAC layers unify strict active === true + valid role policy with
   assert.ok(workerAuth.includes('adminDoc.active === true'));
 });
 
+test('Backend RBAC accepts active SUPER_ADMIN /admins/{uid} without Custom Claim, normalizes hidden formatting, and rejects UID mismatches', async () => {
+  const { createAdminApp } = await import('../app.js');
+  const { loadConfig } = await import('../config.js');
+  const config = loadConfig({ SUPER_ADMIN_EMAIL: '' });
+
+  // Unit checks for resolveEffectiveRole
+  assert.equal(
+    resolveEffectiveRole(
+      { uid: '5bIqNT2H3pVniVd6ULYkwps55c43', email: 'karimaeti07@gmail.com', email_verified: true },
+      { uid: '5bIqNT2H3pVniVd6ULYkwps55c43', email: 'karimaeti07@gmail.com', role: 'SUPER_ADMIN', active: true }
+    ),
+    'SUPER_ADMIN'
+  );
+  assert.equal(
+    resolveEffectiveRole(
+      { uid: '5bIqNT2H3pVniVd6ULYkwps55c43', email: 'karimaeti07@gmail.com', email_verified: true },
+      { uid: '5bIqNT2H3pVniVd6ULYkwps55c43', role: ' SUPER_ADMIN\u200F ', active: true }
+    ),
+    'SUPER_ADMIN'
+  );
+  assert.equal(
+    resolveEffectiveRole(
+      { uid: '5bIqNT2H3pVniVd6ULYkwps55c43', email: 'karimaeti07@gmail.com', email_verified: true },
+      { uid: 'wrong_uid', role: 'SUPER_ADMIN', active: true }
+    ),
+    'STUDENT'
+  );
+  assert.equal(
+    resolveEffectiveRole(
+      { uid: '5bIqNT2H3pVniVd6ULYkwps55c43', email: 'karimaeti07@gmail.com', email_verified: true },
+      { role: 'SUPER_ADMIN', active: true }
+    ),
+    'STUDENT'
+  );
+
+  const adminDocs = new Map([
+    [
+      '5bIqNT2H3pVniVd6ULYkwps55c43',
+      {
+        uid: '5bIqNT2H3pVniVd6ULYkwps55c43',
+        email: 'karimaeti07@gmail.com',
+        role: 'SUPER_ADMIN',
+        active: true,
+        grantedBy: 'FIREBASE_CONSOLE_BOOTSTRAP',
+      },
+    ],
+    [
+      'uid_bad_doc',
+      {
+        uid: 'different_uid',
+        email: 'mismatch@abk.edu',
+        role: 'SUPER_ADMIN',
+        active: true,
+      },
+    ],
+  ]);
+
+  const app = createAdminApp({
+    config,
+    firebaseServices: {
+      auth: {
+        async verifyIdToken(token) {
+          const now = Math.floor(Date.now() / 1000);
+          if (token === 'owner-doc-only') {
+            return {
+              uid: '5bIqNT2H3pVniVd6ULYkwps55c43',
+              email: 'karimaeti07@gmail.com',
+              email_verified: true,
+              auth_time: now,
+            };
+          }
+          if (token === 'mismatch-doc') {
+            return {
+              uid: 'uid_bad_doc',
+              email: 'mismatch@abk.edu',
+              email_verified: true,
+              auth_time: now,
+            };
+          }
+          throw Object.assign(new Error('invalid'), { code: 'auth/invalid-id-token' });
+        },
+        async setCustomUserClaims() {},
+      },
+      db: {
+        collection(name) {
+          return {
+            doc(id) {
+              return {
+                async get() {
+                  if (name === 'admins' && adminDocs.has(id)) {
+                    return { exists: true, data: () => ({ ...adminDocs.get(id) }) };
+                  }
+                  return { exists: false, data: () => null };
+                },
+                async set() {},
+              };
+            },
+            async add() {},
+          };
+        },
+      },
+      appCheck: { async verifyToken() {} },
+    },
+  });
+
+  const server = app.listen(0);
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const okRes = await fetch(`${baseUrl}/api/auth/me`, {
+      headers: { Authorization: 'Bearer owner-doc-only' },
+    });
+    assert.equal(okRes.status, 200);
+    const okJson = await okRes.json();
+    assert.equal(okJson.role, 'SUPER_ADMIN');
+    assert.equal(okJson.uid, '5bIqNT2H3pVniVd6ULYkwps55c43');
+
+    const badRes = await fetch(`${baseUrl}/api/auth/me`, {
+      headers: { Authorization: 'Bearer mismatch-doc' },
+    });
+    assert.equal(badRes.status, 403);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+

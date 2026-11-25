@@ -459,13 +459,15 @@ export default function App() {
                             ? 'الوثيقة غير موجودة'
                             : authDiagnosis.adminDocCheck.status === 'ACTIVE_NOT_TRUE'
                               ? `active ليست true (${String(authDiagnosis.adminDocCheck.activeValue ?? 'مفقود')})`
-                              : authDiagnosis.adminDocCheck.status === 'INVALID_ROLE'
-                                ? `الدور غير صالح (${authDiagnosis.adminDocCheck.rawRole || 'مفقود'})`
-                                : authDiagnosis.adminDocCheck.status === 'READ_ERROR'
-                                  ? `خطأ قراءة (${authDiagnosis.adminDocCheck.errorKind} / ${authDiagnosis.adminDocCheck.errorCode})`
-                                  : authDiagnosis.adminDocCheck.status === 'SKIPPED_BACKEND_ERROR'
-                                    ? 'لم يُستخدم لتجاوز قرار الخادم'
-                                    : `نشطة (${authDiagnosis.adminDocCheck.validRole})`}
+                              : authDiagnosis.adminDocCheck.status === 'UID_MISMATCH'
+                                ? 'الحقل uid مفقود أو لا يطابق معرف الحساب الحالي'
+                                : authDiagnosis.adminDocCheck.status === 'INVALID_ROLE'
+                                  ? `الدور غير صالح (${authDiagnosis.adminDocCheck.rawRoleDisplay || authDiagnosis.adminDocCheck.rawRole || 'مفقود'})`
+                                  : authDiagnosis.adminDocCheck.status === 'READ_ERROR'
+                                    ? `خطأ قراءة (${authDiagnosis.adminDocCheck.errorKind} / ${authDiagnosis.adminDocCheck.errorCode})`
+                                    : authDiagnosis.adminDocCheck.status === 'SKIPPED_BACKEND_ERROR'
+                                      ? 'لم يُستخدم لتجاوز قرار الخادم'
+                                      : `نشطة (${authDiagnosis.adminDocCheck.validRole})`}
                         </p>
                         <p>
                           <span className="font-semibold">توافق Claim مع Firestore: </span>
@@ -684,6 +686,20 @@ export default function App() {
       onReauth={() => setShowReauthModal(true)}
       onSignOut={handleSignOut}
     >
+      {staff.warnings && staff.warnings.length > 0 && (
+        <div className="mb-4 rounded-2xl border border-amber-300 bg-amber-50 p-3.5 text-xs text-amber-900">
+          <div className="mb-1 flex items-center gap-1.5 font-bold">
+            <AlertCircle className="h-4 w-4 text-amber-600" />
+            تنبيه تنسيق في وثيقة الصلاحيات (Firestore)
+          </div>
+          <ul className="list-disc space-y-1 pr-4">
+            {staff.warnings.map((w, idx) => (
+              <li key={idx}>{w}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {renderSection()}
 
       {/* Toast Notification */}

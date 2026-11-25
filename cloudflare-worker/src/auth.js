@@ -1,7 +1,19 @@
 const JWKS_URL =
   'https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com';
 
+const STAFF_ROLES = new Set(['SUPER_ADMIN', 'ADMIN', 'CONTENT_MANAGER', 'TEACHER', 'VIEWER']);
 const WRITE_STAFF_ROLES = new Set(['SUPER_ADMIN', 'ADMIN', 'CONTENT_MANAGER', 'TEACHER']);
+const INVISIBLE_FORMAT_CHARS_RE = /[\u00AD\u061C\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]/g;
+
+function normalizeIdentifierValue(value) {
+  if (typeof value !== 'string') return '';
+  return value.replace(INVISIBLE_FORMAT_CHARS_RE, '').trim();
+}
+
+function normalizeStaffRole(value) {
+  const cleaned = normalizeIdentifierValue(value);
+  return STAFF_ROLES.has(cleaned) ? cleaned : null;
+}
 
 let cachedJwks = null;
 let cachedJwksExpiresAt = 0;
@@ -156,15 +168,27 @@ export async function resolveStaffAuthorization(env, idToken, fetchImpl = fetch)
     return { uid: payload.sub, email, role: 'STUDENT', authorized: false };
   }
 
-  const claimRole = payload.abkRole;
-  if (typeof claimRole === 'string' && WRITE_STAFF_ROLES.has(claimRole)) {
-    return { uid: payload.sub, email, role: claimRole, authorized: true };
+  const claimRole = normalizeStaffRole(payload.abkRole);
+  if (claimRole) {
+    return {
+      uid: payload.sub,
+      email,
+      role: claimRole,
+      authorized: WRITE_STAFF_ROLES.has(claimRole),
+    };
   }
 
   if (adminDoc && adminDoc.active === true) {
-    const docRole = adminDoc.role;
-    if (typeof docRole === 'string' && WRITE_STAFF_ROLES.has(docRole)) {
-      return { uid: payload.sub, email, role: docRole, authorized: true };
+    const docUid = normalizeIdentifierValue(adminDoc.uid);
+    const uidMatches = docUid === payload.sub;
+    const docRole = normalizeStaffRole(adminDoc.role);
+    if (uidMatches && docRole) {
+      return {
+        uid: payload.sub,
+        email,
+        role: docRole,
+        authorized: WRITE_STAFF_ROLES.has(docRole),
+      };
     }
   }
 
