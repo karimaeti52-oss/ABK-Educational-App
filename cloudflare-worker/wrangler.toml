@@ -18,9 +18,9 @@ DEFAULT_MAX_VIDEO_MB = "200"
 DEFAULT_MAX_PDF_MB = "100"
 DEFAULT_MAX_IMAGE_MB = "20"
 DEFAULT_R2_LIMIT_GB = "10"
-DEFAULT_TOTAL_LIMIT_GB = "20"
+DEFAULT_TOTAL_LIMIT_GB = "10"
 DEFAULT_B2_LIMIT_GB = "10"
-B2_ENABLED = "true"
+B2_ENABLED = "false"
 # Backblaze B2 (Primary Storage) & optional SUPER_ADMIN_EMAIL must be configured via `npx wrangler secret put`:
 # - B2_KEY_ID
 # - B2_APPLICATION_KEY
