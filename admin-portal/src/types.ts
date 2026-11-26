@@ -276,6 +276,7 @@ export interface PlatformConfig {
   r2StorageLimitGb?: number;
   b2StorageLimitGb?: number;
   b2Enabled?: boolean;
+  primaryStorageProvider?: StorageProviderId;
   totalStorageLimitGb?: number;
   updatedBy: string;
   updatedAt?: unknown;
@@ -385,9 +386,11 @@ export interface B2QuotaStatus {
 }
 
 export interface R2QuotaStatus {
-  provider?: 'cloudflare-r2';
+  provider?: 'cloudflare-r2' | 'backblaze-b2';
+  primaryProvider?: StorageProviderId;
   verified?: boolean;
   r2Bound?: boolean;
+  b2Bound?: boolean;
   usedBytes: number;
   totalLimitBytes: number;
   targetTotalBytes?: number;

@@ -101,7 +101,8 @@ fun ExplanationDetailScreen(
     onOpenBlockPdf: (ContentBlock) -> Unit,
     onOpenMaterial: (StudyMaterial) -> Unit,
     onDownloadMaterial: (StudyMaterial) -> Unit,
-    onShareMaterial: (StudyMaterial) -> Unit
+    onShareMaterial: (StudyMaterial) -> Unit,
+    onOpenAttachmentUrl: ((String) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
@@ -263,7 +264,9 @@ fun ExplanationDetailScreen(
                                 block = block,
                                 isDownload = blockType == ContentBlockType.DOWNLOAD_FILE,
                                 onOpenUrl = { url ->
-                                    if (UrlUtils.isSafeHttpsUrl(url)) {
+                                    if (onOpenAttachmentUrl != null) {
+                                        onOpenAttachmentUrl(url)
+                                    } else if (UrlUtils.isSafeHttpsUrl(url)) {
                                         runCatching { uriHandler.openUri(url.trim()) }
                                     }
                                 }
@@ -285,7 +288,9 @@ fun ExplanationDetailScreen(
                                 block = block,
                                 onOpenPdf = { onOpenBlockPdf(block) },
                                 onOpenUrl = { url ->
-                                    if (UrlUtils.isSafeHttpsUrl(url)) {
+                                    if (onOpenAttachmentUrl != null) {
+                                        onOpenAttachmentUrl(url)
+                                    } else if (UrlUtils.isSafeHttpsUrl(url)) {
                                         runCatching { uriHandler.openUri(url.trim()) }
                                     }
                                 }

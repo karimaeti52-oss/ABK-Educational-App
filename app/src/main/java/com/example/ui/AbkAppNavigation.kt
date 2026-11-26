@@ -39,7 +39,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -50,6 +49,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -339,9 +339,7 @@ private fun AuthenticatedAbkApp(
     val platformConfig by mainViewModel.platformConfig.collectAsStateWithLifecycle()
     val isOnline by NetworkMonitor.observeIsOnline(context).collectAsStateWithLifecycle(initialValue = true)
 
-    SideEffect {
-        activeWorkerBaseUrlRef.set(platformConfig.r2WorkerBaseUrl.trim())
-    }
+    activeWorkerBaseUrlRef.set(platformConfig.r2WorkerBaseUrl.trim())
 
     MidadTheme(darkTheme = darkTheme, platformConfig = platformConfig) {
         val currentStatus = userProfile?.parsedStatus()
@@ -475,6 +473,38 @@ private fun AuthenticatedAbkApp(
                 )
                 result.onSuccess { msg -> mainViewModel.showMessage(msg) }
                     .onFailure { err -> mainViewModel.showMessage(err.localizedMessage ?: "تعذر تنزيل الملف") }
+            }
+        }
+
+        val uriHandler = LocalUriHandler.current
+        val openAttachmentUrlAction: (String) -> Unit = { rawUrl ->
+            val trimmed = rawUrl.trim()
+            if (!UrlUtils.isSafeHttpsUrl(trimmed)) {
+                mainViewModel.showMessage("الرابط غير آمن أو لا يستخدم بروتوكول HTTPS.")
+            } else if (UrlUtils.isWorkerB2MediaUrl(trimmed, platformConfig.r2WorkerBaseUrl)) {
+                scope.launch {
+                    mainViewModel.showMessage("جاري تجهيز رابط التحميل الآمن…")
+                    val signedResult = PdfCacheManager.resolveSignedUrlForWorkerFile(
+                        rawUrl = trimmed,
+                        r2WorkerBaseUrl = platformConfig.r2WorkerBaseUrl,
+                        authTokenProvider = authTokenProvider,
+                        download = true,
+                        expiresInSec = 300
+                    )
+                    signedResult.onSuccess { signedUrl ->
+                        runCatching { uriHandler.openUri(signedUrl) }
+                            .onFailure {
+                                mainViewModel.showMessage("تعذر فتح المتصفح أو مدير التنزيلات لهذا الرابط.")
+                            }
+                    }.onFailure { err ->
+                        mainViewModel.showMessage(err.localizedMessage ?: "تعذر تجهيز رابط التنزيل المؤقت")
+                    }
+                }
+            } else {
+                runCatching { uriHandler.openUri(trimmed) }
+                    .onFailure {
+                        mainViewModel.showMessage("تعذر فتح الرابط الخارجي.")
+                    }
             }
         }
 
@@ -842,7 +872,8 @@ private fun AuthenticatedAbkApp(
                                         },
                                         onOpenMaterial = { mat -> navController.navigate(NavRoutes.pdfViewer(mat.id)) },
                                         onDownloadMaterial = downloadMaterialAction,
-                                        onShareMaterial = shareMaterialAction
+                                        onShareMaterial = shareMaterialAction,
+                                        onOpenAttachmentUrl = openAttachmentUrlAction
                                     )
                                 }
 
@@ -967,7 +998,10 @@ private fun AuthenticatedAbkApp(
                                             materialType = MaterialType.STUDY_NOTE.name,
                                             title = b.title,
                                             description = b.bodyText ?: b.subtitle ?: "",
-                                            fileUrl = b.mediaUrl ?: ""
+                                            fileUrl = b.mediaUrl ?: "",
+                                            r2ObjectKey = b.r2ObjectKey,
+                                            storageProvider = b.storageProvider,
+                                            sizeBytes = b.sizeBytes
                                         )
                                     }
                                     PdfViewerScreen(

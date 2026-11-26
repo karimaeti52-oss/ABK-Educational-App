@@ -202,11 +202,13 @@ function createMockFetch({ publicJwk, firestoreDocs = {}, firestoreErrorSuffix =
       }
       return new Response(JSON.stringify({ error: { status: 'NOT_FOUND' } }), { status: 404 });
     }
-    if (b2Store && strUrl.startsWith('https://s3.us-west-004.backblazeb2.com/')) {
+    if (b2Store && /^https:\/\/s3\.[a-z0-9-]+\.backblazeb2\.com\//.test(strUrl)) {
       const headers = new Headers(init.headers || {});
       const authHeader = headers.get('Authorization') || '';
       assert.ok(authHeader.startsWith('AWS4-HMAC-SHA256 Credential='), 'B2 request must carry AWS4-HMAC-SHA256 SigV4');
       assert.ok(headers.get('x-amz-date'), 'B2 request must carry x-amz-date');
+      b2Store.lastUrl = strUrl;
+      b2Store.lastAuthHeader = authHeader;
 
       if (b2Store.forceErrorStatus) {
         return new Response('B2 Service Error', { status: b2Store.forceErrorStatus });
@@ -258,6 +260,12 @@ function createMockFetch({ publicJwk, firestoreDocs = {}, firestoreErrorSuffix =
       }
 
       if (method === 'POST' && parsed.searchParams.has('uploadId')) {
+        if (b2Store.forceCompleteXmlError) {
+          return new Response(
+            '<?xml version="1.0" encoding="UTF-8"?><Error><Code>InternalError</Code><Message>Simulated B2 assembly failure</Message></Error>',
+            { status: 200, headers: { 'content-type': 'application/xml' } }
+          );
+        }
         const uploadId = parsed.searchParams.get('uploadId');
         const session = b2Store.multiparts.get(uploadId);
         assert.ok(session, 'Missing B2 multipart session');
@@ -974,5 +982,512 @@ test('Worker CORS permits https://abk-educational-app.pages.dev when configured 
   );
   assert.equal(blockedRes.headers.get('Access-Control-Allow-Origin'), null);
 });
+
+test('Worker enforces /admins/{uid} RBAC across upload, multipart init, and delete for staff roles without Custom Claims', async () => {
+  clearJwksCacheForTests();
+  clearLimitsCacheForTests();
+  const { privateKey, publicJwk } = await generateTestKeyPair();
+  const bucket = createMockR2Bucket();
+  const worker = createWorkerHandler({
+    fetchImpl: createMockFetch({
+      publicJwk,
+      firestoreDocs: {
+        'documents/admins/role_super': {
+          uid: { stringValue: 'role_super' },
+          active: { booleanValue: true },
+          role: { stringValue: 'SUPER_ADMIN' },
+        },
+        'documents/admins/role_admin': {
+          uid: { stringValue: 'role_admin' },
+          active: { booleanValue: true },
+          role: { stringValue: 'ADMIN' },
+        },
+        'documents/admins/role_cm': {
+          uid: { stringValue: 'role_cm' },
+          active: { booleanValue: true },
+          role: { stringValue: 'CONTENT_MANAGER' },
+        },
+        'documents/admins/role_teacher': {
+          uid: { stringValue: 'role_teacher' },
+          active: { booleanValue: true },
+          role: { stringValue: 'TEACHER' },
+        },
+        'documents/admins/role_viewer': {
+          uid: { stringValue: 'role_viewer' },
+          active: { booleanValue: true },
+          role: { stringValue: 'VIEWER' },
+        },
+        'documents/admins/role_inactive': {
+          uid: { stringValue: 'role_inactive' },
+          active: { booleanValue: false },
+          role: { stringValue: 'SUPER_ADMIN' },
+        },
+        'documents/admins/role_mismatch': {
+          uid: { stringValue: 'someone_else' },
+          active: { booleanValue: true },
+          role: { stringValue: 'SUPER_ADMIN' },
+        },
+      },
+    }),
+  });
+  const env = { ...BASE_ENV, MEDIA_BUCKET: bucket };
+
+  for (const uid of ['role_super', 'role_admin', 'role_cm', 'role_teacher']) {
+    const token = await signTestJwt(privateKey, makeClaims(uid, `${uid}@midad.test`));
+    const upRes = await worker.fetch(
+      new Request(`https://r2.midad.edu/upload?fileName=${uid}.png&folder=branding`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'image/png' },
+        body: new Uint8Array([1, 2, 3, 4]),
+      }),
+      env
+    );
+    assert.equal(upRes.status, 201, `Expected 201 upload for ${uid}`);
+    const uploaded = await upRes.json();
+
+    const initRes = await worker.fetch(
+      new Request('https://r2.midad.edu/multipart/init', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fileName: `${uid}_lesson.mp4`,
+          contentType: 'video/mp4',
+          folder: 'videos',
+          sizeBytes: 10 * 1024 * 1024,
+        }),
+      }),
+      env
+    );
+    assert.equal(initRes.status, 201, `Expected 201 multipart init for ${uid}`);
+
+    const delRes = await worker.fetch(
+      new Request(`https://r2.midad.edu/object?key=${encodeURIComponent(uploaded.objectKey)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+      env
+    );
+    assert.equal(delRes.status, 200, `Expected 200 delete for ${uid}`);
+  }
+
+  for (const deniedUid of ['role_viewer', 'student_plain', 'role_inactive', 'role_mismatch']) {
+    const token = await signTestJwt(privateKey, makeClaims(deniedUid, `${deniedUid}@midad.test`));
+    const upRes = await worker.fetch(
+      new Request('https://r2.midad.edu/upload?fileName=blocked.png&folder=branding', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'image/png' },
+        body: new Uint8Array([1, 2, 3]),
+      }),
+      env
+    );
+    assert.equal(upRes.status, 403, `Expected 403 upload for ${deniedUid}`);
+
+    const delRes = await worker.fetch(
+      new Request('https://r2.midad.edu/object?key=branding/any.png', {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+      env
+    );
+    assert.equal(delRes.status, 403, `Expected 403 delete for ${deniedUid}`);
+  }
+});
+
+test('Worker returns CORS-aware 404 UPLOAD_SESSION_NOT_FOUND for expired multipart sessions and permits >50MB, .ppt, and application/x-pdf uploads', async () => {
+  clearJwksCacheForTests();
+  clearLimitsCacheForTests();
+  const { privateKey, publicJwk } = await generateTestKeyPair();
+  const bucket = createMockR2Bucket();
+  const worker = createWorkerHandler({
+    fetchImpl: createMockFetch({
+      publicJwk,
+      firestoreDocs: {
+        'documents/admins/owner_uid': {
+          uid: { stringValue: 'owner_uid' },
+          active: { booleanValue: true },
+          role: { stringValue: 'SUPER_ADMIN' },
+        },
+      },
+    }),
+  });
+  const env = {
+    ...BASE_ENV,
+    MEDIA_BUCKET: bucket,
+    ALLOWED_ORIGINS: 'https://abk-educational-app.pages.dev,http://localhost:5173',
+  };
+  const ownerToken = await signTestJwt(privateKey, makeClaims('owner_uid', 'karimaeti07@gmail.com'));
+
+  // Missing / expired multipart session on PUT /multipart/part -> 404 + UPLOAD_SESSION_NOT_FOUND + CORS
+  const missingPartRes = await worker.fetch(
+    new Request(
+      'https://r2.midad.edu/multipart/part?key=videos/expired.mp4&uploadId=nonexistent_up_id&partNumber=2',
+      {
+        method: 'PUT',
+        headers: {
+          Origin: 'https://abk-educational-app.pages.dev',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: new Uint8Array([1, 2, 3, 4]),
+      }
+    ),
+    env
+  );
+  assert.equal(missingPartRes.status, 404);
+  assert.equal(
+    missingPartRes.headers.get('Access-Control-Allow-Origin'),
+    'https://abk-educational-app.pages.dev'
+  );
+  const missingPartJson = await missingPartRes.json();
+  assert.equal(missingPartJson.code, 'UPLOAD_SESSION_NOT_FOUND');
+
+  // 120 MB MP4 video succeeds under 200 MB limit
+  const largeVideoInit = await worker.fetch(
+    new Request('https://r2.midad.edu/multipart/init', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${ownerToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fileName: 'physics_120mb.mp4',
+        contentType: 'video/mp4',
+        folder: 'videos',
+        sizeBytes: 120 * 1024 * 1024,
+      }),
+    }),
+    env
+  );
+  assert.equal(largeVideoInit.status, 201);
+
+  // 75 MB PDF with application/x-pdf alias succeeds under 100 MB PDF limit
+  const largePdfInit = await worker.fetch(
+    new Request('https://r2.midad.edu/multipart/init', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${ownerToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fileName: 'workbook_75mb.pdf',
+        contentType: 'application/x-pdf',
+        folder: 'materials',
+        sizeBytes: 75 * 1024 * 1024,
+      }),
+    }),
+    env
+  );
+  assert.equal(largePdfInit.status, 201);
+  const largePdfJson = await largePdfInit.json();
+  assert.equal(largePdfJson.mediaKind, 'PDF');
+
+  // Legacy .ppt upload succeeds
+  const pptUpload = await worker.fetch(
+    new Request('https://r2.midad.edu/upload?fileName=deck.ppt&folder=materials', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${ownerToken}`,
+        'Content-Type': 'application/vnd.ms-powerpoint',
+      },
+      body: new Uint8Array([1, 2, 3, 4]),
+    }),
+    env
+  );
+  assert.equal(pptUpload.status, 201);
+});
+
+test('B2-only Worker auto-derives us-east-005 region, routes omitted provider to B2, handles >50MB multipart & XML errors, and rejects R2 when unbound', async () => {
+  clearJwksCacheForTests();
+  clearLimitsCacheForTests();
+  const { privateKey, publicJwk } = await generateTestKeyPair();
+  const b2Store = createMockB2S3Store();
+  const worker = createWorkerHandler({
+    fetchImpl: createMockFetch({
+      publicJwk,
+      b2Store,
+      firestoreDocs: {
+        'documents/admins/owner_b2': {
+          uid: { stringValue: 'owner_b2' },
+          active: { booleanValue: true },
+          role: { stringValue: 'SUPER_ADMIN' },
+        },
+      },
+    }),
+  });
+
+  // Notice: MEDIA_BUCKET is undefined AND B2_REGION is omitted!
+  const envB2Standalone = {
+    ...BASE_ENV,
+    B2_ENABLED: undefined,
+    B2_ENDPOINT: 'https://s3.us-east-005.backblazeb2.com',
+    B2_BUCKET_NAME: 'midad-edu-media-2026',
+    B2_KEY_ID: '005keyid_test',
+    B2_APPLICATION_KEY: 'app_key_secret_test',
+  };
+
+  const ownerToken = await signTestJwt(privateKey, makeClaims('owner_b2', 'karimaeti07@gmail.com'));
+  const studentToken = await signTestJwt(privateKey, makeClaims('student_b2', 'student@midad.test'));
+
+  // /health detects standalone B2 as primaryProvider
+  const healthRes = await worker.fetch(new Request('https://r2.midad.edu/health'), envB2Standalone);
+  assert.equal(healthRes.status, 200);
+  const healthJson = await healthRes.json();
+  assert.equal(healthJson.primaryProvider, 'b2');
+  assert.equal(healthJson.r2Bound, false);
+  assert.equal(healthJson.b2Bound, true);
+  assert.equal(healthJson.b2Enabled, true);
+
+  // /quota auto-derives region us-east-005 in SigV4 credential scope and hits midad-edu-media-2026
+  const quotaRes = await worker.fetch(
+    new Request('https://r2.midad.edu/quota', { headers: { Authorization: `Bearer ${ownerToken}` } }),
+    envB2Standalone
+  );
+  assert.equal(quotaRes.status, 200);
+  const quotaJson = await quotaRes.json();
+  assert.equal(quotaJson.primaryProvider, 'b2');
+  assert.equal(quotaJson.verified, true);
+  assert.equal(quotaJson.b2.enabled, true);
+  assert.equal(quotaJson.b2.verified, true);
+  assert.ok(b2Store.lastUrl.startsWith('https://s3.us-east-005.backblazeb2.com/midad-edu-media-2026'));
+  assert.ok(b2Store.lastAuthHeader.includes('/us-east-005/s3/aws4_request'));
+
+  // Omitted provider on /upload routes cleanly to B2
+  const pdfBytes = new Uint8Array([37, 80, 68, 70, 45, 49, 46, 52]); // %PDF-1.4
+  const uploadRes = await worker.fetch(
+    new Request('https://r2.midad.edu/upload?fileName=notes.pdf&folder=materials', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${ownerToken}`, 'Content-Type': 'application/pdf' },
+      body: pdfBytes,
+    }),
+    envB2Standalone
+  );
+  assert.equal(uploadRes.status, 201);
+  const uploadJson = await uploadRes.json();
+  assert.equal(uploadJson.storageProvider, 'b2');
+  assert.ok(uploadJson.publicUrl.includes('/b2/files/'));
+
+  // Explicit provider=r2 fails clearly when MEDIA_BUCKET is unbound
+  const r2MissingRes = await worker.fetch(
+    new Request('https://r2.midad.edu/upload?fileName=notes.pdf&folder=materials&provider=r2', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${ownerToken}`, 'Content-Type': 'application/pdf' },
+      body: pdfBytes,
+    }),
+    envB2Standalone
+  );
+  assert.equal(r2MissingRes.status, 503);
+  assert.equal((await r2MissingRes.json()).code, 'MEDIA_BUCKET_MISSING');
+
+  // >50MB MP4 multipart upload (60 MB) with omitted provider routes cleanly to B2 + Range 206 read
+  const mpInitRes = await worker.fetch(
+    new Request('https://r2.midad.edu/multipart/init', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${ownerToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fileName: 'lesson_60mb.mp4',
+        contentType: 'video/mp4',
+        folder: 'videos',
+        sizeBytes: 60 * 1024 * 1024,
+      }),
+    }),
+    envB2Standalone
+  );
+  assert.equal(mpInitRes.status, 201);
+  const mpInit = await mpInitRes.json();
+  assert.equal(mpInit.storageProvider, 'b2');
+
+  const p1 = await (
+    await worker.fetch(
+      new Request(
+        `https://r2.midad.edu/multipart/part?key=${encodeURIComponent(mpInit.objectKey)}&uploadId=${encodeURIComponent(mpInit.uploadId)}&partNumber=1`,
+        { method: 'PUT', headers: { Authorization: `Bearer ${ownerToken}` }, body: new Uint8Array([10, 20, 30, 40]) }
+      ),
+      envB2Standalone
+    )
+  ).json();
+  assert.equal(p1.storageProvider, 'b2');
+
+  const mpCompleteRes = await worker.fetch(
+    new Request('https://r2.midad.edu/multipart/complete', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${ownerToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        objectKey: mpInit.objectKey,
+        uploadId: mpInit.uploadId,
+        parts: [{ partNumber: 1, etag: p1.etag }],
+      }),
+    }),
+    envB2Standalone
+  );
+  assert.equal(mpCompleteRes.status, 200);
+  const mpComplete = await mpCompleteRes.json();
+  assert.equal(mpComplete.storageProvider, 'b2');
+  assert.ok(mpComplete.publicUrl.includes('/b2/files/'));
+
+  const rangeRes = await worker.fetch(
+    new Request(mpComplete.publicUrl, {
+      headers: { Authorization: `Bearer ${studentToken}`, Range: 'bytes=1-2' },
+    }),
+    envB2Standalone
+  );
+  assert.equal(rangeRes.status, 206);
+  assert.deepEqual(Array.from(new Uint8Array(await rangeRes.arrayBuffer())), [20, 30]);
+
+  // Multipart abort cleans up B2 multipart session
+  const mpAbortInit = await (
+    await worker.fetch(
+      new Request('https://r2.midad.edu/multipart/init', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${ownerToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fileName: 'cancel_me.mp4',
+          contentType: 'video/mp4',
+          folder: 'videos',
+          sizeBytes: 10 * 1024 * 1024,
+        }),
+      }),
+      envB2Standalone
+    )
+  ).json();
+  const mpAbortRes = await worker.fetch(
+    new Request(
+      `https://r2.midad.edu/multipart/abort?key=${encodeURIComponent(mpAbortInit.objectKey)}&uploadId=${encodeURIComponent(mpAbortInit.uploadId)}`,
+      { method: 'DELETE', headers: { Authorization: `Bearer ${ownerToken}` } }
+    ),
+    envB2Standalone
+  );
+  assert.equal(mpAbortRes.status, 200);
+  assert.equal(b2Store.multiparts.size, 0);
+
+  // S3 200 OK XML <Error> in CompleteMultipartUpload MUST fail rather than silently succeeding
+  const mpXmlInit = await (
+    await worker.fetch(
+      new Request('https://r2.midad.edu/multipart/init', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${ownerToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fileName: 'xml_fail.mp4',
+          contentType: 'video/mp4',
+          folder: 'videos',
+          sizeBytes: 10 * 1024 * 1024,
+        }),
+      }),
+      envB2Standalone
+    )
+  ).json();
+  const xmlPart = await (
+    await worker.fetch(
+      new Request(
+        `https://r2.midad.edu/multipart/part?key=${encodeURIComponent(mpXmlInit.objectKey)}&uploadId=${encodeURIComponent(mpXmlInit.uploadId)}&partNumber=1`,
+        { method: 'PUT', headers: { Authorization: `Bearer ${ownerToken}` }, body: new Uint8Array([1, 2, 3]) }
+      ),
+      envB2Standalone
+    )
+  ).json();
+  b2Store.forceCompleteXmlError = true;
+  const xmlCompleteFail = await worker.fetch(
+    new Request('https://r2.midad.edu/multipart/complete', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${ownerToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        objectKey: mpXmlInit.objectKey,
+        uploadId: mpXmlInit.uploadId,
+        parts: [{ partNumber: 1, etag: xmlPart.etag }],
+      }),
+    }),
+    envB2Standalone
+  );
+  assert.ok(xmlCompleteFail.status >= 400);
+});
+
+test('Worker /b2/signed-url and /signed-url generate short-lived AWS S3 V4 presigned URLs securely with RBAC & ban checks', async () => {
+  clearJwksCacheForTests();
+  clearLimitsCacheForTests();
+  const { privateKey, publicJwk } = await generateTestKeyPair();
+  const b2Store = createMockB2S3Store([
+    {
+      key: 'materials/book_01.pdf',
+      bytes: new Uint8Array([37, 80, 68, 70]),
+      contentType: 'application/pdf',
+      metadata: { accessLevel: 'private', originalName: 'book_01.pdf' },
+    },
+  ]);
+  const worker = createWorkerHandler({
+    fetchImpl: createMockFetch({
+      publicJwk,
+      b2Store,
+      firestoreDocs: {
+        'documents/users/banned_u': { accountStatus: { stringValue: 'BANNED' } },
+      },
+    }),
+  });
+  const envB2 = {
+    ...BASE_ENV,
+    B2_ENABLED: undefined,
+    B2_ENDPOINT: 'https://s3.us-east-005.backblazeb2.com',
+    B2_BUCKET_NAME: 'midad-edu-media-2026',
+    B2_KEY_ID: '005keyid_signed',
+    B2_APPLICATION_KEY: 'app_key_secret_signed',
+  };
+  const studentToken = await signTestJwt(privateKey, makeClaims('student_ok', 'student@midad.test'));
+  const bannedToken = await signTestJwt(privateKey, makeClaims('banned_u', 'banned@midad.test'));
+
+  // Missing B2 credentials -> 503 B2_NOT_CONFIGURED
+  const noCredsRes = await worker.fetch(
+    new Request('https://r2.midad.edu/b2/signed-url?key=materials/book_01.pdf', {
+      headers: { Authorization: `Bearer ${studentToken}` },
+    }),
+    { ...BASE_ENV }
+  );
+  assert.equal(noCredsRes.status, 503);
+  assert.equal((await noCredsRes.json()).code, 'B2_NOT_CONFIGURED');
+
+  // Unauthenticated request -> 401 (both existing and non-existent keys to avoid enumeration)
+  const unauthRes = await worker.fetch(
+    new Request('https://r2.midad.edu/b2/signed-url?url=https://r2.midad.edu/b2/files/materials/book_01.pdf'),
+    envB2
+  );
+  assert.equal(unauthRes.status, 401);
+
+  const unauthMissingRes = await worker.fetch(
+    new Request('https://r2.midad.edu/b2/signed-url?key=materials/does_not_exist.pdf'),
+    envB2
+  );
+  assert.equal(unauthMissingRes.status, 401);
+
+  // Banned student -> 403
+  const bannedRes = await worker.fetch(
+    new Request('https://r2.midad.edu/signed-url?key=materials/book_01.pdf', {
+      headers: { Authorization: `Bearer ${bannedToken}` },
+    }),
+    envB2
+  );
+  assert.equal(bannedRes.status, 403);
+
+  // Authenticated student + non-existent object -> 404
+  const notFoundRes = await worker.fetch(
+    new Request('https://r2.midad.edu/b2/signed-url?key=materials/missing_file.pdf', {
+      headers: { Authorization: `Bearer ${studentToken}` },
+    }),
+    envB2
+  );
+  assert.equal(notFoundRes.status, 404);
+
+  // Authenticated active student -> 200 with AWS S3 V4 query parameters
+  const signedRes = await worker.fetch(
+    new Request(
+      'https://r2.midad.edu/b2/signed-url?url=https://r2.midad.edu/b2/files/materials/book_01.pdf&download=1&expiresIn=180',
+      { headers: { Authorization: `Bearer ${studentToken}` } }
+    ),
+    envB2
+  );
+  assert.equal(signedRes.status, 200);
+  const signedJson = await signedRes.json();
+  assert.equal(signedJson.ok, true);
+  assert.equal(signedJson.storageProvider, 'b2');
+  assert.equal(signedJson.expiresInSec, 180);
+  const parsedSigned = new URL(signedJson.signedUrl);
+  assert.equal(parsedSigned.origin, 'https://s3.us-east-005.backblazeb2.com');
+  assert.equal(parsedSigned.pathname, '/midad-edu-media-2026/materials/book_01.pdf');
+  assert.equal(parsedSigned.searchParams.get('X-Amz-Algorithm'), 'AWS4-HMAC-SHA256');
+  assert.ok(parsedSigned.searchParams.get('X-Amz-Credential')?.includes('/us-east-005/s3/aws4_request'));
+  assert.equal(parsedSigned.searchParams.get('X-Amz-Expires'), '180');
+  assert.ok(parsedSigned.searchParams.get('X-Amz-Signature')?.length === 64);
+  assert.ok(parsedSigned.searchParams.get('response-content-disposition')?.includes('attachment'));
+});
+
 
 

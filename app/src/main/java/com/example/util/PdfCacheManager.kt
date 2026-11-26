@@ -176,4 +176,81 @@ object PdfCacheManager {
             Result.failure(e)
         }
     }
+
+    suspend fun resolveSignedUrlForWorkerFile(
+        rawUrl: String,
+        r2WorkerBaseUrl: String,
+        authTokenProvider: (suspend () -> String?)? = null,
+        download: Boolean = true,
+        expiresInSec: Int = 300,
+        httpClient: OkHttpClient = client
+    ): Result<String> = withContext(Dispatchers.IO) {
+        val targetUrl = rawUrl.trim()
+        val workerRaw = r2WorkerBaseUrl.trim()
+        if (targetUrl.isEmpty() || workerRaw.isEmpty()) {
+            return@withContext Result.failure(
+                IllegalArgumentException("رابط الملف أو عنوان خادم الوسائط غير متوفر.")
+            )
+        }
+        if (!UrlUtils.isSameOriginAsBaseUrl(targetUrl, workerRaw)) {
+            return@withContext Result.failure(
+                IllegalArgumentException("رابط الملف لا ينتمي إلى خادم الوسائط المعتمد للمنصة.")
+            )
+        }
+        val workerOrigin = runCatching {
+            val uri = java.net.URI(workerRaw)
+            val scheme = uri.scheme?.lowercase(java.util.Locale.ROOT) ?: return@runCatching ""
+            val host = uri.host ?: return@runCatching ""
+            val portSuffix = if (uri.port != -1) ":${uri.port}" else ""
+            "$scheme://$host$portSuffix"
+        }.getOrDefault("")
+        if (workerOrigin.isEmpty()) {
+            return@withContext Result.failure(IllegalArgumentException("عنوان خادم الوسائط غير صالح."))
+        }
+
+        val encodedUrl = java.net.URLEncoder.encode(targetUrl, "UTF-8")
+        val clampedExpiry = expiresInSec.coerceIn(60, 3600)
+        val endpoint = "$workerOrigin/b2/signed-url?url=$encodedUrl&download=${if (download) "1" else "0"}&expiresIn=$clampedExpiry"
+
+        try {
+            val reqBuilder = Request.Builder()
+                .url(endpoint)
+                .get()
+                .header("User-Agent", "Midad-Android/1.1.1")
+            if (authTokenProvider != null) {
+                val token = runCatching { authTokenProvider() }.getOrNull()
+                if (!token.isNullOrBlank()) {
+                    reqBuilder.header("Authorization", "Bearer $token")
+                }
+            }
+            httpClient.newCall(reqBuilder.build()).execute().use { response ->
+                val rawBody = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    val serverMsg = runCatching {
+                        org.json.JSONObject(rawBody).optString("error").trim()
+                    }.getOrDefault("")
+                    val fallbackMsg = when (response.code) {
+                        401, 403 -> "لا تملك صلاحية تحميل هذا الملف (${response.code}). تأكد من تسجيل دخولك."
+                        404 -> "الملف غير موجود على Backblaze B2 (${response.code})."
+                        503 -> "خدمة Backblaze B2 غير متاحة حالياً (${response.code})."
+                        else -> "تعذر الحصول على رابط التحميل المؤقت (${response.code})."
+                    }
+                    return@withContext Result.failure(
+                        IllegalStateException(serverMsg.ifBlank { fallbackMsg })
+                    )
+                }
+                val signedUrl = runCatching {
+                    org.json.JSONObject(rawBody).optString("signedUrl").trim()
+                }.getOrDefault("")
+                if (!UrlUtils.isSafeHttpsUrl(signedUrl)) {
+                    return@withContext Result.failure(
+                        IllegalStateException("رابط التحميل المؤقت المستلم غير آمن أو غير صالح.")
+                    )
+                }
+                Result.success(signedUrl)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
 }

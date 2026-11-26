@@ -46,8 +46,18 @@ import type {
   PublishStatus,
   StaffSession,
 } from '../types';
-import { PERMANENT_MIDAD_APK_URL, resolveR2StorageLimits } from '../utils/r2Upload';
-import { fetchR2QuotaStatus } from '../services/r2UploadClient';
+import {
+  buildMultiProviderStorageSummary,
+  formatBytesReadable,
+  PERMANENT_MIDAD_APK_URL,
+  resolveR2StorageLimits,
+  validateR2WorkerBaseUrlInput,
+} from '../utils/r2Upload';
+import {
+  clearCachedR2QuotaStatus,
+  fetchR2QuotaStatus,
+  peekCachedR2QuotaStatus,
+} from '../services/r2UploadClient';
 
 export function BrandingSection({
   store,
@@ -59,7 +69,19 @@ export function BrandingSection({
   onToast: (msg: string, isError?: boolean) => void;
 }) {
   const [draft, setDraft] = useState<PlatformConfig>(store.platformConfig);
+  const [isDirty, setIsDirty] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!isDirty) {
+      setDraft(store.platformConfig);
+    }
+  }, [store.platformConfig, isDirty]);
+
+  const updateDraft = (updater: PlatformConfig) => {
+    setIsDirty(true);
+    setDraft(updater);
+  };
 
   const navItems: BottomNavConfigItem[] =
     draft.bottomNavItems?.length
@@ -71,6 +93,7 @@ export function BrandingSection({
     setSaving(true);
     try {
       await savePlatformConfig({ ...draft, bottomNavItems: navItems }, staff);
+      setIsDirty(false);
       onToast('تم حفظ وتطبيق هوية وتصميم المنصة مباشرة على تطبيق Android');
     } catch (err) {
       onToast(err instanceof Error ? err.message : 'فشل حفظ التصميم', true);
@@ -102,7 +125,7 @@ export function BrandingSection({
               <input
                 required
                 value={draft.platformName}
-                onChange={(e) => setDraft({ ...draft, platformName: e.target.value })}
+                onChange={(e) => updateDraft({ ...draft, platformName: e.target.value })}
                 className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
               />
             </div>
@@ -110,7 +133,7 @@ export function BrandingSection({
               <label className="mb-1 block text-xs font-semibold text-slate-600">الوصف الفرعي للشعار</label>
               <input
                 value={draft.platformTagline}
-                onChange={(e) => setDraft({ ...draft, platformTagline: e.target.value })}
+                onChange={(e) => updateDraft({ ...draft, platformTagline: e.target.value })}
                 className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
               />
             </div>
@@ -119,7 +142,7 @@ export function BrandingSection({
               <input
                 required
                 value={draft.homeHeadline}
-                onChange={(e) => setDraft({ ...draft, homeHeadline: e.target.value })}
+                onChange={(e) => updateDraft({ ...draft, homeHeadline: e.target.value })}
                 className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
               />
             </div>
@@ -127,7 +150,7 @@ export function BrandingSection({
               <label className="mb-1 block text-xs font-semibold text-slate-600">عنوان بطاقة الترحيب</label>
               <input
                 value={draft.welcomeTitle}
-                onChange={(e) => setDraft({ ...draft, welcomeTitle: e.target.value })}
+                onChange={(e) => updateDraft({ ...draft, welcomeTitle: e.target.value })}
                 className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
               />
             </div>
@@ -135,7 +158,7 @@ export function BrandingSection({
               <label className="mb-1 block text-xs font-semibold text-slate-600">النص الترحيبي</label>
               <input
                 value={draft.welcomeSubtitle}
-                onChange={(e) => setDraft({ ...draft, welcomeSubtitle: e.target.value })}
+                onChange={(e) => updateDraft({ ...draft, welcomeSubtitle: e.target.value })}
                 className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
               />
             </div>
@@ -148,13 +171,13 @@ export function BrandingSection({
                 <input
                   type="color"
                   value={draft.primaryColorHex}
-                  onChange={(e) => setDraft({ ...draft, primaryColorHex: e.target.value })}
+                  onChange={(e) => updateDraft({ ...draft, primaryColorHex: e.target.value })}
                   className="h-10 w-12 cursor-pointer rounded-lg border border-slate-200"
                 />
                 <input
                   dir="ltr"
                   value={draft.primaryColorHex}
-                  onChange={(e) => setDraft({ ...draft, primaryColorHex: e.target.value })}
+                  onChange={(e) => updateDraft({ ...draft, primaryColorHex: e.target.value })}
                   className="w-full rounded-xl border border-slate-200 px-2.5 py-2 text-left text-xs"
                 />
               </div>
@@ -165,13 +188,13 @@ export function BrandingSection({
                 <input
                   type="color"
                   value={draft.secondaryColorHex}
-                  onChange={(e) => setDraft({ ...draft, secondaryColorHex: e.target.value })}
+                  onChange={(e) => updateDraft({ ...draft, secondaryColorHex: e.target.value })}
                   className="h-10 w-12 cursor-pointer rounded-lg border border-slate-200"
                 />
                 <input
                   dir="ltr"
                   value={draft.secondaryColorHex}
-                  onChange={(e) => setDraft({ ...draft, secondaryColorHex: e.target.value })}
+                  onChange={(e) => updateDraft({ ...draft, secondaryColorHex: e.target.value })}
                   className="w-full rounded-xl border border-slate-200 px-2.5 py-2 text-left text-xs"
                 />
               </div>
@@ -182,13 +205,13 @@ export function BrandingSection({
                 <input
                   type="color"
                   value={draft.accentColorHex || '#C7A15A'}
-                  onChange={(e) => setDraft({ ...draft, accentColorHex: e.target.value })}
+                  onChange={(e) => updateDraft({ ...draft, accentColorHex: e.target.value })}
                   className="h-10 w-12 cursor-pointer rounded-lg border border-slate-200"
                 />
                 <input
                   dir="ltr"
                   value={draft.accentColorHex || '#C7A15A'}
-                  onChange={(e) => setDraft({ ...draft, accentColorHex: e.target.value })}
+                  onChange={(e) => updateDraft({ ...draft, accentColorHex: e.target.value })}
                   className="w-full rounded-xl border border-slate-200 px-2.5 py-2 text-left text-xs"
                 />
               </div>
@@ -198,7 +221,7 @@ export function BrandingSection({
           <AssetUrlOrUploadInput
             label="شعار المنصة (Logo)"
             value={draft.logoUrl || ''}
-            onChange={(url) => setDraft({ ...draft, logoUrl: url })}
+            onChange={(url) => updateDraft({ ...draft, logoUrl: url })}
             folderPath="branding"
             accessLevel="public"
             imageOnly
@@ -208,7 +231,7 @@ export function BrandingSection({
           <AssetUrlOrUploadInput
             label="صورة بانر الترحيب (Hero Banner)"
             value={draft.heroBannerUrl || ''}
-            onChange={(url) => setDraft({ ...draft, heroBannerUrl: url })}
+            onChange={(url) => updateDraft({ ...draft, heroBannerUrl: url })}
             folderPath="branding"
             accessLevel="public"
             imageOnly
@@ -227,7 +250,7 @@ export function BrandingSection({
                     onChange={(e) => {
                       const next = [...navItems];
                       next[idx] = { ...next[idx], label: e.target.value };
-                      setDraft({ ...draft, bottomNavItems: next });
+                      updateDraft({ ...draft, bottomNavItems: next });
                     }}
                     className="flex-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5"
                   />
@@ -238,7 +261,7 @@ export function BrandingSection({
                       onChange={(e) => {
                         const next = [...navItems];
                         next[idx] = { ...next[idx], visible: e.target.checked };
-                        setDraft({ ...draft, bottomNavItems: next });
+                        updateDraft({ ...draft, bottomNavItems: next });
                       }}
                     />
                     إظهار
@@ -658,8 +681,11 @@ export function PlatformSettingsSection({
   const [customDesc, setCustomDesc] = useState('');
   const [release, setRelease] = useState<AndroidReleaseManifest>(DEFAULT_ANDROID_RELEASE);
   const [publishingRelease, setPublishingRelease] = useState(false);
+  const [savingToggles, setSavingToggles] = useState(false);
   const [testingR2, setTestingR2] = useState(false);
   const [r2HealthMsg, setR2HealthMsg] = useState<string | null>(null);
+  const [r2HealthError, setR2HealthError] = useState(false);
+  const [liveQuota, setLiveQuota] = useState(() => peekCachedR2QuotaStatus(store.platformConfig));
 
   useEffect(() => {
     setCfg(store.platformConfig);
@@ -672,60 +698,111 @@ export function PlatformSettingsSection({
     return () => unsub();
   }, []);
 
+  const b2LiveVerified = Boolean(liveQuota?.b2?.workerConfigured && liveQuota?.b2?.verified);
+  const effectiveB2Enabled =
+    b2LiveVerified && (liveQuota?.b2?.enabled === true || Boolean(cfg.b2Enabled));
+  const currentLimits = resolveR2StorageLimits({ ...cfg, b2Enabled: effectiveB2Enabled });
+  const providerSummary = buildMultiProviderStorageSummary({
+    limits: currentLimits,
+    r2Quota: liveQuota,
+  });
+
   async function saveToggles() {
+    const rawWorkerInput = cfg.r2WorkerBaseUrl || '';
+    const urlCheck = validateR2WorkerBaseUrlInput(rawWorkerInput);
+    if (rawWorkerInput.trim() && !urlCheck.valid) {
+      onToast(urlCheck.errorMessage || 'رابط Storage Worker غير صالح.', true);
+      return;
+    }
+
     const nextR2 = Math.max(1, Math.round(Number(cfg.r2StorageLimitGb ?? 10)));
     const nextB2 = Math.max(0, Math.round(Number(cfg.b2StorageLimitGb ?? 10)));
+    const safeB2Enabled = b2LiveVerified && (liveQuota?.b2?.enabled === true || cfg.b2Enabled === true);
     const limits = resolveR2StorageLimits({
       ...cfg,
       r2StorageLimitGb: nextR2,
       b2StorageLimitGb: nextB2,
-      b2Enabled: false,
-      totalStorageLimitGb: nextR2,
+      b2Enabled: safeB2Enabled,
     });
-    await savePlatformConfig(
-      {
-        ...cfg,
-        r2WorkerBaseUrl: (cfg.r2WorkerBaseUrl || '').trim().replace(/\/+$/g, ''),
-        maxVideoSizeMb: limits.maxVideoSizeMb,
-        maxPdfSizeMb: limits.maxPdfSizeMb,
-        maxImageSizeMb: limits.maxImageSizeMb,
-        r2StorageLimitGb: limits.r2StorageLimitGb,
-        b2StorageLimitGb: limits.b2StorageLimitGb,
-        b2Enabled: false,
-        totalStorageLimitGb: limits.totalStorageLimitGb,
-      },
-      staff
-    );
-    onToast(
-      `تم حفظ الإعدادات: السعة الفعالة حالياً ${limits.r2StorageLimitGb} GB (R2) • B2 (${limits.b2StorageLimitGb} GB) غير مفعّل بعد التحقق`
-    );
+
+    setSavingToggles(true);
+    try {
+      await savePlatformConfig(
+        {
+          ...cfg,
+          r2WorkerBaseUrl: urlCheck.valid ? urlCheck.normalizedUrl : '',
+          maxVideoSizeMb: limits.maxVideoSizeMb,
+          maxPdfSizeMb: limits.maxPdfSizeMb,
+          maxImageSizeMb: limits.maxImageSizeMb,
+          r2StorageLimitGb: limits.r2StorageLimitGb,
+          b2StorageLimitGb: limits.b2StorageLimitGb,
+          b2Enabled: safeB2Enabled,
+          primaryStorageProvider: safeB2Enabled ? 'b2' : 'r2',
+          totalStorageLimitGb: limits.totalStorageLimitGb,
+        },
+        staff
+      );
+      clearCachedR2QuotaStatus();
+      onToast(
+        safeB2Enabled
+          ? `تم حفظ الإعدادات: Backblaze B2 الأساسي (${limits.b2StorageLimitGb} GB)${liveQuota?.r2Bound ? ` + R2 (${limits.r2StorageLimitGb} GB)` : ''}`
+          : `تم حفظ الإعدادات: السعة الفعالة حالياً ${limits.r2StorageLimitGb} GB (R2) • بانتظار أسرار Backblaze B2`
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'فشل حفظ إعدادات المنصة';
+      if (/permission-denied|Missing or insufficient permissions/i.test(msg)) {
+        onToast(
+          'رفضت قواعد Firestore حفظ الإعدادات (permission-denied). إذا كان لديك تحذير تنسيق على الحقل role (مثل \\nSUPER_ADMIN)، نظّفه في Firebase Console ثم أعد المحاولة.',
+          true
+        );
+      } else {
+        onToast(msg, true);
+      }
+    } finally {
+      setSavingToggles(false);
+    }
   }
 
   async function handleTestR2Connection() {
     setTestingR2(true);
     setR2HealthMsg(null);
+    setR2HealthError(false);
     try {
       const q = await fetchR2QuotaStatus(cfg);
+      setLiveQuota(q);
       if (!q) {
+        setR2HealthError(true);
         setR2HealthMsg('بانتظار إدخال رابط Storage Worker يبدأ بـ https:// لإجراء التحقق الفعلي.');
-      } else if (!q.verified || !q.r2Bound) {
-        setR2HealthMsg('تحذير: تم الوصول للخادم لكن R2 Bucket (MEDIA_BUCKET) غير مربوط أو غير متحقق منه فعلياً.');
-      } else {
-        const r2UsedGb = ((q.r2?.usedBytes ?? q.usedBytes) / (1024 * 1024 * 1024)).toFixed(2);
-        const r2LimitGb = ((q.r2?.allocatedLimitBytes ?? q.totalLimitBytes) / (1024 * 1024 * 1024)).toFixed(1);
-        const r2Files = q.r2?.fileCount ?? q.fileCount;
-        const b2Ready = Boolean(q.b2?.enabled && q.b2?.verified);
-        const b2UsedGb = ((q.b2?.usedBytes ?? 0) / (1024 * 1024 * 1024)).toFixed(2);
-        const b2LimitGb = ((q.b2?.allocatedLimitBytes ?? 0) / (1024 * 1024 * 1024)).toFixed(1);
-        const b2Summary = b2Ready
-          ? `Backblaze B2: مفعّل ومتحقق (${b2UsedGb} / ${b2LimitGb} GB • ${q.b2?.fileCount ?? 0} ملف)`
-          : `Backblaze B2: غير مفعّل (${q.b2?.error ? `فشل الفحص: ${q.b2.error}` : 'بانتظار ربط الحساب والأسرار'})`;
+      } else if (!q.verified) {
+        setR2HealthError(true);
         setR2HealthMsg(
-          `Cloudflare R2: متحقق (${r2UsedGb} / ${r2LimitGb} GB • ${r2Files} ملف) | ${b2Summary}`
+          'تحذير: تم الوصول إلى Storage Worker لكن لم يتم التحقق من Backblaze B2 أو Cloudflare R2 بعد.'
         );
+      } else {
+        const b2Ready = Boolean(q.b2?.enabled && q.b2?.verified);
+        const b2VerifiedOnly = Boolean(q.b2?.workerConfigured && q.b2?.verified && !q.b2?.enabled);
+        const b2Used = formatBytesReadable(q.b2?.usedBytes ?? 0);
+        const b2Limit = formatBytesReadable(q.b2?.allocatedLimitBytes ?? 0);
+        const b2Summary = b2Ready
+          ? `Backblaze B2 (الأساسي): مفعّل ومتحقق (${b2Used} / ${b2Limit} • ${q.b2?.fileCount ?? 0} ملف)`
+          : b2VerifiedOnly
+            ? `Backblaze B2: متصل ومختبَر (${b2Used} / ${b2Limit})`
+            : `Backblaze B2: غير مفعّل (${q.b2?.error ? `فشل الفحص: ${q.b2.error}` : 'بانتظار إضافة أسرار B2 في Cloudflare Worker'})`;
+
+        const r2Used = formatBytesReadable(q.r2?.usedBytes ?? q.usedBytes);
+        const r2Limit = formatBytesReadable(q.r2?.allocatedLimitBytes ?? q.totalLimitBytes);
+        const r2Files = q.r2?.fileCount ?? q.fileCount;
+        const r2Summary =
+          q.r2Bound && q.r2?.verified
+            ? `Cloudflare R2 (ثانوي): متحقق (${r2Used} / ${r2Limit} • ${r2Files} ملف)`
+            : 'Cloudflare R2: غير مربوط (التخزين يعمل بالكامل عبر Backblaze B2)';
+
+        setR2HealthMsg(`${b2Summary} | ${r2Summary}`);
       }
     } catch (err) {
-      setR2HealthMsg(err instanceof Error ? err.message : 'تعذر التحقق الفعلي من حساب Cloudflare R2 Worker');
+      setLiveQuota(null);
+      setR2HealthError(true);
+      setR2HealthMsg(err instanceof Error ? err.message : 'تعذر التحقق الفعلي من خادم التخزين Worker');
     } finally {
       setTestingR2(false);
     }
@@ -825,17 +902,20 @@ export function PlatformSettingsSection({
               disabled={testingR2}
               className="rounded-xl border border-sky-300 bg-white px-3 py-1.5 text-xs font-bold text-sky-800 hover:bg-sky-50 disabled:opacity-50"
             >
-              {testingR2 ? 'جاري التحقق...' : 'التحقق الفعلي من حساب R2'}
+              {testingR2 ? 'جاري التحقق الفعلي...' : 'التحقق الفعلي من Worker و R2 / B2'}
             </button>
           </div>
 
           <div>
-            <label className="mb-1 block text-xs font-semibold text-slate-600">رابط Cloudflare R2 Worker (HTTPS) *</label>
+            <label className="mb-1 block text-xs font-semibold text-slate-600">رابط Storage Worker (Backblaze B2 / R2 — HTTPS) *</label>
             <input
               type="url"
               dir="ltr"
               value={cfg.r2WorkerBaseUrl || ''}
-              onChange={(e) => setCfg({ ...cfg, r2WorkerBaseUrl: e.target.value })}
+              onChange={(e) => {
+                setCfg({ ...cfg, r2WorkerBaseUrl: e.target.value });
+                setLiveQuota(null);
+              }}
               placeholder="https://midad-r2-worker.your-subdomain.workers.dev"
               className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-sm"
             />
@@ -879,26 +959,7 @@ export function PlatformSettingsSection({
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-semibold text-slate-600">حصة Cloudflare R2 المخصصة (GB)</label>
-              <input
-                type="number"
-                min={1}
-                max={500}
-                dir="ltr"
-                value={cfg.r2StorageLimitGb ?? 10}
-                onChange={(e) => {
-                  const nextR2 = Math.max(1, Number(e.target.value) || 10);
-                  setCfg({
-                    ...cfg,
-                    r2StorageLimitGb: nextR2,
-                    totalStorageLimitGb: nextR2,
-                  });
-                }}
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-sm"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs font-semibold text-slate-600">حصة Backblaze B2 المخصصة (GB)</label>
+              <label className="mb-1 block text-xs font-semibold text-slate-600">حصة Backblaze B2 الأساسية (GB)</label>
               <input
                 type="number"
                 min={0}
@@ -911,14 +972,35 @@ export function PlatformSettingsSection({
                   setCfg({
                     ...cfg,
                     b2StorageLimitGb: nextB2,
-                    totalStorageLimitGb: currentR2,
+                    totalStorageLimitGb: effectiveB2Enabled ? currentR2 + nextB2 : currentR2,
                   });
                 }}
                 className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-sm"
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-semibold text-slate-600">الهدف الإجمالي عند تفعيل B2 (الحالي: {cfg.r2StorageLimitGb ?? 10} GB)</label>
+              <label className="mb-1 block text-xs font-semibold text-slate-600">حصة Cloudflare R2 الثانوية (GB)</label>
+              <input
+                type="number"
+                min={1}
+                max={500}
+                dir="ltr"
+                value={cfg.r2StorageLimitGb ?? 10}
+                onChange={(e) => {
+                  const nextR2 = Math.max(1, Number(e.target.value) || 10);
+                  setCfg({
+                    ...cfg,
+                    r2StorageLimitGb: nextR2,
+                    totalStorageLimitGb: effectiveB2Enabled ? nextR2 + (cfg.b2StorageLimitGb ?? 10) : nextR2,
+                  });
+                }}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-sm"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-600">
+                الهدف الإجمالي (الفعّال حالياً: {formatBytesReadable(providerSummary.verifiedActiveTotalBytes)})
+              </label>
               <input
                 type="number"
                 readOnly
@@ -929,22 +1011,62 @@ export function PlatformSettingsSection({
             </div>
           </div>
 
-          <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs text-amber-900">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="font-bold">
-                حالة Backblaze B2 ({cfg.b2StorageLimitGb ?? 10} GB): غير مفعّل
-              </span>
-              <span className="rounded-full bg-amber-100 px-2.5 py-0.5 text-[11px] font-bold text-amber-900">
-                بانتظار تجهيز الحساب والربط الفعلي
-              </span>
+          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+            <div
+              className={`rounded-xl border px-3 py-2.5 text-xs ${
+                providerSummary.b2.enabled
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+                  : 'border-amber-200 bg-amber-50 text-amber-900'
+              }`}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="font-bold">Backblaze B2 الأساسي ({cfg.b2StorageLimitGb ?? 10} GB)</span>
+                <span className="rounded-full bg-white/80 px-2.5 py-0.5 text-[11px] font-bold">
+                  {providerSummary.b2.enabled
+                    ? 'متصل ومفعّل فعلياً'
+                    : b2LiveVerified
+                      ? 'جاهز للتفعيل'
+                      : 'بانتظار الأسرار / التحقق'}
+                </span>
+              </div>
+              <p className="mt-1 text-[11px] opacity-90">{providerSummary.b2.statusMessage}</p>
+              {b2LiveVerified && (
+                <label className="mt-2 inline-flex cursor-pointer items-center gap-2 font-bold">
+                  <input
+                    type="checkbox"
+                    checked={liveQuota?.b2?.enabled === true || cfg.b2Enabled === true}
+                    onChange={(e) => setCfg({ ...cfg, b2Enabled: e.target.checked })}
+                  />
+                  تفعيل Backblaze B2 كمزوّد التخزين الأساسي ({cfg.b2StorageLimitGb ?? 10} GB)
+                </label>
+              )}
             </div>
-            <p className="mt-1 text-[11px] text-amber-800">
-              يظل مزود Backblaze B2 مُعطّلاً (b2Enabled = false) ولن تُحتسب مساحته ضمن السعة المتاحة إلا بعد إنشاء الحساب وتوصيله والتحقق منه فعلياً.
-            </p>
+
+            <div
+              className={`rounded-xl border px-3 py-2.5 text-xs ${
+                providerSummary.r2.verified
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+                  : 'border-slate-200 bg-slate-50 text-slate-700'
+              }`}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="font-bold">Cloudflare R2 ثانوي ({cfg.r2StorageLimitGb ?? 10} GB)</span>
+                <span className="rounded-full bg-white/80 px-2.5 py-0.5 text-[11px] font-bold">
+                  {providerSummary.r2.verified ? 'متصل ومتحقق فعلياً' : 'غير مربوط / ثانوي'}
+                </span>
+              </div>
+              <p className="mt-1 text-[11px] opacity-90">{providerSummary.r2.statusMessage}</p>
+            </div>
           </div>
 
           {r2HealthMsg && (
-            <p className="rounded-xl bg-white px-3 py-2 text-xs font-bold text-[#142A43] ring-1 ring-slate-200">
+            <p
+              className={`rounded-xl px-3 py-2 text-xs font-bold ring-1 ${
+                r2HealthError
+                  ? 'bg-rose-50 text-rose-800 ring-rose-200'
+                  : 'bg-white text-[#142A43] ring-slate-200'
+              }`}
+            >
               {r2HealthMsg}
             </p>
           )}
@@ -952,11 +1074,12 @@ export function PlatformSettingsSection({
 
         <button
           type="button"
-          onClick={saveToggles}
-          className="inline-flex items-center gap-1.5 rounded-xl bg-[#142A43] px-5 py-2.5 text-xs font-bold text-white"
+          disabled={savingToggles}
+          onClick={() => void saveToggles()}
+          className="inline-flex items-center gap-1.5 rounded-xl bg-[#142A43] px-5 py-2.5 text-xs font-bold text-white disabled:opacity-50"
         >
           <Check className="h-4 w-4" />
-          حفظ الإعدادات العامة وحدود التخزين
+          {savingToggles ? 'جاري الحفظ...' : 'حفظ الإعدادات العامة وحدود التخزين'}
         </button>
       </div>
 

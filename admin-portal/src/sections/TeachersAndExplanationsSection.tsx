@@ -25,6 +25,7 @@ import {
   upsertEntity,
   type CmsStore,
 } from '../services/firestoreCms';
+import { inferStorageProviderFromUrl } from '../services/r2UploadClient';
 import type { R2UploadResult } from '../utils/r2Upload';
 import type {
   ContentBlock,
@@ -351,7 +352,7 @@ export function ExplanationsAndBlocksSection({
   const [blockDuration, setBlockDuration] = useState('');
   const [blockFileSize, setBlockFileSize] = useState('');
   const [blockR2Key, setBlockR2Key] = useState('');
-  const [blockStorageProvider, setBlockStorageProvider] = useState<StorageProviderId>('r2');
+  const [blockStorageProvider, setBlockStorageProvider] = useState<StorageProviderId>('b2');
   const [blockSizeBytes, setBlockSizeBytes] = useState<number | undefined>(undefined);
   const [lastUploadedMeta, setLastUploadedMeta] = useState<R2UploadResult | null>(null);
   const [qaItems, setQaItems] = useState<QaItem[]>([]);
@@ -450,7 +451,7 @@ export function ExplanationsAndBlocksSection({
     setBlockDuration('');
     setBlockFileSize('');
     setBlockR2Key('');
-    setBlockStorageProvider('r2');
+    setBlockStorageProvider('b2');
     setBlockSizeBytes(undefined);
     setLastUploadedMeta(null);
     setQaItems([{ question: '', answer: '' }]);
@@ -473,7 +474,7 @@ export function ExplanationsAndBlocksSection({
     setBlockDuration(b.durationLabel || '');
     setBlockFileSize(b.fileSizeLabel || '');
     setBlockR2Key(b.r2ObjectKey || '');
-    setBlockStorageProvider(b.storageProvider || 'r2');
+    setBlockStorageProvider(inferStorageProviderFromUrl(b.mediaUrl, b.storageProvider));
     setBlockSizeBytes(b.sizeBytes);
     setLastUploadedMeta(null);
     setQaItems(b.qaItems?.length ? b.qaItems : [{ question: '', answer: '' }]);
@@ -799,12 +800,12 @@ export function ExplanationsAndBlocksSection({
                       blockType === 'YOUTUBE_VIDEO'
                         ? 'رابط YouTube أو رفع فيديو MP4 بديل'
                         : blockType === 'EXTERNAL_VIDEO'
-                          ? 'فيديو الدرس (ارفع MP4 إلى Cloudflare R2 أو الصق رابطاً مباشراً)'
+                          ? 'فيديو الدرس (ارفع MP4 إلى Backblaze B2 أو الصق رابطاً مباشراً)'
                           : blockType === 'EXTERNAL_LINK'
                             ? 'الرابط الخارجي'
                             : blockType === 'ASSIGNMENT'
                               ? 'مرفق الواجب / رابط الملف (اختياري)'
-                              : 'رابط الملف / أو ارفعه مباشرة إلى Cloudflare R2'
+                              : 'رابط الملف / أو ارفعه مباشرة إلى Backblaze B2'
                     }
                     value={blockMediaUrl}
                     onChange={(url, size) => {
@@ -812,7 +813,7 @@ export function ExplanationsAndBlocksSection({
                       if (size) setBlockFileSize(size);
                       if (!url.trim()) {
                         setBlockR2Key('');
-                        setBlockStorageProvider('r2');
+                        setBlockStorageProvider('b2');
                         setBlockSizeBytes(undefined);
                         setLastUploadedMeta(null);
                       }

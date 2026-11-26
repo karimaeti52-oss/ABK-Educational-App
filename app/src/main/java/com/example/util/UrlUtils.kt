@@ -137,6 +137,14 @@ object UrlUtils {
         }.getOrDefault(false)
     }
 
+    fun isWorkerB2MediaUrl(url: String?, workerBaseUrl: String?): Boolean {
+        if (!isSameOriginAsBaseUrl(url, workerBaseUrl)) return false
+        val path = runCatching {
+            java.net.URI(url!!.trim()).path?.lowercase(Locale.ROOT).orEmpty()
+        }.getOrDefault("")
+        return path.startsWith("/b2/files/")
+    }
+
     fun sanitizeUrlForLog(rawUrl: String?): String {
         val trimmed = rawUrl?.trim().orEmpty()
         if (trimmed.isEmpty()) return "<empty>"

@@ -488,8 +488,8 @@ export function diagnoseClientAdminAccess({
   if (adminDocCheck.exists && adminDocCheck.uidMatches === false) {
     findings.push('تنبيه: الحقل uid داخل وثيقة admins/{uid} مفقود أو لا يطابق معرف الحساب الحالي.');
   }
-  if (adminDocCheck.hasRoleFormattingArtifacts && adminDocCheck.rawRoleDisplay) {
-    const roleWarn = `تنبيه: الحقل role في Firestore يحتوي مسافات أو محارف غير مرئية (${adminDocCheck.rawRoleDisplay}) — أعد كتابة SUPER_ADMIN نظيفاً في Firestore Console لضمان عمل قواعد Firestore بدون Custom Claim.`;
+  if (adminDocCheck.hasRoleFormattingArtifacts && adminDocCheck.rawRoleDisplay && adminDocCheck.validRole) {
+    const roleWarn = `تنبيه: الحقل role في Firestore يحتوي مسافات أو محارف غير مرئية (${adminDocCheck.rawRoleDisplay}) — أعد كتابة ${adminDocCheck.validRole} نظيفاً بدون سطر جديد أو مسافات في Firebase Console؛ لأن قواعد Firestore تقارن القيمة حرفياً وقد ترفض حفظ الإعدادات أو المحتوى (permission-denied) ما لم يكن Custom Claim مضبوطاً.`;
     findings.push(roleWarn);
     if (!validClaimRole) {
       warnings.push(roleWarn);

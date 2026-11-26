@@ -15,6 +15,7 @@ import androidx.credentials.exceptions.GetCredentialInterruptedException
 import androidx.credentials.exceptions.GetCredentialProviderConfigurationException
 import androidx.credentials.exceptions.GetCredentialUnsupportedException
 import androidx.credentials.exceptions.NoCredentialException
+import com.example.R
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
@@ -332,12 +333,29 @@ fun signOutUser(
     }
 }
 
+internal fun isValidWebClientId(candidate: String?): Boolean {
+    val value = candidate?.trim().orEmpty()
+    if (value.isBlank()) return false
+    if (value.contains("placeholder", ignoreCase = true)) return false
+    return value.endsWith(".apps.googleusercontent.com", ignoreCase = true) && value.contains("-")
+}
+
 @SuppressLint("DiscouragedApi")
 internal fun resolveWebClientId(context: Context): String? {
     val appContext = context.applicationContext ?: context
+    val directCandidate = runCatching {
+        context.getString(R.string.default_web_client_id).trim()
+    }.getOrNull() ?: runCatching {
+        appContext.getString(R.string.default_web_client_id).trim()
+    }.getOrNull()
+    if (isValidWebClientId(directCandidate)) {
+        return directCandidate
+    }
+
     val packageCandidates = listOfNotNull(
         context.packageName.takeIf { it.isNotBlank() },
-        appContext.packageName.takeIf { it.isNotBlank() }
+        appContext.packageName.takeIf { it.isNotBlank() },
+        "com.example"
     ).distinct()
     val resId = packageCandidates.firstNotNullOfOrNull { pkg ->
         context.resources.getIdentifier("default_web_client_id", "string", pkg).takeIf { it != 0 }
@@ -345,12 +363,10 @@ internal fun resolveWebClientId(context: Context): String? {
     } ?: 0
     if (resId == 0) return null
     return try {
-        val value = appContext.getString(resId).trim()
-        value.takeIf {
-            it.isNotBlank() &&
-                !it.contains("placeholder", ignoreCase = true) &&
-                it.endsWith(".apps.googleusercontent.com", ignoreCase = true)
-        }
+        val value = runCatching { context.getString(resId) }
+            .getOrElse { appContext.getString(resId) }
+            .trim()
+        value.takeIf { isValidWebClientId(it) }
     } catch (_: Exception) {
         null
     }

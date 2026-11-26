@@ -13,6 +13,18 @@ export function isValidB2Endpoint(endpoint) {
   }
 }
 
+export function deriveB2RegionFromEndpoint(endpoint) {
+  const raw = String(endpoint || '').trim().replace(/\/+$/, '');
+  if (!raw) return '';
+  try {
+    const parsed = new URL(raw);
+    const match = /^s3\.([a-z0-9-]+)\.backblazeb2\.com$/i.exec(parsed.hostname);
+    return match ? match[1].toLowerCase() : '';
+  } catch {
+    return '';
+  }
+}
+
 export function isValidB2BucketName(bucketName) {
   const clean = String(bucketName || '').trim();
   return /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(clean) && !clean.includes('..');
@@ -23,15 +35,27 @@ export function isValidB2Region(region) {
   return /^[a-z0-9-]{2,40}$/.test(clean);
 }
 
+export function resolveB2Config(env) {
+  const endpoint = String(env?.B2_ENDPOINT || '').trim().replace(/\/+$/, '');
+  const explicitRegion = String(env?.B2_REGION || '').trim();
+  const region = explicitRegion || deriveB2RegionFromEndpoint(endpoint);
+  const bucketName = String(env?.B2_BUCKET_NAME || '').trim();
+  const accessKeyId = String(env?.B2_KEY_ID || '').trim();
+  const secretAccessKey = String(env?.B2_APPLICATION_KEY || '').trim();
+  const derivedRegion = deriveB2RegionFromEndpoint(endpoint);
+  const regionMatchesEndpoint = !derivedRegion || derivedRegion === region.toLowerCase();
+  const valid =
+    isValidB2Endpoint(endpoint) &&
+    isValidB2Region(region) &&
+    regionMatchesEndpoint &&
+    isValidB2BucketName(bucketName) &&
+    accessKeyId.length > 0 &&
+    secretAccessKey.length > 0;
+  return { valid, endpoint, region, bucketName, accessKeyId, secretAccessKey };
+}
+
 export function hasB2Credentials(env) {
-  if (!env) return false;
-  return (
-    isValidB2Endpoint(env.B2_ENDPOINT) &&
-    isValidB2Region(env.B2_REGION) &&
-    isValidB2BucketName(env.B2_BUCKET_NAME) &&
-    String(env.B2_KEY_ID || '').trim().length > 0 &&
-    String(env.B2_APPLICATION_KEY || '').trim().length > 0
-  );
+  return resolveB2Config(env).valid;
 }
 
 function encodeRfc3986(value) {
@@ -173,6 +197,61 @@ export async function signS3Request({
   return finalHeaders;
 }
 
+export async function signS3PresignedGetUrl({
+  url,
+  region,
+  accessKeyId,
+  secretAccessKey,
+  expiresInSec = 300,
+  responseContentDisposition = '',
+  now = new Date(),
+}) {
+  const urlObj = new URL(url);
+  const { amzDate, dateStamp } = formatAmzDate(now);
+  const clampedExpires = Math.min(3600, Math.max(30, Math.round(Number(expiresInSec) || 300)));
+  const credentialScope = `${dateStamp}/${region}/s3/aws4_request`;
+
+  urlObj.searchParams.set('X-Amz-Algorithm', 'AWS4-HMAC-SHA256');
+  urlObj.searchParams.set('X-Amz-Credential', `${accessKeyId}/${credentialScope}`);
+  urlObj.searchParams.set('X-Amz-Date', amzDate);
+  urlObj.searchParams.set('X-Amz-Expires', String(clampedExpires));
+  urlObj.searchParams.set('X-Amz-SignedHeaders', 'host');
+  if (responseContentDisposition) {
+    urlObj.searchParams.set('response-content-disposition', responseContentDisposition);
+  }
+
+  const canonicalUri = urlObj.pathname || '/';
+  const canonicalQuery = buildCanonicalQueryString(urlObj);
+  const canonicalHeaders = `host:${urlObj.host}\n`;
+  const canonicalRequest = [
+    'GET',
+    canonicalUri,
+    canonicalQuery,
+    canonicalHeaders,
+    'host',
+    'UNSIGNED-PAYLOAD',
+  ].join('\n');
+
+  const canonicalRequestHash = await sha256Hex(canonicalRequest);
+  const stringToSign = [
+    'AWS4-HMAC-SHA256',
+    amzDate,
+    credentialScope,
+    canonicalRequestHash,
+  ].join('\n');
+
+  const signingKey = await deriveSigningKey(secretAccessKey, dateStamp, region, 's3');
+  const signatureBytes = await hmacSha256Raw(signingKey, stringToSign);
+  const signatureHex = toHex(signatureBytes);
+
+  urlObj.searchParams.set('X-Amz-Signature', signatureHex);
+  return {
+    signedUrl: urlObj.toString(),
+    expiresInSec: clampedExpires,
+    expiresAt: new Date(now.getTime() + clampedExpires * 1000).toISOString(),
+  };
+}
+
 function decodeXmlEntities(text) {
   return String(text || '')
     .replace(/&lt;/g, '<')
@@ -239,14 +318,11 @@ function normalizeMetadataHeaders(customMetadata = {}) {
 }
 
 export function createB2S3Client(env, fetchImpl = fetch) {
-  if (!hasB2Credentials(env)) {
+  const config = resolveB2Config(env);
+  if (!config.valid) {
     throw new Error('Backblaze B2 S3 credentials are missing or invalid.');
   }
-  const endpoint = String(env.B2_ENDPOINT).trim().replace(/\/+$/, '');
-  const region = String(env.B2_REGION).trim();
-  const bucketName = String(env.B2_BUCKET_NAME).trim();
-  const accessKeyId = String(env.B2_KEY_ID).trim();
-  const secretAccessKey = String(env.B2_APPLICATION_KEY).trim();
+  const { endpoint, region, bucketName, accessKeyId, secretAccessKey } = config;
 
   async function signedFetch(method, url, { headers = {}, body = undefined } = {}) {
     let bodyBytes = new Uint8Array(0);
@@ -416,8 +492,17 @@ export function createB2S3Client(env, fetchImpl = fetch) {
       if (!res.ok) {
         throw new Error(`Backblaze B2 CompleteMultipartUpload failed (${res.status})`);
       }
+      const responseXml = await res.text();
+      if (/<Error>/i.test(responseXml)) {
+        const errCode = extractFirstTag(responseXml, 'Code') || 'CompleteMultipartError';
+        const errMessage = extractFirstTag(responseXml, 'Message') || 'Backblaze B2 rejected multipart completion.';
+        throw new Error(`Backblaze B2 CompleteMultipartUpload error (${errCode}): ${errMessage}`);
+      }
       const head = await this.headObject(objectKey);
-      return head || { key: objectKey, size: 0, httpMetadata: {} };
+      if (!head || Number(head.size || 0) <= 0) {
+        throw new Error('Backblaze B2 CompleteMultipartUpload verification failed: object missing or empty.');
+      }
+      return head;
     },
 
     async abortMultipartUpload(objectKey, uploadId) {
@@ -435,6 +520,17 @@ export function createB2S3Client(env, fetchImpl = fetch) {
         throw new Error(`Backblaze B2 DeleteObject failed (${res.status})`);
       }
       return true;
+    },
+
+    async getPresignedGetUrl(objectKey, { expiresInSec = 300, responseContentDisposition = '' } = {}) {
+      return signS3PresignedGetUrl({
+        url: objectUrl(objectKey),
+        region,
+        accessKeyId,
+        secretAccessKey,
+        expiresInSec,
+        responseContentDisposition,
+      });
     },
   };
 }

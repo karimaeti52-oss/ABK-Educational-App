@@ -23,8 +23,10 @@ class AuthHelperTest {
     @Test
     fun `resolveWebClientId returns web client id generated from google-services json`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
+        val directRes = context.getString(R.string.default_web_client_id)
         val clientId = resolveWebClientId(context)
         assertNotNull("default_web_client_id should resolve from google-services.json", clientId)
+        assertEquals(directRes, clientId)
         assertTrue(
             "Expected Google OAuth Web Client ID ending with .apps.googleusercontent.com, got $clientId",
             clientId!!.endsWith(".apps.googleusercontent.com")
@@ -33,6 +35,14 @@ class AuthHelperTest {
             "438492626356-il754g2m0oq9j9kg9j9t81mt19efpoja.apps.googleusercontent.com",
             clientId
         )
+        // Must NOT match client_type = 1 Android OAuth client IDs
+        assertTrue(
+            clientId != "438492626356-cfmarvo55ad3hve3orepl2nl9s3m5lv9.apps.googleusercontent.com" &&
+                clientId != "438492626356-i38lu8080m1fvm0oumkct6e0u27r17qg.apps.googleusercontent.com"
+        )
+        assertTrue(com.example.data.firebase.isValidWebClientId(clientId))
+        assertTrue(!com.example.data.firebase.isValidWebClientId("your-placeholder.apps.googleusercontent.com"))
+        assertTrue(!com.example.data.firebase.isValidWebClientId("invalid-string"))
     }
 
     @Test

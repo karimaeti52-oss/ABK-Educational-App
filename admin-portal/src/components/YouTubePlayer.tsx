@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, ExternalLink, Loader2, Play, X } from 'lucide-react';
 import { firebaseAuth } from '../firebase';
-import { resolveActiveR2WorkerUrl } from '../services/r2UploadClient';
+import { fetchSignedB2Url, resolveActiveR2WorkerUrl } from '../services/r2UploadClient';
 import type { PlatformConfig } from '../types';
 import {
   extractYouTubeVideoId,
@@ -70,6 +70,22 @@ export function AuthenticatedDirectVideo({
 
     (async () => {
       try {
+        if (url.includes('/b2/files/')) {
+          try {
+            const signed = await fetchSignedB2Url({
+              fileUrl: url,
+              platformConfig,
+              download: false,
+              expiresInSec: 600,
+            });
+            if (signed && !canceled) {
+              setResolvedSrc(signed);
+              return;
+            }
+          } catch {
+            // Fallback to authenticated Worker Range/blob fetch below
+          }
+        }
         const token = await firebaseAuth.currentUser?.getIdToken();
         if (!token) {
           throw new Error('يرجى تسجيل الدخول للمعاينة.');

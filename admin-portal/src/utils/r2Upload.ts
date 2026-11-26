@@ -26,10 +26,14 @@ export const PERMANENT_MIDAD_APK_URL =
 
 export type R2UploadErrorCode =
   | 'WORKER_NOT_CONFIGURED'
+  | 'WORKER_INVALID_URL'
+  | 'WORKER_UNREACHABLE'
   | 'UNAUTHENTICATED'
   | 'INVALID_TYPE'
   | 'FILE_TOO_LARGE'
   | 'QUOTA_EXCEEDED'
+  | 'STORAGE_UNAVAILABLE'
+  | 'UPLOAD_SESSION_EXPIRED'
   | 'CANCELED'
   | 'PAUSED'
   | 'NETWORK'
@@ -47,6 +51,13 @@ export class R2UploadError extends Error {
   }
 }
 
+export interface WorkerUrlValidationResult {
+  valid: boolean;
+  normalizedUrl: string;
+  reason: 'OK' | 'EMPTY' | 'INSECURE_PROTOCOL' | 'INVALID_FORMAT';
+  errorMessage: string | null;
+}
+
 export interface UploadedPartRecord {
   partNumber: number;
   etag: string;
@@ -57,6 +68,7 @@ export interface ResumableUploadSession {
   fileName: string;
   sizeBytes: number;
   folder: string;
+  workerBaseUrl?: string;
   storageProvider?: StorageProviderId;
   uploadId: string;
   objectKey: string;
@@ -110,11 +122,22 @@ const EXT_INFO: Record<string, { mediaKind: MediaKind; contentType: string }> = 
     mediaKind: 'ATTACHMENT',
     contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   },
+  ppt: {
+    mediaKind: 'ATTACHMENT',
+    contentType: 'application/vnd.ms-powerpoint',
+  },
   pptx: {
     mediaKind: 'ATTACHMENT',
     contentType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   },
 };
+
+const MIME_ALIASES: Record<string, string> = {
+  'application/x-pdf': 'application/pdf',
+  'image/pjpeg': 'image/jpeg',
+};
+
+const INVISIBLE_URL_CHARS_RE = /[\u00AD\u061C\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF\r\n\t]/g;
 
 export function resolveR2StorageLimits(config?: Partial<PlatformConfig> | null): R2StorageLimits {
   const clamp = (val: unknown, fallback: number, min: number, max: number) => {
@@ -226,7 +249,9 @@ export function buildMultiProviderStorageSummary(options: {
         ? 'متصل ومُتحقّق فعلياً من حساب Cloudflare R2'
         : r2Quota?.r2?.error
           ? `فشل التحقق من R2: ${r2Quota.r2.error}`
-          : 'غير مفعّل كسعة متاحة بعد — بانتظار التحقق الفعلي من حساب Cloudflare R2 وربط Worker',
+          : b2Enabled && r2Quota?.r2Bound === false
+            ? 'غير مربوط في Worker حالياً (التخزين الأساسي يعمل عبر Backblaze B2)'
+            : 'غير مفعّل كسعة متاحة بعد — بانتظار التحقق الفعلي من حساب Cloudflare R2 وربط Worker',
     },
     b2: {
       provider: 'backblaze-b2',
@@ -254,19 +279,80 @@ export function buildMultiProviderStorageSummary(options: {
   };
 }
 
-export function normalizeR2WorkerBaseUrl(rawUrl?: string | null): string {
-  const trimmed = String(rawUrl || '').trim().replace(/\/+$/g, '');
-  if (!trimmed) return '';
+function stripWorkerRouteSuffix(pathname: string): string {
+  const cleaned = pathname.replace(/\/+$/g, '');
+  if (!cleaned) return '';
+  const exactRouteSuffixes = [
+    '/health',
+    '/quota',
+    '/providers/status',
+    '/upload',
+    '/multipart/init',
+    '/multipart/part',
+    '/multipart/complete',
+    '/multipart/abort',
+    '/signed-url',
+    '/b2/signed-url',
+    '/object',
+  ];
+  for (const suffix of exactRouteSuffixes) {
+    if (cleaned.toLowerCase().endsWith(suffix)) {
+      return cleaned.slice(0, cleaned.length - suffix.length);
+    }
+  }
+  const filesIdx = cleaned.search(/\/(?:files|b2\/files)(?:\/|$)/i);
+  if (filesIdx >= 0) {
+    return cleaned.slice(0, filesIdx);
+  }
+  return cleaned;
+}
+
+export function validateR2WorkerBaseUrlInput(rawUrl?: string | null): WorkerUrlValidationResult {
+  const cleaned = String(rawUrl || '')
+    .replace(INVISIBLE_URL_CHARS_RE, '')
+    .trim()
+    .replace(/\/+$/g, '');
+  if (!cleaned) {
+    return {
+      valid: false,
+      normalizedUrl: '',
+      reason: 'EMPTY',
+      errorMessage:
+        'رابط Storage Worker غير مضبوط. انتقل إلى إعدادات المنصة وأدخل رابط Worker الصحيح (HTTPS).',
+    };
+  }
   try {
-    const parsed = new URL(trimmed);
+    const parsed = new URL(cleaned);
     const isLocal = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1';
     if (parsed.protocol !== 'https:' && !isLocal) {
-      return '';
+      return {
+        valid: false,
+        normalizedUrl: '',
+        reason: 'INSECURE_PROTOCOL',
+        errorMessage:
+          'رابط Storage Worker غير صالح للأمان: يجب أن يبدأ بـ https:// (مثال: https://midad-r2-worker.your-subdomain.workers.dev).',
+      };
     }
-    return parsed.origin + parsed.pathname.replace(/\/+$/g, '');
+    const basePath = stripWorkerRouteSuffix(parsed.pathname);
+    return {
+      valid: true,
+      normalizedUrl: `${parsed.origin}${basePath}`,
+      reason: 'OK',
+      errorMessage: null,
+    };
   } catch {
-    return '';
+    return {
+      valid: false,
+      normalizedUrl: '',
+      reason: 'INVALID_FORMAT',
+      errorMessage:
+        'صيغة رابط Storage Worker غير صالحة. تأكد من كتابة الرابط كاملاً مثل https://midad-r2-worker.your-subdomain.workers.dev دون مسافات.',
+    };
   }
+}
+
+export function normalizeR2WorkerBaseUrl(rawUrl?: string | null): string {
+  return validateR2WorkerBaseUrlInput(rawUrl).normalizedUrl;
 }
 
 export function formatBytesReadable(bytes: number): string {
@@ -294,7 +380,7 @@ export function detectR2FileSpec(
         ? 'صيغة الصورة غير مدعومة. المسموح: PNG, JPG, WEBP.'
         : options.videoOnly
           ? 'صيغة الفيديو غير مدعومة. المسموح: MP4, M4V, WEBM.'
-          : 'صيغة الملف غير مدعومة. المسموح: MP4/WEBM، PDF، PNG/JPG/WEBP، Office، ZIP.',
+          : 'صيغة الملف غير مدعومة. المسموح: MP4/WEBM، PDF، PNG/JPG/WEBP، Office (DOC/DOCX/PPT/PPTX)، ZIP.',
       false
     );
   }
@@ -306,7 +392,8 @@ export function detectR2FileSpec(
     throw new R2UploadError('INVALID_TYPE', 'يرجى اختيار ملف فيديو بصيغة MP4 أو WEBM.', false);
   }
 
-  const mime = String(file.type || '').split(';')[0].trim().toLowerCase();
+  const rawMime = String(file.type || '').split(';')[0].trim().toLowerCase();
+  const mime = MIME_ALIASES[rawMime] || rawMime;
   return {
     mediaKind: entry.mediaKind,
     contentType: mime && mime !== 'application/octet-stream' ? mime : entry.contentType,
@@ -363,10 +450,11 @@ export function validateR2FileLimits(
       return;
     }
 
-    if (quotaStatus.verified === false || quotaStatus.r2Bound === false) {
+    const r2ExplicitlyFailed = quotaStatus.r2 ? !quotaStatus.r2.verified : quotaStatus.verified === false;
+    if (r2ExplicitlyFailed || quotaStatus.r2Bound === false) {
       throw new R2UploadError(
         'WORKER_NOT_CONFIGURED',
-        'حساب Cloudflare R2 غير متحقق منه بعد. نفّذ «التحقق الفعلي من حساب الخدمة» أولاً.',
+        'حساب Cloudflare R2 غير مربوط أو غير متحقق منه. اختر Backblaze B2 أو اربط MEDIA_BUCKET أولاً.',
         false
       );
     }
@@ -434,28 +522,218 @@ export function clearSavedUploadSession(
   }
 }
 
-async function fetchJsonOrThrow(
+export interface WorkerHealthCheckResult {
+  ok: boolean;
+  service: string;
+  primaryProvider?: StorageProviderId;
+  r2Bound: boolean;
+  b2Bound: boolean;
+  b2Enabled: boolean;
+  b2WorkerConfigured: boolean;
+  limits?: R2StorageLimits;
+}
+
+export async function fetchJsonOrThrow(
   fetchImpl: typeof fetch,
   url: string,
-  init: RequestInit
+  init: RequestInit,
+  timeoutMs = 30_000
 ): Promise<Record<string, unknown>> {
-  const res = await fetchImpl(url, init);
+  let res: Response;
+  let timedOut = false;
+  const timeoutController = new AbortController();
+  const externalSignal = init.signal;
+  const onExternalAbort = () => timeoutController.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      throw new R2UploadError('CANCELED', 'تم إلغاء العملية.', true);
+    }
+    externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+  }
+  const timer =
+    timeoutMs > 0
+      ? setTimeout(() => {
+          timedOut = true;
+          timeoutController.abort();
+        }, timeoutMs)
+      : null;
+
+  try {
+    res = await fetchImpl(url, { ...init, signal: timeoutController.signal });
+  } catch (err) {
+    if (externalSignal?.aborted) {
+      throw new R2UploadError('CANCELED', 'تم إلغاء عملية الرفع.', true);
+    }
+    if (timedOut || (err instanceof Error && err.name === 'AbortError')) {
+      throw new R2UploadError(
+        'NETWORK',
+        'انتهت مهلة الاتصال بخادم Storage Worker. تحقق من سرعة الإنترنت وأعد المحاولة.',
+        true
+      );
+    }
+    throw new R2UploadError(
+      'WORKER_UNREACHABLE',
+      'تعذر الاتصال بخادم Storage Worker (مشكلة شبكة أو رابط خاطئ أو CORS). تأكد من نشر Worker وإضافة رابط لوحة الإدارة في ALLOWED_ORIGINS.',
+      true
+    );
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+    if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort);
+  }
+
   let body: Record<string, unknown> = {};
   try {
     body = (await res.json()) as Record<string, unknown>;
   } catch {
     body = {};
   }
+
   if (!res.ok) {
-    const msg = String(body.error || `خطأ من خادم التخزين (HTTP ${res.status})`);
-    const code = String(body.code || '');
-    if (res.status === 401 || res.status === 403) throw new R2UploadError('UNAUTHORIZED', msg, false);
-    if (res.status === 413 || code === 'FILE_TOO_LARGE') throw new R2UploadError('FILE_TOO_LARGE', msg, false);
-    if (res.status === 507 || code === 'QUOTA_EXCEEDED') throw new R2UploadError('QUOTA_EXCEEDED', msg, false);
-    if (code === 'B2_NOT_CONFIGURED') throw new R2UploadError('WORKER_NOT_CONFIGURED', msg, false);
-    throw new R2UploadError('NETWORK', msg, res.status >= 500);
+    const code = String(body.code || '').trim();
+    const rawMsg = typeof body.error === 'string' && body.error.trim() ? body.error.trim() : '';
+
+    if (res.status === 401) {
+      throw new R2UploadError(
+        'UNAUTHENTICATED',
+        rawMsg || 'انتهت جلسة تسجيل الدخول أو رمز التحقق غير صالح (401). حدّث الصفحة أو أعد تسجيل الدخول.',
+        false
+      );
+    }
+    if (res.status === 403) {
+      throw new R2UploadError(
+        'UNAUTHORIZED',
+        rawMsg || 'ليس لديك صلاحية تنفيذ هذا الإجراء على خادم التخزين (403). تأكد من دورك في admins/{uid}.',
+        false
+      );
+    }
+    if (res.status === 404 && code === 'UPLOAD_SESSION_NOT_FOUND') {
+      throw new R2UploadError(
+        'UPLOAD_SESSION_EXPIRED',
+        rawMsg || 'انتهت جلسة الرفع المجزأ على الخادم. جارٍ بدء جلسة جديدة.',
+        true
+      );
+    }
+    if (res.status === 413 || code === 'FILE_TOO_LARGE') {
+      throw new R2UploadError('FILE_TOO_LARGE', rawMsg || 'حجم الملف يتجاوز الحد الأقصى المسموح.', false);
+    }
+    if (res.status === 415) {
+      throw new R2UploadError('INVALID_TYPE', rawMsg || 'صيغة أو امتداد الملف غير مدعوم.', false);
+    }
+    if (res.status === 507 || code === 'QUOTA_EXCEEDED') {
+      throw new R2UploadError('QUOTA_EXCEEDED', rawMsg || 'المساحة التخزينية ممتلئة ولا تكفي لرفع الملف.', false);
+    }
+    if (code === 'B2_NOT_CONFIGURED') {
+      throw new R2UploadError(
+        'WORKER_NOT_CONFIGURED',
+        rawMsg || 'خدمة Backblaze B2 غير مفعّلة أو لم تُربط مفاتيحها في Worker بعد.',
+        false
+      );
+    }
+    if (code === 'MEDIA_BUCKET_MISSING' || code === 'R2_UNAVAILABLE' || code === 'B2_UNAVAILABLE') {
+      throw new R2UploadError(
+        'STORAGE_UNAVAILABLE',
+        rawMsg || 'خادم Worker يعمل لكن مساحة التخزين (R2 أو B2) غير مربوطة أو غير متاحة حالياً.',
+        res.status === 503
+      );
+    }
+    throw new R2UploadError(
+      'NETWORK',
+      rawMsg || `خطأ من خادم التخزين (HTTP ${res.status})`,
+      res.status >= 500
+    );
   }
   return body;
+}
+
+export async function verifyWorkerHealth({
+  workerBaseUrl,
+  storageProvider,
+  fetchImpl = fetch,
+  signal,
+  timeoutMs = 15_000,
+}: {
+  workerBaseUrl: string;
+  storageProvider?: StorageProviderId;
+  fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}): Promise<WorkerHealthCheckResult> {
+  const urlCheck = validateR2WorkerBaseUrlInput(workerBaseUrl);
+  if (!urlCheck.valid) {
+    throw new R2UploadError(
+      urlCheck.reason === 'EMPTY' ? 'WORKER_NOT_CONFIGURED' : 'WORKER_INVALID_URL',
+      urlCheck.errorMessage!,
+      false
+    );
+  }
+
+  let data: Record<string, unknown>;
+  try {
+    data = await fetchJsonOrThrow(
+      fetchImpl,
+      `${urlCheck.normalizedUrl}/health`,
+      { method: 'GET', signal },
+      timeoutMs
+    );
+  } catch (err) {
+    if (err instanceof R2UploadError) {
+      if (err.code === 'CANCELED') throw err;
+      throw new R2UploadError(
+        'WORKER_UNREACHABLE',
+        `فشل فحص اتصال Storage Worker (${urlCheck.normalizedUrl}/health): ${err.message}`,
+        err.retryable
+      );
+    }
+    throw err;
+  }
+
+  if (data.ok !== true || String(data.service || '') !== 'midad-r2-worker') {
+    throw new R2UploadError(
+      'WORKER_UNREACHABLE',
+      'الرابط لا يشير إلى خدمة midad-r2-worker الصالحة (/health لم يُرجع استجابة الخدمة المتوقعة).',
+      false
+    );
+  }
+
+  const r2Bound = Boolean(data.r2Bound);
+  const b2Enabled = Boolean(data.b2Enabled);
+  const b2WorkerConfigured = Boolean(data.b2WorkerConfigured);
+  const b2Bound = Boolean(data.b2Bound ?? b2WorkerConfigured);
+  const primaryProvider: StorageProviderId | undefined =
+    data.primaryProvider === 'b2' ? 'b2' : data.primaryProvider === 'r2' ? 'r2' : undefined;
+
+  if (storageProvider === 'r2' && !r2Bound) {
+    throw new R2UploadError(
+      'STORAGE_UNAVAILABLE',
+      'تم الوصول إلى Storage Worker بنجاح، لكن R2 Bucket (MEDIA_BUCKET) غير مربوط في إعدادات Worker على Cloudflare.',
+      false
+    );
+  }
+  if (storageProvider === 'b2' && !b2Enabled) {
+    throw new R2UploadError(
+      'WORKER_NOT_CONFIGURED',
+      'تم الوصول إلى Worker لكن مزود Backblaze B2 غير مفعّل بعد (تأكد من ضبط الأسرار B2_KEY_ID و B2_APPLICATION_KEY و B2_BUCKET_NAME و B2_ENDPOINT في Cloudflare Worker).',
+      false
+    );
+  }
+  if (!storageProvider && !r2Bound && !b2Enabled) {
+    throw new R2UploadError(
+      'STORAGE_UNAVAILABLE',
+      'تم الوصول إلى Storage Worker بنجاح، لكن لا يوجد مزود تخزين مربوط بعد (أضف أسرار Backblaze B2 أو اربط MEDIA_BUCKET لـ R2).',
+      false
+    );
+  }
+
+  return {
+    ok: true,
+    service: String(data.service || 'midad-r2-worker'),
+    primaryProvider,
+    r2Bound,
+    b2Bound,
+    b2Enabled,
+    b2WorkerConfigured,
+    limits: data.limits as R2StorageLimits | undefined,
+  };
 }
 
 export interface MultipartEngineOptions {
@@ -470,6 +748,7 @@ export interface MultipartEngineOptions {
   imageOnly?: boolean;
   videoOnly?: boolean;
   maxRetriesPerChunk?: number;
+  skipHealthCheck?: boolean;
   signal?: AbortSignal;
   pauseController?: { isPaused: () => boolean };
   storage?: SessionStorageLike;
@@ -479,16 +758,17 @@ export interface MultipartEngineOptions {
 
 export async function executeResumableR2Upload(options: MultipartEngineOptions): Promise<R2UploadResult> {
   const fetchImpl = options.fetchImpl ?? fetch;
-  const workerBaseUrl = normalizeR2WorkerBaseUrl(options.workerBaseUrl);
-  if (!workerBaseUrl) {
+  const urlValidation = validateR2WorkerBaseUrlInput(options.workerBaseUrl);
+  if (!urlValidation.valid) {
     throw new R2UploadError(
-      'WORKER_NOT_CONFIGURED',
-      'رابط Storage Worker غير مضبوط. انتقل إلى إعدادات المنصة وأدخل رابط Worker الصحيح (HTTPS).',
+      urlValidation.reason === 'EMPTY' ? 'WORKER_NOT_CONFIGURED' : 'WORKER_INVALID_URL',
+      urlValidation.errorMessage!,
       false
     );
   }
+  const workerBaseUrl = urlValidation.normalizedUrl;
 
-  const storageProvider: StorageProviderId = options.storageProvider === 'b2' ? 'b2' : 'r2';
+  const explicitProvider = options.storageProvider;
   const accessLevel: MediaAccessLevel =
     options.accessLevel ?? (options.folder.trim().toLowerCase() === 'branding' ? 'public' : 'private');
   const limits = options.limits ?? DEFAULT_R2_LIMITS;
@@ -496,6 +776,15 @@ export async function executeResumableR2Upload(options: MultipartEngineOptions):
     imageOnly: options.imageOnly,
     videoOnly: options.videoOnly,
   });
+
+  const inferInitialProvider = (): StorageProviderId => {
+    if (explicitProvider) return explicitProvider;
+    if (options.quotaStatus?.primaryProvider) return options.quotaStatus.primaryProvider;
+    if (options.quotaStatus?.b2?.enabled && options.quotaStatus?.b2?.verified) return 'b2';
+    return 'r2';
+  };
+
+  let storageProvider: StorageProviderId = inferInitialProvider();
   validateR2FileLimits(options.file.size, spec.mediaKind, limits, options.quotaStatus, storageProvider);
 
   const token = await options.getAuthToken();
@@ -522,6 +811,28 @@ export async function executeResumableR2Upload(options: MultipartEngineOptions):
     });
   };
 
+  emitProgress(0, 'checking', 0, 1);
+
+  if (!options.skipHealthCheck) {
+    const health = await verifyWorkerHealth({
+      workerBaseUrl,
+      storageProvider: explicitProvider,
+      fetchImpl,
+      signal: options.signal,
+    });
+    if (!explicitProvider) {
+      storageProvider =
+        health.primaryProvider === 'b2' || (health.b2Enabled && !health.r2Bound)
+          ? 'b2'
+          : health.r2Bound
+            ? 'r2'
+            : health.b2Enabled
+              ? 'b2'
+              : 'r2';
+      validateR2FileLimits(options.file.size, spec.mediaKind, limits, options.quotaStatus, storageProvider);
+    }
+  }
+
   // Single-shot upload for small files <= 5 MB
   if (options.file.size <= MULTIPART_THRESHOLD_BYTES) {
     emitProgress(0, 'uploading', 1, 1);
@@ -541,12 +852,22 @@ export async function executeResumableR2Upload(options: MultipartEngineOptions):
         },
         body: options.file,
         signal: options.signal,
-      }
+      },
+      120_000
     );
+    const resolvedPublicUrl = typeof result.publicUrl === 'string' ? result.publicUrl.trim() : '';
+    const resolvedObjectKey = typeof result.objectKey === 'string' ? result.objectKey.trim() : '';
+    if (!resolvedPublicUrl || !resolvedObjectKey) {
+      throw new R2UploadError(
+        'UNKNOWN',
+        'استجاب خادم التخزين لكن لم يُرجع رابط الملف أو مفتاح التخزين بشكل مكتمل.',
+        true
+      );
+    }
     emitProgress(options.file.size, 'completing', 1, 1);
     return {
-      url: String(result.publicUrl),
-      objectKey: String(result.objectKey),
+      url: resolvedPublicUrl,
+      objectKey: resolvedObjectKey,
       storageProvider: result.storageProvider === 'b2' ? 'b2' : storageProvider,
       accessLevel: result.accessLevel === 'public' ? 'public' : accessLevel,
       sizeBytes: Number(result.sizeBytes || options.file.size),
@@ -557,171 +878,217 @@ export async function executeResumableR2Upload(options: MultipartEngineOptions):
     };
   }
 
-  // Resumable Multipart Upload (> 5 MB)
-  emitProgress(0, 'checking', 0, 1);
+  // Resumable Multipart Upload (> 5 MB, cleanly handles > 50 MB without duplicates)
   const fingerprint = buildFileFingerprint(options.file, options.folder, storageProvider);
-  let session = loadSavedUploadSession(options.storage, fingerprint);
+  let allowRestartExpiredSession = true;
 
-  if (!session) {
-    const initJson = await fetchJsonOrThrow(fetchImpl, `${workerBaseUrl}/multipart/init`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
+  while (true) {
+    let session = loadSavedUploadSession(options.storage, fingerprint);
+    if (session && session.workerBaseUrl && session.workerBaseUrl !== workerBaseUrl) {
+      clearSavedUploadSession(options.storage, fingerprint);
+      session = null;
+    }
+
+    if (!session) {
+      const initToken = await options.getAuthToken();
+      const initJson = await fetchJsonOrThrow(
+        fetchImpl,
+        `${workerBaseUrl}/multipart/init`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${initToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            fileName: options.file.name,
+            contentType: spec.contentType,
+            folder: options.folder,
+            sizeBytes: options.file.size,
+            provider: storageProvider,
+            accessLevel,
+          }),
+          signal: options.signal,
+        },
+        60_000
+      );
+
+      const partSizeBytes = Number(initJson.partSizeBytes || DEFAULT_PART_SIZE_BYTES);
+      const totalParts = Math.ceil(options.file.size / partSizeBytes);
+      session = {
+        fingerprint,
         fileName: options.file.name,
-        contentType: spec.contentType,
-        folder: options.folder,
         sizeBytes: options.file.size,
-        provider: storageProvider,
-        accessLevel,
-      }),
-      signal: options.signal,
-    });
-
-    const partSizeBytes = Number(initJson.partSizeBytes || DEFAULT_PART_SIZE_BYTES);
-    const totalParts = Math.ceil(options.file.size / partSizeBytes);
-    session = {
-      fingerprint,
-      fileName: options.file.name,
-      sizeBytes: options.file.size,
-      folder: options.folder,
-      storageProvider,
-      uploadId: String(initJson.uploadId),
-      objectKey: String(initJson.objectKey),
-      partSizeBytes,
-      totalParts,
-      uploadedParts: [],
-      updatedAt: Date.now(),
-    };
-    saveUploadSession(options.storage, session);
-  }
-
-  const uploadedMap = new Map<number, string>();
-  for (const p of session.uploadedParts) {
-    uploadedMap.set(p.partNumber, p.etag);
-  }
-
-  let bytesAlreadyDone = 0;
-  for (let pn = 1; pn <= session.totalParts; pn += 1) {
-    if (uploadedMap.has(pn)) {
-      const start = (pn - 1) * session.partSizeBytes;
-      const end = Math.min(options.file.size, start + session.partSizeBytes);
-      bytesAlreadyDone += end - start;
-    }
-  }
-
-  const maxRetries = Math.max(1, options.maxRetriesPerChunk ?? 3);
-
-  for (let partNumber = 1; partNumber <= session.totalParts; partNumber += 1) {
-    if (uploadedMap.has(partNumber)) continue;
-
-    if (options.signal?.aborted) {
-      throw new R2UploadError('CANCELED', 'تم إلغاء عملية الرفع وحذف الجلسة.', true);
-    }
-    if (options.pauseController?.isPaused()) {
-      emitProgress(bytesAlreadyDone, 'paused', partNumber, session.totalParts);
-      throw new R2UploadError('PAUSED', 'تم إيقاف الرفع مؤقتاً ويمكنك استئنافه من حيث توقف.', true);
+        folder: options.folder,
+        workerBaseUrl,
+        storageProvider,
+        uploadId: String(initJson.uploadId),
+        objectKey: String(initJson.objectKey),
+        partSizeBytes,
+        totalParts,
+        uploadedParts: [],
+        updatedAt: Date.now(),
+      };
+      saveUploadSession(options.storage, session);
     }
 
-    const start = (partNumber - 1) * session.partSizeBytes;
-    const end = Math.min(options.file.size, start + session.partSizeBytes);
-    const chunkBlob = options.file.slice(start, end, spec.contentType);
+    const uploadedMap = new Map<number, string>();
+    for (const p of session.uploadedParts) {
+      uploadedMap.set(p.partNumber, p.etag);
+    }
 
-    emitProgress(bytesAlreadyDone, 'uploading', partNumber, session.totalParts);
-
-    let lastErr: unknown = null;
-    let uploadedPart: UploadedPartRecord | null = null;
-
-    for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
-      if (options.signal?.aborted) {
-        throw new R2UploadError('CANCELED', 'تم إلغاء عملية الرفع.', true);
+    let bytesAlreadyDone = 0;
+    for (let pn = 1; pn <= session.totalParts; pn += 1) {
+      if (uploadedMap.has(pn)) {
+        const start = (pn - 1) * session.partSizeBytes;
+        const end = Math.min(options.file.size, start + session.partSizeBytes);
+        bytesAlreadyDone += end - start;
       }
-      if (options.pauseController?.isPaused()) {
-        emitProgress(bytesAlreadyDone, 'paused', partNumber, session.totalParts);
-        throw new R2UploadError('PAUSED', 'تم إيقاف الرفع مؤقتاً.', true);
-      }
+    }
 
-      try {
-        const freshToken = await options.getAuthToken();
-        const partRes = await fetchJsonOrThrow(
-          fetchImpl,
-          `${workerBaseUrl}/multipart/part?key=${encodeURIComponent(session.objectKey)}&uploadId=${encodeURIComponent(session.uploadId)}&partNumber=${partNumber}&provider=${storageProvider}`,
-          {
-            method: 'PUT',
-            headers: {
-              Authorization: `Bearer ${freshToken}`,
-              'Content-Type': 'application/octet-stream',
-              'X-Storage-Provider': storageProvider,
-            },
-            body: chunkBlob,
-            signal: options.signal,
-          }
-        );
-        uploadedPart = {
-          partNumber: Number(partRes.partNumber || partNumber),
-          etag: String(partRes.etag),
-        };
-        break;
-      } catch (err) {
-        lastErr = err;
-        if (err instanceof R2UploadError && !err.retryable) throw err;
+    const maxRetries = Math.max(1, options.maxRetriesPerChunk ?? 3);
+
+    try {
+      for (let partNumber = 1; partNumber <= session.totalParts; partNumber += 1) {
+        if (uploadedMap.has(partNumber)) continue;
+
         if (options.signal?.aborted) {
-          throw new R2UploadError('CANCELED', 'تم إلغاء عملية الرفع.', true);
+          throw new R2UploadError('CANCELED', 'تم إلغاء عملية الرفع وحذف الجلسة.', true);
         }
-        if (attempt < maxRetries) {
-          await new Promise((r) => setTimeout(r, 250 * attempt));
+        if (options.pauseController?.isPaused()) {
+          emitProgress(bytesAlreadyDone, 'paused', partNumber, session.totalParts);
+          throw new R2UploadError('PAUSED', 'تم إيقاف الرفع مؤقتاً ويمكنك استئنافه من حيث توقف.', true);
         }
+
+        const start = (partNumber - 1) * session.partSizeBytes;
+        const end = Math.min(options.file.size, start + session.partSizeBytes);
+        const chunkBlob = options.file.slice(start, end, spec.contentType);
+
+        emitProgress(bytesAlreadyDone, 'uploading', partNumber, session.totalParts);
+
+        let lastErr: unknown = null;
+        let uploadedPart: UploadedPartRecord | null = null;
+
+        for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+          if (options.signal?.aborted) {
+            throw new R2UploadError('CANCELED', 'تم إلغاء عملية الرفع.', true);
+          }
+          if (options.pauseController?.isPaused()) {
+            emitProgress(bytesAlreadyDone, 'paused', partNumber, session.totalParts);
+            throw new R2UploadError('PAUSED', 'تم إيقاف الرفع مؤقتاً.', true);
+          }
+
+          try {
+            const freshToken = await options.getAuthToken();
+            const partRes = await fetchJsonOrThrow(
+              fetchImpl,
+              `${workerBaseUrl}/multipart/part?key=${encodeURIComponent(session.objectKey)}&uploadId=${encodeURIComponent(session.uploadId)}&partNumber=${partNumber}&provider=${storageProvider}`,
+              {
+                method: 'PUT',
+                headers: {
+                  Authorization: `Bearer ${freshToken}`,
+                  'Content-Type': 'application/octet-stream',
+                  'X-Storage-Provider': storageProvider,
+                },
+                body: chunkBlob,
+                signal: options.signal,
+              },
+              120_000
+            );
+            uploadedPart = {
+              partNumber: Number(partRes.partNumber || partNumber),
+              etag: String(partRes.etag),
+            };
+            break;
+          } catch (err) {
+            lastErr = err;
+            if (err instanceof R2UploadError && err.code === 'UPLOAD_SESSION_EXPIRED') {
+              throw err;
+            }
+            if (err instanceof R2UploadError && !err.retryable) throw err;
+            if (options.signal?.aborted) {
+              throw new R2UploadError('CANCELED', 'تم إلغاء عملية الرفع.', true);
+            }
+            if (attempt < maxRetries) {
+              await new Promise((r) => setTimeout(r, 250 * attempt));
+            }
+          }
+        }
+
+        if (!uploadedPart) {
+          throw lastErr instanceof Error
+            ? lastErr
+            : new R2UploadError('NETWORK', 'فشل رفع أحد أجزاء الملف بعد عدة محاولات. يمكنك الاستئناف لاحقاً.', true);
+        }
+
+        uploadedMap.set(uploadedPart.partNumber, uploadedPart.etag);
+        session.uploadedParts = Array.from(uploadedMap.entries())
+          .map(([pn, etag]) => ({ partNumber: pn, etag }))
+          .sort((a, b) => a.partNumber - b.partNumber);
+        session.updatedAt = Date.now();
+        saveUploadSession(options.storage, session);
+
+        bytesAlreadyDone += end - start;
+        emitProgress(bytesAlreadyDone, 'uploading', partNumber, session.totalParts);
       }
+
+      emitProgress(options.file.size, 'completing', session.totalParts, session.totalParts);
+      const finalToken = await options.getAuthToken();
+      const completedJson = await fetchJsonOrThrow(
+        fetchImpl,
+        `${workerBaseUrl}/multipart/complete`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${finalToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            objectKey: session.objectKey,
+            uploadId: session.uploadId,
+            provider: storageProvider,
+            parts: session.uploadedParts,
+          }),
+          signal: options.signal,
+        },
+        120_000
+      );
+
+      const completedUrl =
+        typeof completedJson.publicUrl === 'string' ? completedJson.publicUrl.trim() : '';
+      const completedKey =
+        typeof completedJson.objectKey === 'string' && completedJson.objectKey.trim()
+          ? completedJson.objectKey.trim()
+          : session.objectKey;
+      if (!completedUrl || !completedKey) {
+        throw new R2UploadError(
+          'UNKNOWN',
+          'اكتمل رفع الأجزاء لكن الخادم لم يؤكد رابط الملف النهائي.',
+          true
+        );
+      }
+
+      clearSavedUploadSession(options.storage, fingerprint);
+
+      const finalSize = Number(completedJson.sizeBytes || options.file.size);
+      return {
+        url: completedUrl,
+        objectKey: completedKey,
+        storageProvider: completedJson.storageProvider === 'b2' ? 'b2' : storageProvider,
+        accessLevel: completedJson.accessLevel === 'public' ? 'public' : accessLevel,
+        sizeBytes: finalSize,
+        sizeLabel: formatBytesReadable(finalSize),
+        contentType: String(completedJson.contentType || spec.contentType),
+        mediaKind: (completedJson.mediaKind as MediaKind) || spec.mediaKind,
+        fileName: options.file.name,
+      };
+    } catch (err) {
+      if (err instanceof R2UploadError && err.code === 'UPLOAD_SESSION_EXPIRED' && allowRestartExpiredSession) {
+        allowRestartExpiredSession = false;
+        clearSavedUploadSession(options.storage, fingerprint);
+        continue;
+      }
+      throw err;
     }
-
-    if (!uploadedPart) {
-      throw lastErr instanceof Error
-        ? lastErr
-        : new R2UploadError('NETWORK', 'فشل رفع أحد أجزاء الملف بعد عدة محاولات. يمكنك الاستئناف لاحقاً.', true);
-    }
-
-    uploadedMap.set(uploadedPart.partNumber, uploadedPart.etag);
-    session.uploadedParts = Array.from(uploadedMap.entries())
-      .map(([pn, etag]) => ({ partNumber: pn, etag }))
-      .sort((a, b) => a.partNumber - b.partNumber);
-    session.updatedAt = Date.now();
-    saveUploadSession(options.storage, session);
-
-    bytesAlreadyDone += end - start;
-    emitProgress(bytesAlreadyDone, 'uploading', partNumber, session.totalParts);
   }
-
-  emitProgress(options.file.size, 'completing', session.totalParts, session.totalParts);
-  const finalToken = await options.getAuthToken();
-  const completedJson = await fetchJsonOrThrow(fetchImpl, `${workerBaseUrl}/multipart/complete`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${finalToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      objectKey: session.objectKey,
-      uploadId: session.uploadId,
-      provider: storageProvider,
-      parts: session.uploadedParts,
-    }),
-    signal: options.signal,
-  });
-
-  clearSavedUploadSession(options.storage, fingerprint);
-
-  const finalSize = Number(completedJson.sizeBytes || options.file.size);
-  return {
-    url: String(completedJson.publicUrl),
-    objectKey: String(completedJson.objectKey || session.objectKey),
-    storageProvider: completedJson.storageProvider === 'b2' ? 'b2' : storageProvider,
-    accessLevel: completedJson.accessLevel === 'public' ? 'public' : accessLevel,
-    sizeBytes: finalSize,
-    sizeLabel: formatBytesReadable(finalSize),
-    contentType: String(completedJson.contentType || spec.contentType),
-    mediaKind: (completedJson.mediaKind as MediaKind) || spec.mediaKind,
-    fileName: options.file.name,
-  };
 }

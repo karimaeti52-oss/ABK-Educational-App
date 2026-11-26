@@ -23,7 +23,11 @@ import {
   VideoPreviewModal,
   YouTubeVideoPlayer,
 } from '../components/YouTubePlayer';
-import { fetchR2QuotaStatus, resolveActiveR2WorkerUrl } from '../services/r2UploadClient';
+import {
+  fetchR2QuotaStatus,
+  inferStorageProviderFromUrl,
+  resolveActiveR2WorkerUrl,
+} from '../services/r2UploadClient';
 import {
   buildMultiProviderStorageSummary,
   formatBytesReadable,
@@ -89,7 +93,7 @@ export function LessonsSection({
   const [videoUrl, setVideoUrl] = useState('');
   const [videoSourceType, setVideoSourceType] = useState<VideoSourceType>('MP4');
   const [r2ObjectKey, setR2ObjectKey] = useState('');
-  const [storageProvider, setStorageProvider] = useState<StorageProviderId>('r2');
+  const [storageProvider, setStorageProvider] = useState<StorageProviderId>('b2');
   const [sizeBytes, setSizeBytes] = useState<number | undefined>(undefined);
   const [uploadedVideoMeta, setUploadedVideoMeta] = useState<R2UploadResult | null>(null);
   const [thumbnailUrl, setThumbnailUrl] = useState('');
@@ -119,7 +123,7 @@ export function LessonsSection({
     setVideoUrl('');
     setVideoSourceType('MP4');
     setR2ObjectKey('');
-    setStorageProvider('r2');
+    setStorageProvider('b2');
     setSizeBytes(undefined);
     setUploadedVideoMeta(null);
     setThumbnailUrl('');
@@ -142,7 +146,7 @@ export function LessonsSection({
     setVideoUrl(l.videoUrl);
     setVideoSourceType(l.videoSourceType || 'MP4');
     setR2ObjectKey(l.r2ObjectKey || '');
-    setStorageProvider(l.storageProvider || 'r2');
+    setStorageProvider(inferStorageProviderFromUrl(l.videoUrl, l.storageProvider));
     setSizeBytes(l.sizeBytes);
     setUploadedVideoMeta(null);
     setThumbnailUrl(l.thumbnailUrl || '');
@@ -222,7 +226,7 @@ export function LessonsSection({
     <div>
       <SectionHeader
         title="إدارة الدروس والفيديوهات"
-        subtitle="ارفع فيديوهات MP4 (H.264/AAC) مباشرة إلى Cloudflare R2 أو اربط روابط خارجية، ونظّم الدروس حسب المواد والوحدات."
+        subtitle="ارفع فيديوهات MP4 (H.264/AAC) مباشرة إلى Backblaze B2 (أو Cloudflare R2) أو اربط روابط خارجية، ونظّم الدروس حسب المواد والوحدات."
         showDeleted={showDeleted}
         onToggleDeleted={() => setShowDeleted((v) => !v)}
         action={
@@ -310,7 +314,7 @@ export function LessonsSection({
               <div>
                 <label className="mb-1 block text-xs font-semibold text-slate-600">مصدر الفيديو</label>
                 <select value={videoSourceType} onChange={(e) => setVideoSourceType(e.target.value as VideoSourceType)} className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm">
-                  <option value="MP4">ملف MP4 / Cloudflare R2</option>
+                  <option value="MP4">ملف MP4 / Backblaze B2 أو R2</option>
                   <option value="YOUTUBE">YouTube (اختياري)</option>
                   <option value="EXTERNAL">رابط خارجي</option>
                 </select>
@@ -332,7 +336,7 @@ export function LessonsSection({
           </div>
 
           <AssetUrlOrUploadInput
-            label="فيديو الدرس (ارفع MP4/WebM إلى Cloudflare R2 أو الصق رابطاً مباشراً / YouTube)"
+            label="فيديو الدرس (ارفع MP4/WebM إلى Backblaze B2 أو الصق رابطاً مباشراً / YouTube)"
             value={videoUrl}
             onChange={(url) => {
               setVideoUrl(url);
@@ -343,7 +347,7 @@ export function LessonsSection({
               }
               if (!url.trim()) {
                 setR2ObjectKey('');
-                setStorageProvider('r2');
+                setStorageProvider('b2');
                 setSizeBytes(undefined);
                 setUploadedVideoMeta(null);
               }
@@ -528,7 +532,7 @@ export function MaterialsSection({
   const [description, setDescription] = useState('');
   const [fileUrl, setFileUrl] = useState('');
   const [r2ObjectKey, setR2ObjectKey] = useState('');
-  const [storageProvider, setStorageProvider] = useState<StorageProviderId>('r2');
+  const [storageProvider, setStorageProvider] = useState<StorageProviderId>('b2');
   const [sizeBytes, setSizeBytes] = useState<number | undefined>(undefined);
   const [uploadedPdfMeta, setUploadedPdfMeta] = useState<R2UploadResult | null>(null);
   const [coverUrl, setCoverUrl] = useState('');
@@ -550,7 +554,7 @@ export function MaterialsSection({
     setDescription('');
     setFileUrl('');
     setR2ObjectKey('');
-    setStorageProvider('r2');
+    setStorageProvider('b2');
     setSizeBytes(undefined);
     setUploadedPdfMeta(null);
     setCoverUrl('');
@@ -568,7 +572,7 @@ export function MaterialsSection({
     setDescription(m.description);
     setFileUrl(m.fileUrl);
     setR2ObjectKey(m.r2ObjectKey || '');
-    setStorageProvider(m.storageProvider || 'r2');
+    setStorageProvider(inferStorageProviderFromUrl(m.fileUrl, m.storageProvider));
     setSizeBytes(m.sizeBytes);
     setUploadedPdfMeta(null);
     setCoverUrl(m.coverUrl || '');
@@ -634,7 +638,7 @@ export function MaterialsSection({
     <div>
       <SectionHeader
         title="إدارة ملفات PDF والنوطات والكتب"
-        subtitle="ارفع الكتب والنوطات والملخصات مباشرة إلى Cloudflare R2 (حتى 100 MB افتراضياً مع دعم استئناف الرفع)، وصنّفها حسب المرحلة والمادة والدرس."
+        subtitle="ارفع الكتب والنوطات والملخصات مباشرة إلى Backblaze B2 (أو R2) مع دعم الاستئناف حتى 100 MB، وصنّفها حسب المرحلة والمادة والدرس."
         showDeleted={showDeleted}
         onToggleDeleted={() => setShowDeleted((v) => !v)}
         action={
@@ -727,13 +731,13 @@ export function MaterialsSection({
           )}
 
           <AssetUrlOrUploadInput
-            label="ملف PDF / المرفق (ارفع مباشرة إلى Cloudflare R2 أو الصق رابط HTTPS) *"
+            label="ملف PDF / المرفق (ارفع مباشرة إلى Backblaze B2 أو الصق رابط HTTPS) *"
             value={fileUrl}
             onChange={(url) => {
               setFileUrl(url);
               if (!url.trim()) {
                 setR2ObjectKey('');
-                setStorageProvider('r2');
+                setStorageProvider('b2');
                 setSizeBytes(undefined);
                 setUploadedPdfMeta(null);
               }
@@ -834,7 +838,7 @@ export function VideosOverviewSection({
     <div className="space-y-4">
       <SectionHeader
         title="إدارة الفيديوهات التعليمية"
-        subtitle="استعراض ومعاينة موحدة لفيديوهات Cloudflare R2 (MP4/WebM) وروابط YouTube داخل الشروحات والدروس."
+        subtitle="استعراض ومعاينة موحدة لفيديوهات Backblaze B2 / Cloudflare R2 (MP4/WebM) وروابط YouTube داخل الشروحات والدروس."
         action={
           <button
             type="button"
@@ -1125,7 +1129,7 @@ export function MediaLibrarySection({
   async function handleRegisterManualOrUploaded(e: React.FormEvent) {
     e.preventDefault();
     if (!uploadMeta || !uploadUrl.trim()) {
-      onToast('يرجى رفع ملف إلى Cloudflare R2 أولاً قبل التسجيل في المكتبة.', true);
+      onToast('يرجى رفع ملف إلى التخزين السحابي أولاً قبل التسجيل في المكتبة.', true);
       return;
     }
     try {
@@ -1147,7 +1151,9 @@ export function MediaLibrarySection({
       setUploadUrl('');
       setUploadMeta(null);
       void refreshQuota();
-      onToast('تم حفظ الملف وتصنيفه في مكتبة Cloudflare R2');
+      onToast(
+        `تم حفظ الملف وتصنيفه في مكتبة ${uploadMeta.storageProvider === 'b2' ? 'Backblaze B2' : 'Cloudflare R2'}`
+      );
     } catch (err) {
       onToast(err instanceof Error ? err.message : 'فشل تسجيل الملف في المكتبة', true);
     }
@@ -1157,7 +1163,7 @@ export function MediaLibrarySection({
     <div className="space-y-5">
       <SectionHeader
         title="مكتبة الوسائط ومراقبة السعة التخزينية"
-        subtitle={`المساحة المفعّلة حالياً: ${formatBytesReadable(storageSummary.verifiedActiveTotalBytes)} (${limits.r2StorageLimitGb} GB Cloudflare R2${storageSummary.b2.enabled ? ` + ${limits.b2StorageLimitGb} GB Backblaze B2` : ' • Backblaze B2 غير مفعّل بعد'}) • السعة المستهدفة عند تفعيل المزودين: ${limits.r2StorageLimitGb + limits.b2StorageLimitGb} GB • حد الملف: فيديو ${limits.maxVideoSizeMb} MB • PDF ${limits.maxPdfSizeMb} MB • صور ${limits.maxImageSizeMb} MB.`}
+        subtitle={`المساحة المفعّلة حالياً: ${formatBytesReadable(storageSummary.verifiedActiveTotalBytes)} (${storageSummary.b2.enabled ? `Backblaze B2 الأساسي: ${limits.b2StorageLimitGb} GB` : 'Backblaze B2 غير مفعّل بعد'}${storageSummary.r2.verified ? ` + Cloudflare R2: ${limits.r2StorageLimitGb} GB` : ''}) • حد الملف: فيديو ${limits.maxVideoSizeMb} MB • PDF ${limits.maxPdfSizeMb} MB • صور ${limits.maxImageSizeMb} MB.`}
       />
 
       {/* Aggregate + Per-Provider Multi-Storage Monitor (Strict Verification-Gated) */}
@@ -1230,18 +1236,79 @@ export function MediaLibrarySection({
           {quotaError && (
             <div className="flex items-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-800">
               <AlertTriangle className="h-4 w-4 shrink-0" />
-              <span>تعذر التحقق من حساب Cloudflare R2: {quotaError}</span>
+              <span>تعذر التحقق من حساب التخزين (Worker): {quotaError}</span>
             </div>
           )}
         </div>
 
-        {/* Separate Provider Breakdown Cards */}
+        {/* Separate Provider Breakdown Cards (Backblaze B2 Primary first, Cloudflare R2 Secondary) */}
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          {/* Cloudflare R2 Card (10 GB) */}
+          {/* Backblaze B2 Card (Primary Storage) */}
+          <div className="rounded-2xl border border-sky-200 bg-white p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h4 className="text-sm font-extrabold text-[#0F294A]">Backblaze B2 (المزوّد الأساسي)</h4>
+                <p className="text-[11px] text-slate-500">
+                  المخصص: {formatBytesReadable(storageSummary.b2.allocatedBytes)} • الملفات: {storageSummary.b2.fileCount}
+                </p>
+              </div>
+              <span
+                className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
+                  storageSummary.b2.enabled
+                    ? 'bg-emerald-100 text-emerald-800'
+                    : 'bg-amber-100 text-amber-900'
+                }`}
+              >
+                {storageSummary.b2.enabled ? 'متحقق منه ومفعّل' : 'بانتظار التفعيل / الأسرار'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2 text-xs">
+              <div className="rounded-xl bg-slate-50 p-2.5">
+                <p className="text-slate-500">المفعّل فعلياً</p>
+                <p className="mt-0.5 font-extrabold text-[#0F294A]">{formatBytesReadable(storageSummary.b2.activeBytes)}</p>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-2.5">
+                <p className="text-slate-500">المستهلك</p>
+                <p className="mt-0.5 font-extrabold text-[#0F294A]">
+                  {formatBytesReadable(storageSummary.b2.usedBytes)} ({storageSummary.b2.usedPercentOfAllocated}%)
+                </p>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-2.5">
+                <p className="text-slate-500">المتبقي الفعلي</p>
+                <p className="mt-0.5 font-extrabold text-emerald-700">
+                  {formatBytesReadable(storageSummary.b2.remainingActiveBytes)}
+                </p>
+              </div>
+            </div>
+
+            <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-100">
+              <div
+                className={`h-full rounded-full transition-all ${storageSummary.b2.nearLimit ? 'bg-amber-500' : 'bg-teal-600'}`}
+                style={{
+                  width: `${
+                    storageSummary.b2.usedBytes > 0
+                      ? Math.max(2, storageSummary.b2.usedPercentOfAllocated)
+                      : 0
+                  }%`,
+                }}
+              />
+            </div>
+
+            <p className="text-[11px] text-slate-600">{storageSummary.b2.statusMessage}</p>
+            {storageSummary.b2.nearLimit && (
+              <div className="flex items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-900">
+                <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600" />
+                <span>تنبيه: اقتربت حصة Backblaze B2 من حدها المخصص ({storageSummary.b2.usedPercentOfAllocated}%).</span>
+              </div>
+            )}
+          </div>
+
+          {/* Cloudflare R2 Card (Secondary / Legacy Fallback) */}
           <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <h4 className="text-sm font-extrabold text-[#0F294A]">Cloudflare R2</h4>
+                <h4 className="text-sm font-extrabold text-[#0F294A]">Cloudflare R2 (ثانوي / أرشيف)</h4>
                 <p className="text-[11px] text-slate-500">
                   المخصص: {formatBytesReadable(storageSummary.r2.allocatedBytes)} • الملفات: {storageSummary.r2.fileCount}
                 </p>
@@ -1250,10 +1317,10 @@ export function MediaLibrarySection({
                 className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
                   storageSummary.r2.verified
                     ? 'bg-emerald-100 text-emerald-800'
-                    : 'bg-amber-100 text-amber-900'
+                    : 'bg-slate-200 text-slate-700'
                 }`}
               >
-                {storageSummary.r2.verified ? 'متحقق منه ومفعّل' : 'بانتظار التحقق الفعلي'}
+                {storageSummary.r2.verified ? 'متحقق منه ومفعّل' : 'غير مربوط / ثانوي'}
               </span>
             </div>
 
@@ -1292,7 +1359,7 @@ export function MediaLibrarySection({
             <p className="text-[11px] text-slate-600">{storageSummary.r2.statusMessage}</p>
             {!storageSummary.r2.verified && indexedCatalogBytes > 0 && (
               <p className="text-[11px] text-slate-500">
-                حجم الروابط المسجلة في فهرس Firestore حالياً (دون تحقق من R2 Bucket): {formatBytesReadable(indexedCatalogBytes)}
+                إجمالي أحجام الملفات المسجلة في فهرس المكتبة: {formatBytesReadable(indexedCatalogBytes)}
               </p>
             )}
             {storageSummary.r2.nearLimit && (
@@ -1302,68 +1369,13 @@ export function MediaLibrarySection({
               </div>
             )}
           </div>
-
-          {/* Backblaze B2 Card (10 GB Disabled until provisioned) */}
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <h4 className="text-sm font-extrabold text-[#0F294A]">Backblaze B2</h4>
-                <p className="text-[11px] text-slate-500">
-                  المخصص بالخطة: {formatBytesReadable(storageSummary.b2.allocatedBytes)} • الربط المستقبلي
-                </p>
-              </div>
-              <span
-                className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
-                  storageSummary.b2.verified
-                    ? 'bg-emerald-100 text-emerald-800'
-                    : 'bg-slate-200 text-slate-700'
-                }`}
-              >
-                {storageSummary.b2.verified ? 'متحقق منه ومفعّل' : 'غير مفعّل'}
-              </span>
-            </div>
-
-            <div className="grid grid-cols-3 gap-2 text-xs">
-              <div className="rounded-xl bg-slate-50 p-2.5">
-                <p className="text-slate-500">المفعّل فعلياً</p>
-                <p className="mt-0.5 font-extrabold text-slate-700">{formatBytesReadable(storageSummary.b2.activeBytes)}</p>
-              </div>
-              <div className="rounded-xl bg-slate-50 p-2.5">
-                <p className="text-slate-500">المستهلك</p>
-                <p className="mt-0.5 font-extrabold text-slate-700">
-                  {formatBytesReadable(storageSummary.b2.usedBytes)} ({storageSummary.b2.usedPercentOfAllocated}%)
-                </p>
-              </div>
-              <div className="rounded-xl bg-slate-50 p-2.5">
-                <p className="text-slate-500">المتبقي المفعّل</p>
-                <p className="mt-0.5 font-extrabold text-slate-700">
-                  {formatBytesReadable(storageSummary.b2.remainingActiveBytes)}
-                </p>
-              </div>
-            </div>
-
-            <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-100">
-              <div
-                className="h-full rounded-full bg-teal-600 transition-all"
-                style={{
-                  width: `${
-                    storageSummary.b2.usedBytes > 0
-                      ? Math.max(2, storageSummary.b2.usedPercentOfAllocated)
-                      : 0
-                  }%`,
-                }}
-              />
-            </div>
-
-            <p className="text-[11px] text-slate-600">{storageSummary.b2.statusMessage}</p>
-          </div>
         </div>
       </div>
 
       {/* Upload & Classification Form */}
       {canEdit && (
         <form onSubmit={handleRegisterManualOrUploaded} className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5">
-          <h3 className="text-sm font-extrabold text-[#0F294A]">رفع وتصنيف ملف جديد على Cloudflare R2</h3>
+          <h3 className="text-sm font-extrabold text-[#0F294A]">رفع وتصنيف ملف جديد على Backblaze B2 (أو Cloudflare R2)</h3>
 
           <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
             <div>
@@ -1486,18 +1498,28 @@ export function MediaLibrarySection({
         </div>
 
         {activeAssets.length === 0 ? (
-          <EmptyBox title="لا توجد ملفات مسجلة في مكتبة R2" subtitle="ارفع ملف فيديو MP4 أو PDF أو صورة من النموذج أعلاه أو من شاشات الدروس والمواد." />
+          <EmptyBox title="لا توجد ملفات مسجلة في مكتبة الوسائط" subtitle="ارفع ملف فيديو MP4 أو PDF أو صورة إلى Backblaze B2 من النموذج أعلاه أو من شاشات الدروس والمواد." />
         ) : (
           <div className="space-y-2.5">
             {activeAssets.map((asset: MediaAsset) => {
               const subj = store.subjects.find((s) => s.id === asset.subjectId);
               const lesson = store.lessons.find((l) => l.id === asset.lessonId);
+              const assetProvider = inferStorageProviderFromUrl(asset.fileUrl, asset.storageProvider);
               return (
                 <div key={asset.id} className="flex flex-col justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 sm:flex-row sm:items-center">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="rounded-md bg-sky-50 px-2 py-0.5 text-[11px] font-bold text-sky-800">
                         {MEDIA_KIND_LABELS[asset.mediaKind]}
+                      </span>
+                      <span
+                        className={`rounded-md px-2 py-0.5 text-[11px] font-bold ${
+                          assetProvider === 'b2'
+                            ? 'bg-indigo-50 text-indigo-800'
+                            : 'bg-slate-200 text-slate-700'
+                        }`}
+                      >
+                        {assetProvider === 'b2' ? 'Backblaze B2' : 'Cloudflare R2'}
                       </span>
                       <span className="rounded-md bg-teal-50 px-2 py-0.5 text-[11px] font-bold text-teal-800">
                         {formatBytesReadable(asset.sizeBytes)}

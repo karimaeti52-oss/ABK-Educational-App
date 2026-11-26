@@ -12,6 +12,8 @@ import {
   R2UploadError,
   resolveR2StorageLimits,
   validateR2FileLimits,
+  validateR2WorkerBaseUrlInput,
+  verifyWorkerHealth,
   type SessionStorageLike,
 } from './r2Upload.ts';
 
@@ -254,6 +256,18 @@ test('executeResumableR2Upload splits >5MB MP4 into parts, auto-retries transien
 
   const mockFetch: typeof fetch = async (input, init) => {
     const url = String(input);
+    if (url.endsWith('/health')) {
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          service: 'midad-r2-worker',
+          r2Bound: true,
+          b2Enabled: false,
+          b2WorkerConfigured: false,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      );
+    }
     if (url.endsWith('/multipart/init')) {
       return new Response(
         JSON.stringify({
@@ -340,3 +354,505 @@ test('executeResumableR2Upload splits >5MB MP4 into parts, auto-retries transien
   assert.deepEqual(uploadedPartsSeen, [1, 2, 3]); // Part 1 was NOT re-uploaded after resume!
   assert.equal(loadSavedUploadSession(storage, fp), null); // Session cleaned up after completion
 });
+
+test('validateR2WorkerBaseUrlInput cleans invisible chars and copied Worker paths, and detectR2FileSpec handles .ppt & MIME aliases', () => {
+  const emptyRes = validateR2WorkerBaseUrlInput('   ');
+  assert.equal(emptyRes.valid, false);
+  assert.equal(emptyRes.reason, 'EMPTY');
+
+  const insecureRes = validateR2WorkerBaseUrlInput('http://midad-r2-worker.example.workers.dev');
+  assert.equal(insecureRes.valid, false);
+  assert.equal(insecureRes.reason, 'INSECURE_PROTOCOL');
+
+  const malformedRes = validateR2WorkerBaseUrlInput('not-a-valid-url');
+  assert.equal(malformedRes.valid, false);
+  assert.equal(malformedRes.reason, 'INVALID_FORMAT');
+
+  const strippedHealth = validateR2WorkerBaseUrlInput(
+    ' \u200Fhttps://midad-r2-worker.example.workers.dev/health///\n '
+  );
+  assert.equal(strippedHealth.valid, true);
+  assert.equal(strippedHealth.normalizedUrl, 'https://midad-r2-worker.example.workers.dev');
+
+  const strippedQuota = validateR2WorkerBaseUrlInput('https://midad-r2-worker.example.workers.dev/quota');
+  assert.equal(strippedQuota.valid, true);
+  assert.equal(strippedQuota.normalizedUrl, 'https://midad-r2-worker.example.workers.dev');
+
+  const localRes = validateR2WorkerBaseUrlInput('http://localhost:8787/multipart/init');
+  assert.equal(localRes.valid, true);
+  assert.equal(localRes.normalizedUrl, 'http://localhost:8787');
+
+  assert.deepEqual(detectR2FileSpec({ name: 'slides.ppt', type: '' }), {
+    mediaKind: 'ATTACHMENT',
+    contentType: 'application/vnd.ms-powerpoint',
+  });
+  assert.deepEqual(detectR2FileSpec({ name: 'book.pdf', type: 'application/x-pdf' }), {
+    mediaKind: 'PDF',
+    contentType: 'application/pdf',
+  });
+});
+
+test('verifyWorkerHealth classifies unreachable network/CORS, wrong service, missing R2 binding, and disabled B2', async () => {
+  await assert.rejects(
+    () =>
+      verifyWorkerHealth({
+        workerBaseUrl: 'https://midad-r2-worker.example.workers.dev',
+        fetchImpl: async () => {
+          throw new TypeError('Failed to fetch');
+        },
+      }),
+    (err: unknown) => err instanceof R2UploadError && err.code === 'WORKER_UNREACHABLE'
+  );
+
+  await assert.rejects(
+    () =>
+      verifyWorkerHealth({
+        workerBaseUrl: 'https://midad-r2-worker.example.workers.dev',
+        fetchImpl: async () =>
+          new Response(JSON.stringify({ ok: true, service: 'some-other-service' }), { status: 200 }),
+      }),
+    (err: unknown) => err instanceof R2UploadError && err.code === 'WORKER_UNREACHABLE'
+  );
+
+  await assert.rejects(
+    () =>
+      verifyWorkerHealth({
+        workerBaseUrl: 'https://midad-r2-worker.example.workers.dev',
+        storageProvider: 'r2',
+        fetchImpl: async () =>
+          new Response(
+            JSON.stringify({ ok: true, service: 'midad-r2-worker', r2Bound: false, b2Enabled: false }),
+            { status: 200 }
+          ),
+      }),
+    (err: unknown) => err instanceof R2UploadError && err.code === 'STORAGE_UNAVAILABLE'
+  );
+
+  await assert.rejects(
+    () =>
+      verifyWorkerHealth({
+        workerBaseUrl: 'https://midad-r2-worker.example.workers.dev',
+        storageProvider: 'b2',
+        fetchImpl: async () =>
+          new Response(
+            JSON.stringify({ ok: true, service: 'midad-r2-worker', r2Bound: true, b2Enabled: false }),
+            { status: 200 }
+          ),
+      }),
+    (err: unknown) => err instanceof R2UploadError && err.code === 'WORKER_NOT_CONFIGURED'
+  );
+});
+
+test('executeResumableR2Upload reports 401/403 explicitly and completes single-shot <5MB uploads', async () => {
+  const smallImg = createFakeLargeBlob(512 * 1024, 'cover.png', 'image/png');
+
+  await assert.rejects(
+    () =>
+      executeResumableR2Upload({
+        workerBaseUrl: 'https://midad-r2-worker.example.workers.dev',
+        file: smallImg,
+        folder: 'branding',
+        getAuthToken: async () => 'bad_token',
+        fetchImpl: async (input) => {
+          if (String(input).endsWith('/health')) {
+            return new Response(
+              JSON.stringify({ ok: true, service: 'midad-r2-worker', r2Bound: true }),
+              { status: 200 }
+            );
+          }
+          return new Response(JSON.stringify({ error: 'Token expired' }), { status: 401 });
+        },
+      }),
+    (err: unknown) => err instanceof R2UploadError && err.code === 'UNAUTHENTICATED'
+  );
+
+  await assert.rejects(
+    () =>
+      executeResumableR2Upload({
+        workerBaseUrl: 'https://midad-r2-worker.example.workers.dev',
+        file: smallImg,
+        folder: 'branding',
+        getAuthToken: async () => 'student_token',
+        fetchImpl: async (input) => {
+          if (String(input).endsWith('/health')) {
+            return new Response(
+              JSON.stringify({ ok: true, service: 'midad-r2-worker', r2Bound: true }),
+              { status: 200 }
+            );
+          }
+          return new Response(JSON.stringify({ error: 'Forbidden' }), { status: 403 });
+        },
+      }),
+    (err: unknown) => err instanceof R2UploadError && err.code === 'UNAUTHORIZED'
+  );
+
+  const okRes = await executeResumableR2Upload({
+    workerBaseUrl: 'https://midad-r2-worker.example.workers.dev',
+    file: smallImg,
+    folder: 'branding',
+    getAuthToken: async () => 'admin_token',
+    fetchImpl: async (input) => {
+      if (String(input).endsWith('/health')) {
+        return new Response(
+          JSON.stringify({ ok: true, service: 'midad-r2-worker', r2Bound: true }),
+          { status: 200 }
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          objectKey: 'branding/1_cover.png',
+          publicUrl: 'https://midad-r2-worker.example.workers.dev/files/branding/1_cover.png',
+          sizeBytes: 512 * 1024,
+          contentType: 'image/png',
+          mediaKind: 'IMAGE',
+          accessLevel: 'public',
+        }),
+        { status: 201 }
+      );
+    },
+  });
+  assert.equal(okRes.accessLevel, 'public');
+  assert.equal(okRes.mediaKind, 'IMAGE');
+  assert.equal(okRes.objectKey, 'branding/1_cover.png');
+});
+
+test('executeResumableR2Upload handles >50MB files (60MB PDF & 120MB video), invalidates sessions from old Worker URLs, and recovers cleanly from expired multipart sessions', async () => {
+  const storage = createMemoryStorage();
+  const fp = buildFileFingerprint(
+    { name: 'textbook_60mb.pdf', size: 60 * 1024 * 1024, lastModified: 1700000000 },
+    'materials'
+  );
+  // Seed stale session pointing to a different workerBaseUrl AND an expired uploadId scenario
+  storage.setItem(
+    fp,
+    JSON.stringify({
+      fingerprint: fp,
+      fileName: 'textbook_60mb.pdf',
+      sizeBytes: 60 * 1024 * 1024,
+      folder: 'materials',
+      workerBaseUrl: 'https://old-worker.example.workers.dev',
+      uploadId: 'up_stale',
+      objectKey: 'materials/up_stale_textbook_60mb.pdf',
+      partSizeBytes: 5 * 1024 * 1024,
+      totalParts: 12,
+      uploadedParts: [{ partNumber: 1, etag: '"old"' }],
+      updatedAt: Date.now() - 10000,
+    })
+  );
+
+  let initCount = 0;
+  let expiredOnce = true;
+  const pdf60Mb = createFakeLargeBlob(60 * 1024 * 1024, 'textbook_60mb.pdf', 'application/x-pdf');
+  const uploadedForSession = new Map<string, number[]>();
+
+  const pdfResult = await executeResumableR2Upload({
+    workerBaseUrl: 'https://new-worker.example.workers.dev',
+    file: pdf60Mb,
+    folder: 'materials',
+    getAuthToken: async () => 'token_admin',
+    limits: DEFAULT_R2_LIMITS,
+    storage,
+    fetchImpl: async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/health')) {
+        return new Response(
+          JSON.stringify({ ok: true, service: 'midad-r2-worker', r2Bound: true }),
+          { status: 200 }
+        );
+      }
+      if (url.endsWith('/multipart/init')) {
+        initCount += 1;
+        const id = `up_session_${initCount}`;
+        uploadedForSession.set(id, []);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            uploadId: id,
+            objectKey: `materials/${id}_textbook_60mb.pdf`,
+            partSizeBytes: 5 * 1024 * 1024,
+          }),
+          { status: 201 }
+        );
+      }
+      if (url.includes('/multipart/part')) {
+        const u = new URL(url);
+        const upId = u.searchParams.get('uploadId')!;
+        const pn = Number(u.searchParams.get('partNumber'));
+        if (upId === 'up_session_1' && pn === 2 && expiredOnce) {
+          expiredOnce = false;
+          return new Response(
+            JSON.stringify({ error: 'Session expired', code: 'UPLOAD_SESSION_NOT_FOUND' }),
+            { status: 404 }
+          );
+        }
+        uploadedForSession.get(upId)?.push(pn);
+        return new Response(JSON.stringify({ ok: true, partNumber: pn, etag: `"etag-${upId}-${pn}"` }), {
+          status: 200,
+        });
+      }
+      if (url.endsWith('/multipart/complete')) {
+        const body = JSON.parse(String(init?.body || '{}'));
+        assert.equal(body.uploadId, 'up_session_2');
+        assert.equal(body.parts.length, 12);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            objectKey: body.objectKey,
+            publicUrl: `https://new-worker.example.workers.dev/files/${body.objectKey}`,
+            sizeBytes: 60 * 1024 * 1024,
+            contentType: 'application/pdf',
+            mediaKind: 'PDF',
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response('Not Found', { status: 404 });
+    },
+  });
+
+  assert.equal(initCount, 2); // discarded old-worker session, recovered once after UPLOAD_SESSION_NOT_FOUND
+  assert.equal(pdfResult.objectKey, 'materials/up_session_2_textbook_60mb.pdf');
+  assert.deepEqual(uploadedForSession.get('up_session_2'), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+  assert.equal(loadSavedUploadSession(storage, fp), null);
+
+  // Also test 120 MB video (24 x 5MB parts) without any duplicate parts
+  const video120Mb = createFakeLargeBlob(120 * 1024 * 1024, 'lecture_120mb.mp4', 'video/mp4');
+  const videoParts: number[] = [];
+  const videoRes = await executeResumableR2Upload({
+    workerBaseUrl: 'https://new-worker.example.workers.dev',
+    file: video120Mb,
+    folder: 'videos',
+    getAuthToken: async () => 'token_admin',
+    limits: DEFAULT_R2_LIMITS,
+    storage,
+    fetchImpl: async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/health')) {
+        return new Response(
+          JSON.stringify({ ok: true, service: 'midad-r2-worker', r2Bound: true }),
+          { status: 200 }
+        );
+      }
+      if (url.endsWith('/multipart/init')) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            uploadId: 'up_vid_120',
+            objectKey: 'videos/up_vid_120_lecture_120mb.mp4',
+            partSizeBytes: 5 * 1024 * 1024,
+          }),
+          { status: 201 }
+        );
+      }
+      if (url.includes('/multipart/part')) {
+        const pn = Number(new URL(url).searchParams.get('partNumber'));
+        videoParts.push(pn);
+        return new Response(JSON.stringify({ ok: true, partNumber: pn, etag: `"v-${pn}"` }), { status: 200 });
+      }
+      if (url.endsWith('/multipart/complete')) {
+        const body = JSON.parse(String(init?.body || '{}'));
+        assert.equal(body.parts.length, 24);
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            objectKey: body.objectKey,
+            publicUrl: `https://new-worker.example.workers.dev/files/${body.objectKey}`,
+            sizeBytes: 120 * 1024 * 1024,
+            contentType: 'video/mp4',
+            mediaKind: 'VIDEO',
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response('Not Found', { status: 404 });
+    },
+  });
+  assert.equal(videoParts.length, 24);
+  assert.equal(new Set(videoParts).size, 24);
+  assert.equal(videoRes.mediaKind, 'VIDEO');
+});
+
+test('B2-only Worker passes verifyWorkerHealth, auto-selects b2 when storageProvider is omitted, and fails cleanly if publicUrl is missing', async () => {
+  const health = await verifyWorkerHealth({
+    workerBaseUrl: 'https://midad-b2-worker.example.workers.dev',
+    fetchImpl: async () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          service: 'midad-r2-worker',
+          primaryProvider: 'b2',
+          r2Bound: false,
+          b2Bound: true,
+          b2Enabled: true,
+        }),
+        { status: 200 }
+      ),
+  });
+  assert.equal(health.primaryProvider, 'b2');
+  assert.equal(health.b2Enabled, true);
+  assert.equal(health.r2Bound, false);
+
+  // Small <5MB PDF without explicit storageProvider routes to B2 and returns /b2/files/...
+  const smallPdf = createFakeLargeBlob(512 * 1024, 'sheet.pdf', 'application/pdf');
+  let capturedProviderHeader = '';
+  const pdfRes = await executeResumableR2Upload({
+    workerBaseUrl: 'https://midad-b2-worker.example.workers.dev',
+    file: smallPdf,
+    folder: 'materials',
+    getAuthToken: async () => 'admin_token',
+    fetchImpl: async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/health')) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            service: 'midad-r2-worker',
+            primaryProvider: 'b2',
+            r2Bound: false,
+            b2Bound: true,
+            b2Enabled: true,
+          }),
+          { status: 200 }
+        );
+      }
+      capturedProviderHeader = new Headers(init?.headers || {}).get('X-Storage-Provider') || '';
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          storageProvider: 'b2',
+          objectKey: 'materials/1_sheet.pdf',
+          publicUrl: 'https://midad-b2-worker.example.workers.dev/b2/files/materials/1_sheet.pdf',
+          sizeBytes: 512 * 1024,
+          contentType: 'application/pdf',
+          mediaKind: 'PDF',
+        }),
+        { status: 201 }
+      );
+    },
+  });
+  assert.equal(capturedProviderHeader, 'b2');
+  assert.equal(pdfRes.storageProvider, 'b2');
+  assert.ok(pdfRes.url.includes('/b2/files/'));
+
+  // Large 60MB MP4 pause/resume routes cleanly to B2 without forcing R2
+  const storage = createMemoryStorage();
+  const largeB2Video = createFakeLargeBlob(60 * 1024 * 1024, 'optics_60mb.mp4', 'video/mp4');
+  let pauseB2 = false;
+  let seenInitProvider = '';
+  let seenPartProvider = '';
+  let seenCompleteProvider = '';
+
+  const b2MockFetch: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url.endsWith('/health')) {
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          service: 'midad-r2-worker',
+          primaryProvider: 'b2',
+          r2Bound: false,
+          b2Bound: true,
+          b2Enabled: true,
+        }),
+        { status: 200 }
+      );
+    }
+    if (url.endsWith('/multipart/init')) {
+      const body = JSON.parse(String(init?.body || '{}'));
+      seenInitProvider = body.provider;
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          storageProvider: 'b2',
+          uploadId: 'b2_mp_1',
+          objectKey: 'videos/b2_mp_1_optics_60mb.mp4',
+          partSizeBytes: 5 * 1024 * 1024,
+        }),
+        { status: 201 }
+      );
+    }
+    if (url.includes('/multipart/part')) {
+      const u = new URL(url);
+      seenPartProvider = u.searchParams.get('provider') || '';
+      const pn = Number(u.searchParams.get('partNumber'));
+      if (pn === 1) pauseB2 = true;
+      return new Response(JSON.stringify({ ok: true, partNumber: pn, etag: `"b2-${pn}"` }), { status: 200 });
+    }
+    if (url.endsWith('/multipart/complete')) {
+      const body = JSON.parse(String(init?.body || '{}'));
+      seenCompleteProvider = body.provider;
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          storageProvider: 'b2',
+          objectKey: body.objectKey,
+          publicUrl: `https://midad-b2-worker.example.workers.dev/b2/files/${body.objectKey}`,
+          sizeBytes: 60 * 1024 * 1024,
+          contentType: 'video/mp4',
+          mediaKind: 'VIDEO',
+        }),
+        { status: 200 }
+      );
+    }
+    return new Response('Not Found', { status: 404 });
+  };
+
+  await assert.rejects(
+    () =>
+      executeResumableR2Upload({
+        workerBaseUrl: 'https://midad-b2-worker.example.workers.dev',
+        file: largeB2Video,
+        folder: 'videos',
+        getAuthToken: async () => 'admin_token',
+        limits: DEFAULT_R2_LIMITS,
+        pauseController: { isPaused: () => pauseB2 },
+        storage,
+        fetchImpl: b2MockFetch,
+      }),
+    (err: unknown) => err instanceof R2UploadError && err.code === 'PAUSED'
+  );
+
+  pauseB2 = false;
+  const resumedB2Res = await executeResumableR2Upload({
+    workerBaseUrl: 'https://midad-b2-worker.example.workers.dev',
+    file: largeB2Video,
+    folder: 'videos',
+    getAuthToken: async () => 'admin_token',
+    limits: DEFAULT_R2_LIMITS,
+    pauseController: { isPaused: () => false },
+    storage,
+    fetchImpl: b2MockFetch,
+  });
+  assert.equal(seenInitProvider, 'b2');
+  assert.equal(seenPartProvider, 'b2');
+  assert.equal(seenCompleteProvider, 'b2');
+  assert.equal(resumedB2Res.storageProvider, 'b2');
+  assert.ok(resumedB2Res.url.includes('/b2/files/'));
+
+  // Missing publicUrl in server response MUST throw rather than returning broken URL
+  await assert.rejects(
+    () =>
+      executeResumableR2Upload({
+        workerBaseUrl: 'https://midad-b2-worker.example.workers.dev',
+        file: smallPdf,
+        folder: 'materials',
+        storageProvider: 'b2',
+        getAuthToken: async () => 'admin_token',
+        fetchImpl: async (input) => {
+          if (String(input).endsWith('/health')) {
+            return new Response(
+              JSON.stringify({ ok: true, service: 'midad-r2-worker', primaryProvider: 'b2', b2Enabled: true }),
+              { status: 200 }
+            );
+          }
+          return new Response(
+            JSON.stringify({ ok: true, storageProvider: 'b2', objectKey: 'materials/x.pdf', publicUrl: '' }),
+            { status: 201 }
+          );
+        },
+      }),
+    (err: unknown) => err instanceof R2UploadError && err.code === 'UNKNOWN'
+  );
+});
+

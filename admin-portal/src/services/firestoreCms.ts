@@ -328,15 +328,38 @@ export async function savePlatformConfig(
   staff: StaffSession | null
 ) {
   const uid = staff?.uid || firebaseAuth.currentUser?.uid || 'admin';
+  const normalizedPayload = cleanPayload({
+    ...config,
+    ...(config.r2WorkerBaseUrl !== undefined
+      ? { r2WorkerBaseUrl: String(config.r2WorkerBaseUrl || '').trim().replace(/\/+$/g, '') }
+      : {}),
+    ...(config.maxVideoSizeMb !== undefined
+      ? { maxVideoSizeMb: Math.max(1, Math.min(2048, Math.round(Number(config.maxVideoSizeMb) || 200))) }
+      : {}),
+    ...(config.maxPdfSizeMb !== undefined
+      ? { maxPdfSizeMb: Math.max(1, Math.min(1024, Math.round(Number(config.maxPdfSizeMb) || 100))) }
+      : {}),
+    ...(config.maxImageSizeMb !== undefined
+      ? { maxImageSizeMb: Math.max(1, Math.min(256, Math.round(Number(config.maxImageSizeMb) || 20))) }
+      : {}),
+    ...(config.r2StorageLimitGb !== undefined
+      ? { r2StorageLimitGb: Math.max(1, Math.min(500, Math.round(Number(config.r2StorageLimitGb) || 10))) }
+      : {}),
+    ...(config.b2StorageLimitGb !== undefined
+      ? { b2StorageLimitGb: Math.max(0, Math.min(500, Math.round(Number(config.b2StorageLimitGb) || 0))) }
+      : {}),
+    ...(config.totalStorageLimitGb !== undefined
+      ? { totalStorageLimitGb: Math.max(1, Math.min(1000, Math.round(Number(config.totalStorageLimitGb) || 10))) }
+      : {}),
+    updatedBy: uid,
+    updatedAt: serverTimestamp(),
+  });
   await setDoc(
     doc(firestoreDb, 'platformConfig', 'main'),
-    cleanPayload({
-      ...config,
-      updatedBy: uid,
-      updatedAt: serverTimestamp(),
-    })
+    normalizedPayload,
+    { merge: true }
   );
-  await recordAudit(staff, 'UPDATE_BRANDING', 'platformConfig', 'main', `تحديث هوية وتصميم المنصة (${config.platformName})`);
+  await recordAudit(staff, 'UPDATE_BRANDING', 'platformConfig', 'main', `تحديث إعدادات وهوية المنصة (${config.platformName})`);
 }
 
 export function subscribeAndroidRelease(

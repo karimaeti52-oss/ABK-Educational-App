@@ -609,5 +609,40 @@ test('SUPER_ADMIN console bootstrap doc without Custom Claim is accepted, hidden
   assert.equal(formatRawValueForDiagnostics('SUPER_ADMIN\u200F '), 'SUPER_ADMIN[U+200F]·');
 });
 
+test('diagnoseClientAdminAccess flags literal leading newline (\\nSUPER_ADMIN) with permission-denied guidance while clean SUPER_ADMIN emits no warning', () => {
+  const dirty = diagnoseClientAdminAccess({
+    uid: '5bIqNT2H3pVniVd6ULYkwps55c43',
+    claims: {},
+    adminDocExists: true,
+    adminDoc: {
+      uid: '5bIqNT2H3pVniVd6ULYkwps55c43',
+      active: true,
+      role: '\nSUPER_ADMIN' as unknown as 'SUPER_ADMIN',
+    },
+  });
+  assert.equal(dirty.allowed, true);
+  assert.equal(dirty.resolvedRole, 'SUPER_ADMIN');
+  assert.equal(dirty.adminDocCheck.hasRoleFormattingArtifacts, true);
+  assert.equal(dirty.adminDocCheck.rawRoleDisplay, '\\nSUPER_ADMIN');
+  assert.equal(dirty.warnings.length, 1);
+  assert.match(dirty.warnings[0], /\\nSUPER_ADMIN/);
+  assert.match(dirty.warnings[0], /permission-denied/);
+
+  const clean = diagnoseClientAdminAccess({
+    uid: '5bIqNT2H3pVniVd6ULYkwps55c43',
+    claims: {},
+    adminDocExists: true,
+    adminDoc: {
+      uid: '5bIqNT2H3pVniVd6ULYkwps55c43',
+      active: true,
+      role: 'SUPER_ADMIN',
+    },
+  });
+  assert.equal(clean.allowed, true);
+  assert.equal(clean.adminDocCheck.hasRoleFormattingArtifacts, false);
+  assert.equal(clean.adminDocCheck.rawRoleDisplay, 'SUPER_ADMIN');
+  assert.deepEqual(clean.warnings, []);
+});
+
 
 

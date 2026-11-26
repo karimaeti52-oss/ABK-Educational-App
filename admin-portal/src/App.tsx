@@ -688,9 +688,19 @@ export default function App() {
     >
       {staff.warnings && staff.warnings.length > 0 && (
         <div className="mb-4 rounded-2xl border border-amber-300 bg-amber-50 p-3.5 text-xs text-amber-900">
-          <div className="mb-1 flex items-center gap-1.5 font-bold">
-            <AlertCircle className="h-4 w-4 text-amber-600" />
-            تنبيه تنسيق في وثيقة الصلاحيات (Firestore)
+          <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5 font-bold">
+              <AlertCircle className="h-4 w-4 text-amber-600" />
+              تنبيه تنسيق في وثيقة الصلاحيات (Firestore)
+            </div>
+            <button
+              type="button"
+              onClick={() => void handleRefreshAuthCheck()}
+              className="inline-flex items-center gap-1 rounded-lg border border-amber-300 bg-white px-2.5 py-1 text-[11px] font-bold text-amber-900 hover:bg-amber-100"
+            >
+              <RefreshCw className="h-3 w-3" />
+              إعادة الفحص بعد التعديل
+            </button>
           </div>
           <ul className="list-disc space-y-1 pr-4">
             {staff.warnings.map((w, idx) => (

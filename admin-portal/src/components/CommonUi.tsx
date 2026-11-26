@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertCircle,
   ArchiveRestore,
@@ -14,7 +14,11 @@ import {
   X,
 } from 'lucide-react';
 import {
-  resolveActiveR2WorkerUrl,
+  fetchWorkerHealthStatus,
+  peekCachedR2QuotaStatus,
+  peekCachedWorkerHealthStatus,
+  resolveActiveR2WorkerUrlStatus,
+  resolvePreferredStorageProvider,
   startR2ResumableUpload,
   type ActiveR2UploadController,
 } from '../services/r2UploadClient';
@@ -24,6 +28,7 @@ import {
   resolveR2StorageLimits,
   type R2UploadProgress,
   type R2UploadResult,
+  type WorkerHealthCheckResult,
 } from '../utils/r2Upload';
 import type {
   MediaAccessLevel,
@@ -108,7 +113,7 @@ export function AssetUrlOrUploadInput({
   platformConfig,
   quotaStatus,
   accessLevel,
-  defaultProvider = 'r2',
+  defaultProvider = 'b2',
   onUploadedMeta,
   onToast,
 }: {
@@ -129,6 +134,9 @@ export function AssetUrlOrUploadInput({
 }) {
   const [phase, setPhase] = useState<UploadPhase>('idle');
   const [selectedProvider, setSelectedProvider] = useState<StorageProviderId>(defaultProvider);
+  const [liveHealth, setLiveHealth] = useState<WorkerHealthCheckResult | null>(() =>
+    peekCachedWorkerHealthStatus(platformConfig)
+  );
   const [progress, setProgress] = useState<R2UploadProgress>({
     bytesTransferred: 0,
     totalBytes: 0,
@@ -146,10 +154,60 @@ export function AssetUrlOrUploadInput({
 
   const isBusy = phase === 'checking' || phase === 'uploading' || phase === 'completing';
   const limits = resolveR2StorageLimits(platformConfig);
-  const workerConfigured = Boolean(resolveActiveR2WorkerUrl(platformConfig));
-  const b2Ready = Boolean(quotaStatus?.b2?.enabled === true && quotaStatus?.b2?.verified === true);
+  const workerUrlStatus = resolveActiveR2WorkerUrlStatus(platformConfig);
+  const workerConfigured = workerUrlStatus.valid;
+  const effectiveQuota = quotaStatus ?? peekCachedR2QuotaStatus(platformConfig);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!workerConfigured) {
+      setLiveHealth(null);
+      return;
+    }
+    const cached = peekCachedWorkerHealthStatus(platformConfig);
+    if (cached) {
+      setLiveHealth(cached);
+      return;
+    }
+    if (effectiveQuota) return;
+    void fetchWorkerHealthStatus(platformConfig)
+      .then((h) => {
+        if (!cancelled && h) {
+          setLiveHealth(h);
+          setSelectedProvider((prev) =>
+            prev === defaultProvider
+              ? resolvePreferredStorageProvider(effectiveQuota, h, defaultProvider)
+              : prev
+          );
+        }
+      })
+      .catch(() => {
+        // Defer error presentation to upload time or Settings test
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [workerConfigured, workerUrlStatus.normalizedUrl, effectiveQuota, defaultProvider]);
+
+  const b2Ready = effectiveQuota
+    ? Boolean(effectiveQuota.b2?.enabled === true && effectiveQuota.b2?.verified === true)
+    : liveHealth
+      ? Boolean(liveHealth.b2Enabled)
+      : true;
+  const r2Ready = effectiveQuota
+    ? Boolean(effectiveQuota.r2Bound === true)
+    : liveHealth
+      ? Boolean(liveHealth.r2Bound)
+      : true;
   const effectiveProvider: StorageProviderId =
-    selectedProvider === 'b2' && b2Ready ? 'b2' : 'r2';
+    selectedProvider === 'b2'
+      ? b2Ready || !r2Ready
+        ? 'b2'
+        : 'r2'
+      : r2Ready || !b2Ready
+        ? 'r2'
+        : 'b2';
+  const providerDisplayName = effectiveProvider === 'b2' ? 'Backblaze B2' : 'Cloudflare R2';
   const resolvedAccessLevel: MediaAccessLevel =
     accessLevel ?? (folderPath.trim().toLowerCase() === 'branding' ? 'public' : 'private');
   const maxMbHint = imageOnly
@@ -237,7 +295,7 @@ export function AssetUrlOrUploadInput({
       const msg =
         err instanceof Error
           ? err.message
-          : 'تعذر رفع الملف إلى Cloudflare R2. تحقق من رابط Worker والاتصال ثم أعد المحاولة.';
+          : `تعذر رفع الملف إلى ${providerDisplayName}. تحقق من رابط Worker والاتصال ثم أعد المحاولة.`;
       setPhase('error');
       setStatusMessage(msg);
       setCanRetry(uploadErr ? uploadErr.retryable : true);
@@ -293,21 +351,27 @@ export function AssetUrlOrUploadInput({
               className="rounded-lg border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-700"
               aria-label="مزود التخزين"
             >
-              <option value="r2">Cloudflare R2 ({limits.r2StorageLimitGb} GB)</option>
               <option value="b2" disabled={!b2Ready}>
                 {b2Ready
-                  ? `Backblaze B2 (${limits.b2StorageLimitGb} GB)`
-                  : 'Backblaze B2 (غير مربوط/متحقق)'}
+                  ? `Backblaze B2 (الأساسي • ${limits.b2StorageLimitGb} GB)`
+                  : 'Backblaze B2 (غير مربوط في Worker)'}
+              </option>
+              <option value="r2" disabled={!r2Ready}>
+                {r2Ready
+                  ? `Cloudflare R2 (ثانوي • ${limits.r2StorageLimitGb} GB)`
+                  : 'Cloudflare R2 (غير مربوط)'}
               </option>
             </select>
           )}
           <span className="text-[11px] font-medium text-slate-500">
             الحد الأقصى: {maxMbHint} MB •{' '}
-            {!workerConfigured
-              ? 'بانتظار رابط R2 Worker'
-              : quotaStatus?.verified
-                ? `${effectiveProvider === 'b2' ? 'B2' : 'R2'} متحقق منه`
-                : `Worker مهيأ — بانتظار التحقق الفعلي`}
+            {workerUrlStatus.reason === 'EMPTY'
+              ? 'بانتظار رابط Storage Worker'
+              : !workerConfigured
+                ? 'رابط Worker غير صالح (يجب HTTPS)'
+                : effectiveQuota?.verified || liveHealth?.ok
+                  ? `${effectiveProvider === 'b2' ? 'B2' : 'R2'} جاهز ومُتحقَّق منه`
+                  : 'Worker مضبوط — سيُفحص الاتصال تلقائياً عند الرفع'}
           </span>
         </div>
       </div>
@@ -334,16 +398,16 @@ export function AssetUrlOrUploadInput({
           {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
           <span>
             {phase === 'checking'
-              ? 'فحص R2…'
+              ? `فحص ${effectiveProvider === 'b2' ? 'B2' : 'R2'}…`
               : phase === 'uploading'
                 ? `جارٍ الرفع (${progress.percent}%)`
                 : phase === 'completing'
                   ? 'تثبيت الملف…'
                   : imageOnly
-                    ? 'رفع صورة إلى R2'
+                    ? `رفع صورة إلى ${effectiveProvider === 'b2' ? 'B2' : 'R2'}`
                     : videoOnly
-                      ? 'رفع فيديو إلى R2'
-                      : 'رفع ملف إلى R2'}
+                      ? `رفع فيديو إلى ${effectiveProvider === 'b2' ? 'B2' : 'R2'}`
+                      : `رفع ملف إلى ${effectiveProvider === 'b2' ? 'B2' : 'R2'}`}
           </span>
           <input
             type="file"
@@ -433,8 +497,8 @@ export function AssetUrlOrUploadInput({
 
       <p className="text-[11px] text-slate-400">
         {workerConfigured
-          ? `يدعم الرفع المجزأ القابل للاستئناف مباشرة إلى Cloudflare R2 (فيديو حتى ${limits.maxVideoSizeMb} MB، PDF حتى ${limits.maxPdfSizeMb} MB، صور حتى ${limits.maxImageSizeMb} MB) أو لصق رابط HTTPS مباشر.`
-          : 'يمكنك لصق رابط HTTPS مباشر الآن، أو إضافة رابط Cloudflare R2 Worker في «إعدادات المنصة» لتفعيل الرفع المباشر للملفات والفيديو.'}
+          ? `يدعم الرفع المجزأ القابل للاستئناف مباشرة إلى ${providerDisplayName} (فيديو حتى ${limits.maxVideoSizeMb} MB، PDF حتى ${limits.maxPdfSizeMb} MB، صور حتى ${limits.maxImageSizeMb} MB) أو لصق رابط HTTPS مباشر.`
+          : 'يمكنك لصق رابط HTTPS مباشر الآن، أو إضافة رابط Storage Worker في «إعدادات المنصة» لتفعيل الرفع المباشر إلى Backblaze B2 للملفات والفيديو.'}
       </p>
 
       {imageOnly && value && (

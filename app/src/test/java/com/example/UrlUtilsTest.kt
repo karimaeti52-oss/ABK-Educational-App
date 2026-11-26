@@ -100,5 +100,23 @@ class UrlUtilsTest {
             "https://cdn.midad.edu/files/lesson1.mp4",
             UrlUtils.sanitizeUrlForLog("https://cdn.midad.edu/files/lesson1.mp4?token=secret123#frag")
         )
+        assertTrue(
+            UrlUtils.isWorkerB2MediaUrl(
+                "https://midad-r2.workers.dev/b2/files/materials/worksheet.docx",
+                "https://midad-r2.workers.dev/"
+            )
+        )
+        assertFalse(
+            UrlUtils.isWorkerB2MediaUrl(
+                "https://midad-r2.workers.dev/files/materials/legacy.pdf",
+                "https://midad-r2.workers.dev"
+            )
+        )
+        assertFalse(
+            UrlUtils.isWorkerB2MediaUrl(
+                "https://evil.example.com/b2/files/materials/worksheet.docx",
+                "https://midad-r2.workers.dev"
+            )
+        )
     }
 }

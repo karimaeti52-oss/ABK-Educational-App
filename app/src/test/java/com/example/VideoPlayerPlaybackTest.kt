@@ -329,4 +329,59 @@ class VideoPlayerPlaybackTest {
         assertEquals(VideoErrorCause.UNAUTHORIZED, diag401.cause)
         assertEquals("HTTP_401", diag401.technicalCode)
     }
+
+    @Test
+    fun `PdfCacheManager resolveSignedUrlForWorkerFile requests b2 signed-url with Bearer header and rejects 403 without leaking token`() {
+        val server = MockWebServer()
+        server.start()
+        try {
+            val workerBase = server.url("").toString().removeSuffix("/")
+            val targetB2Url = "$workerBase/b2/files/materials/notes_01.pdf"
+            val expectedPresignedUrl =
+                "https://s3.us-east-005.backblazeb2.com/midad-edu-media-2026/materials/notes_01.pdf?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=deadbeef"
+
+            server.enqueue(
+                MockResponse()
+                    .setResponseCode(200)
+                    .addHeader("Content-Type", "application/json")
+                    .setBody("""{"ok":true,"signedUrl":"$expectedPresignedUrl"}""")
+            )
+            server.enqueue(
+                MockResponse()
+                    .setResponseCode(403)
+                    .addHeader("Content-Type", "application/json")
+                    .setBody("""{"error":"الحساب محظور من تنزيل الملفات"}""")
+            )
+
+            val okResult = kotlinx.coroutines.runBlocking {
+                com.example.util.PdfCacheManager.resolveSignedUrlForWorkerFile(
+                    rawUrl = targetB2Url,
+                    r2WorkerBaseUrl = workerBase,
+                    authTokenProvider = { "student-jwt-token" },
+                    download = true,
+                    expiresInSec = 300
+                )
+            }
+            assertTrue(okResult.isSuccess)
+            assertEquals(expectedPresignedUrl, okResult.getOrNull())
+
+            val firstReq = server.takeRequest()
+            assertEquals("GET", firstReq.method)
+            assertTrue(firstReq.path.orEmpty().startsWith("/b2/signed-url?"))
+            assertTrue(firstReq.path.orEmpty().contains("download=1"))
+            assertEquals("Bearer student-jwt-token", firstReq.getHeader("Authorization"))
+
+            val deniedResult = kotlinx.coroutines.runBlocking {
+                com.example.util.PdfCacheManager.resolveSignedUrlForWorkerFile(
+                    rawUrl = targetB2Url,
+                    r2WorkerBaseUrl = workerBase,
+                    authTokenProvider = { "banned-jwt-token" }
+                )
+            }
+            assertTrue(deniedResult.isFailure)
+            assertTrue(deniedResult.exceptionOrNull()?.message.orEmpty().contains("محظور"))
+        } finally {
+            server.shutdown()
+        }
+    }
 }

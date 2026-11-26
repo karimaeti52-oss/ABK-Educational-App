@@ -3,6 +3,8 @@ main = "src/index.js"
 compatibility_date = "2025-02-01"
 workers_dev = true
 
+# Legacy Cloudflare R2 binding (optional fallback so old /files/* URLs keep resolving).
+# Backblaze B2 is the primary storage provider and works even if [[r2_buckets]] is removed/unbound.
 [[r2_buckets]]
 binding = "MEDIA_BUCKET"
 bucket_name = "midad-edu-media"
@@ -16,13 +18,13 @@ DEFAULT_MAX_VIDEO_MB = "200"
 DEFAULT_MAX_PDF_MB = "100"
 DEFAULT_MAX_IMAGE_MB = "20"
 DEFAULT_R2_LIMIT_GB = "10"
-DEFAULT_TOTAL_LIMIT_GB = "10"
+DEFAULT_TOTAL_LIMIT_GB = "20"
 DEFAULT_B2_LIMIT_GB = "10"
-B2_ENABLED = "false"
-# Backblaze B2 & optional SUPER_ADMIN_EMAIL must be configured via `npx wrangler secret put`:
-# - SUPER_ADMIN_EMAIL (optional bootstrap email fallback; primary RBAC uses Firebase custom claim `abkRole` and `/admins/{uid}`)
-# - B2_ENDPOINT (e.g. https://s3.us-west-004.backblazeb2.com)
-# - B2_REGION (e.g. us-west-004)
-# - B2_BUCKET_NAME
+B2_ENABLED = "true"
+# Backblaze B2 (Primary Storage) & optional SUPER_ADMIN_EMAIL must be configured via `npx wrangler secret put`:
 # - B2_KEY_ID
 # - B2_APPLICATION_KEY
+# - B2_BUCKET_NAME      (midad-edu-media-2026)
+# - B2_ENDPOINT         (https://s3.us-east-005.backblazeb2.com)
+# - B2_REGION           (optional; auto-derived from B2_ENDPOINT as us-east-005)
+# - SUPER_ADMIN_EMAIL   (optional bootstrap email fallback; primary RBAC uses custom claim `abkRole` and `/admins/{uid}`)

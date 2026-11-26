@@ -31,10 +31,19 @@ const ALLOWED_EXTENSION_MAP = {
     mediaKind: 'ATTACHMENT',
     mimeTypes: ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
   },
+  ppt: {
+    mediaKind: 'ATTACHMENT',
+    mimeTypes: ['application/vnd.ms-powerpoint'],
+  },
   pptx: {
     mediaKind: 'ATTACHMENT',
     mimeTypes: ['application/vnd.openxmlformats-officedocument.presentationml.presentation'],
   },
+};
+
+const MIME_ALIASES = {
+  'application/x-pdf': 'application/pdf',
+  'image/pjpeg': 'image/jpeg',
 };
 
 export function normalizeEnvLimits(env, dynamicConfig = null) {
@@ -58,14 +67,17 @@ export function normalizeEnvLimits(env, dynamicConfig = null) {
     500
   );
 
-  // Backblaze B2 can ONLY be enabled when Worker B2_ENABLED=true AND valid S3 secrets exist.
-  // Firestore alone cannot activate B2; if Firestore explicitly sets b2Enabled=false, honor that toggle.
-  const b2WorkerFlag = String(env?.B2_ENABLED || 'false').trim().toLowerCase() === 'true';
+  // Backblaze B2 activates ONLY when valid B2 S3 secrets exist in Worker env and Worker does not set B2_ENABLED="false".
+  // Firestore alone can never enable B2 without valid Worker S3 secrets.
+  const rawWorkerFlag =
+    env?.B2_ENABLED === undefined || env?.B2_ENABLED === null || String(env.B2_ENABLED).trim() === ''
+      ? 'auto'
+      : String(env.B2_ENABLED).trim().toLowerCase();
+  const b2WorkerFlag = rawWorkerFlag !== 'false';
   const b2CredentialsConfigured = hasB2Credentials(env);
   const b2WorkerConfigured = b2WorkerFlag && b2CredentialsConfigured;
-  const b2Enabled =
-    b2WorkerConfigured &&
-    (dynamicConfig === null || dynamicConfig === undefined || dynamicConfig.b2Enabled !== false);
+  const b2Enabled = b2WorkerConfigured;
+  const primaryProvider = b2Enabled ? 'b2' : env?.MEDIA_BUCKET ? 'r2' : 'b2';
 
   const targetStorageLimitGb = r2StorageLimitGb + b2StorageLimitGb;
   const totalStorageLimitGb = b2Enabled ? r2StorageLimitGb + b2StorageLimitGb : r2StorageLimitGb;
@@ -96,6 +108,7 @@ export function normalizeEnvLimits(env, dynamicConfig = null) {
     b2Enabled,
     b2WorkerConfigured,
     b2CredentialsConfigured,
+    primaryProvider,
   };
 }
 
@@ -108,7 +121,8 @@ export function inferMediaDescriptor(fileName, declaredContentType = '') {
     return null;
   }
 
-  const normalizedMime = String(declaredContentType || '').split(';')[0].trim().toLowerCase();
+  const rawMime = String(declaredContentType || '').split(';')[0].trim().toLowerCase();
+  const normalizedMime = MIME_ALIASES[rawMime] || rawMime;
   if (
     normalizedMime &&
     normalizedMime !== 'application/octet-stream' &&
