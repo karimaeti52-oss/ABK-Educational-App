@@ -517,8 +517,8 @@ test('SUPER_ADMIN console bootstrap doc without Custom Claim is accepted, hidden
   // 1. Clean owner bootstrap document with NO Custom Claim (abkRole missing)
   const cleanOwnerSession = await resolveAdminPortalSession({
     user: {
-      uid: '5bIqNT2H3pVniVd6ULYkwps55c43',
-      email: 'karimaeti07@gmail.com',
+      uid: 'uid_test_super_admin',
+      email: 'admin@example.test',
       displayName: 'Owner',
     },
     checkBackendHealth: async () => false,
@@ -530,7 +530,7 @@ test('SUPER_ADMIN console bootstrap doc without Custom Claim is accepted, hidden
       exists: () => true,
       data: () => ({
         uid: targetUid,
-        email: 'karimaeti07@gmail.com',
+        email: 'admin@example.test',
         role: 'SUPER_ADMIN',
         active: true,
         grantedBy: 'FIREBASE_CONSOLE_BOOTSTRAP',
@@ -538,7 +538,7 @@ test('SUPER_ADMIN console bootstrap doc without Custom Claim is accepted, hidden
     }),
   });
   assert.equal(cleanOwnerSession.session?.role, 'SUPER_ADMIN');
-  assert.equal(cleanOwnerSession.session?.uid, '5bIqNT2H3pVniVd6ULYkwps55c43');
+  assert.equal(cleanOwnerSession.session?.uid, 'uid_test_super_admin');
   assert.equal(cleanOwnerSession.diagnosis?.allowed, true);
   assert.equal(cleanOwnerSession.diagnosis?.adminDocCheck.status, 'VALID_ACTIVE');
   assert.deepEqual(cleanOwnerSession.session?.warnings, []);
@@ -546,8 +546,8 @@ test('SUPER_ADMIN console bootstrap doc without Custom Claim is accepted, hidden
   // 2. Role pasted from mobile browser with trailing space and RTL/zero-width invisible markers
   const formattedRoleSession = await resolveAdminPortalSession({
     user: {
-      uid: '5bIqNT2H3pVniVd6ULYkwps55c43',
-      email: 'karimaeti07@gmail.com',
+      uid: 'uid_test_super_admin',
+      email: 'admin@example.test',
     },
     checkBackendHealth: async () => false,
     fetchBackendSession: async () => {
@@ -558,7 +558,7 @@ test('SUPER_ADMIN console bootstrap doc without Custom Claim is accepted, hidden
       exists: () => true,
       data: () => ({
         uid: targetUid,
-        email: 'karimaeti07@gmail.com',
+        email: 'admin@example.test',
         role: ' \u200FSUPER\u200B_ADMIN\u00A0 ' as unknown as 'SUPER_ADMIN',
         active: true,
         grantedBy: 'FIREBASE_CONSOLE_BOOTSTRAP',
@@ -573,8 +573,8 @@ test('SUPER_ADMIN console bootstrap doc without Custom Claim is accepted, hidden
   // 3. UID mismatch or missing UID in /admins/{uid} must be strictly rejected
   const uidMismatchSession = await resolveAdminPortalSession({
     user: {
-      uid: '5bIqNT2H3pVniVd6ULYkwps55c43',
-      email: 'karimaeti07@gmail.com',
+      uid: 'uid_test_super_admin',
+      email: 'admin@example.test',
     },
     checkBackendHealth: async () => false,
     fetchBackendSession: async () => {
@@ -585,7 +585,7 @@ test('SUPER_ADMIN console bootstrap doc without Custom Claim is accepted, hidden
       exists: () => true,
       data: () => ({
         uid: 'different_uid_value',
-        email: 'karimaeti07@gmail.com',
+        email: 'admin@example.test',
         role: 'SUPER_ADMIN',
         active: true,
       }),
@@ -597,7 +597,7 @@ test('SUPER_ADMIN console bootstrap doc without Custom Claim is accepted, hidden
   assert.equal(uidMismatchSession.diagnosis?.adminDocCheck.status, 'UID_MISMATCH');
 
   const missingUidResult = resolveFrontendStaffRole({
-    uid: '5bIqNT2H3pVniVd6ULYkwps55c43',
+    uid: 'uid_test_super_admin',
     claims: {},
     adminDoc: { role: 'SUPER_ADMIN', active: true },
   });
@@ -611,11 +611,11 @@ test('SUPER_ADMIN console bootstrap doc without Custom Claim is accepted, hidden
 
 test('diagnoseClientAdminAccess flags literal leading newline (\\nSUPER_ADMIN) with permission-denied guidance while clean SUPER_ADMIN emits no warning', () => {
   const dirty = diagnoseClientAdminAccess({
-    uid: '5bIqNT2H3pVniVd6ULYkwps55c43',
+    uid: 'uid_test_super_admin',
     claims: {},
     adminDocExists: true,
     adminDoc: {
-      uid: '5bIqNT2H3pVniVd6ULYkwps55c43',
+      uid: 'uid_test_super_admin',
       active: true,
       role: '\nSUPER_ADMIN' as unknown as 'SUPER_ADMIN',
     },
@@ -629,11 +629,11 @@ test('diagnoseClientAdminAccess flags literal leading newline (\\nSUPER_ADMIN) w
   assert.match(dirty.warnings[0], /permission-denied/);
 
   const clean = diagnoseClientAdminAccess({
-    uid: '5bIqNT2H3pVniVd6ULYkwps55c43',
+    uid: 'uid_test_super_admin',
     claims: {},
     adminDocExists: true,
     adminDoc: {
-      uid: '5bIqNT2H3pVniVd6ULYkwps55c43',
+      uid: 'uid_test_super_admin',
       active: true,
       role: 'SUPER_ADMIN',
     },

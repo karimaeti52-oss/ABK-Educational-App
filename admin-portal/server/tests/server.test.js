@@ -1118,28 +1118,28 @@ test('Backend RBAC accepts active SUPER_ADMIN /admins/{uid} without Custom Claim
   // Unit checks for resolveEffectiveRole
   assert.equal(
     resolveEffectiveRole(
-      { uid: '5bIqNT2H3pVniVd6ULYkwps55c43', email: 'karimaeti07@gmail.com', email_verified: true },
-      { uid: '5bIqNT2H3pVniVd6ULYkwps55c43', email: 'karimaeti07@gmail.com', role: 'SUPER_ADMIN', active: true }
+      { uid: 'uid_test_super_admin', email: 'admin@example.test', email_verified: true },
+      { uid: 'uid_test_super_admin', email: 'admin@example.test', role: 'SUPER_ADMIN', active: true }
     ),
     'SUPER_ADMIN'
   );
   assert.equal(
     resolveEffectiveRole(
-      { uid: '5bIqNT2H3pVniVd6ULYkwps55c43', email: 'karimaeti07@gmail.com', email_verified: true },
-      { uid: '5bIqNT2H3pVniVd6ULYkwps55c43', role: ' SUPER_ADMIN\u200F ', active: true }
+      { uid: 'uid_test_super_admin', email: 'admin@example.test', email_verified: true },
+      { uid: 'uid_test_super_admin', role: ' SUPER_ADMIN\u200F ', active: true }
     ),
     'SUPER_ADMIN'
   );
   assert.equal(
     resolveEffectiveRole(
-      { uid: '5bIqNT2H3pVniVd6ULYkwps55c43', email: 'karimaeti07@gmail.com', email_verified: true },
+      { uid: 'uid_test_super_admin', email: 'admin@example.test', email_verified: true },
       { uid: 'wrong_uid', role: 'SUPER_ADMIN', active: true }
     ),
     'STUDENT'
   );
   assert.equal(
     resolveEffectiveRole(
-      { uid: '5bIqNT2H3pVniVd6ULYkwps55c43', email: 'karimaeti07@gmail.com', email_verified: true },
+      { uid: 'uid_test_super_admin', email: 'admin@example.test', email_verified: true },
       { role: 'SUPER_ADMIN', active: true }
     ),
     'STUDENT'
@@ -1147,10 +1147,10 @@ test('Backend RBAC accepts active SUPER_ADMIN /admins/{uid} without Custom Claim
 
   const adminDocs = new Map([
     [
-      '5bIqNT2H3pVniVd6ULYkwps55c43',
+      'uid_test_super_admin',
       {
-        uid: '5bIqNT2H3pVniVd6ULYkwps55c43',
-        email: 'karimaeti07@gmail.com',
+        uid: 'uid_test_super_admin',
+        email: 'admin@example.test',
         role: 'SUPER_ADMIN',
         active: true,
         grantedBy: 'FIREBASE_CONSOLE_BOOTSTRAP',
@@ -1175,8 +1175,8 @@ test('Backend RBAC accepts active SUPER_ADMIN /admins/{uid} without Custom Claim
           const now = Math.floor(Date.now() / 1000);
           if (token === 'owner-doc-only') {
             return {
-              uid: '5bIqNT2H3pVniVd6ULYkwps55c43',
-              email: 'karimaeti07@gmail.com',
+              uid: 'uid_test_super_admin',
+              email: 'admin@example.test',
               email_verified: true,
               auth_time: now,
             };
@@ -1224,7 +1224,7 @@ test('Backend RBAC accepts active SUPER_ADMIN /admins/{uid} without Custom Claim
     assert.equal(okRes.status, 200);
     const okJson = await okRes.json();
     assert.equal(okJson.role, 'SUPER_ADMIN');
-    assert.equal(okJson.uid, '5bIqNT2H3pVniVd6ULYkwps55c43');
+    assert.equal(okJson.uid, 'uid_test_super_admin');
 
     const badRes = await fetch(`${baseUrl}/api/auth/me`, {
       headers: { Authorization: 'Bearer mismatch-doc' },

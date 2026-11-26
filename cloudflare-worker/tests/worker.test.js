@@ -1115,7 +1115,7 @@ test('Worker returns CORS-aware 404 UPLOAD_SESSION_NOT_FOUND for expired multipa
     MEDIA_BUCKET: bucket,
     ALLOWED_ORIGINS: 'https://abk-educational-app.pages.dev,http://localhost:5173',
   };
-  const ownerToken = await signTestJwt(privateKey, makeClaims('owner_uid', 'karimaeti07@gmail.com'));
+  const ownerToken = await signTestJwt(privateKey, makeClaims('owner_uid', 'admin@example.test'));
 
   // Missing / expired multipart session on PUT /multipart/part -> 404 + UPLOAD_SESSION_NOT_FOUND + CORS
   const missingPartRes = await worker.fetch(
@@ -1218,7 +1218,7 @@ test('B2-only Worker auto-derives us-east-005 region, routes omitted provider to
     B2_APPLICATION_KEY: 'app_key_secret_test',
   };
 
-  const ownerToken = await signTestJwt(privateKey, makeClaims('owner_b2', 'karimaeti07@gmail.com'));
+  const ownerToken = await signTestJwt(privateKey, makeClaims('owner_b2', 'admin@example.test'));
   const studentToken = await signTestJwt(privateKey, makeClaims('student_b2', 'student@midad.test'));
 
   // /health detects standalone B2 as primaryProvider
