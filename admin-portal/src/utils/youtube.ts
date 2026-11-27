@@ -117,6 +117,98 @@ export function getYouTubeThumbnailUrl(rawUrl: string): string | null {
   return `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
 }
 
+export type YouTubeEmbedCheckStatus =
+  | 'not_youtube'
+  | 'embeddable'
+  | 'embed_disabled'
+  | 'unavailable'
+  | 'check_failed';
+
+export interface YouTubeEmbedCheckResult {
+  status: YouTubeEmbedCheckStatus;
+  videoId: string | null;
+  title?: string;
+  messageAr: string;
+  blockSave: boolean;
+}
+
+export function isPermanentYouTubeErrorCode(errorCode: number): boolean {
+  return errorCode === 2 || errorCode === 100 || errorCode === 101 || errorCode === 150;
+}
+
+export async function checkYouTubeEmbeddability(
+  rawUrl: string,
+  options: { fetchImpl?: typeof fetch; oEmbedEndpoint?: string } = {}
+): Promise<YouTubeEmbedCheckResult> {
+  const videoId = extractYouTubeVideoId(rawUrl);
+  if (!videoId) {
+    return {
+      status: 'not_youtube',
+      videoId: null,
+      messageAr: '',
+      blockSave: false,
+    };
+  }
+
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  const endpoint = options.oEmbedEndpoint ?? 'https://www.youtube.com/oembed';
+  const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
+  const requestUrl = `${endpoint}?url=${encodeURIComponent(watchUrl)}&format=json`;
+
+  try {
+    const response = await fetchImpl(requestUrl, { method: 'GET' });
+    if (response.status === 200) {
+      let title: string | undefined;
+      try {
+        const data = (await response.json()) as { title?: string };
+        title = data.title?.trim() || undefined;
+      } catch {
+        // Ignore JSON parse details on 200 OK
+      }
+      return {
+        status: 'embeddable',
+        videoId,
+        title,
+        messageAr: 'الفيديو متاح ويسمح صاحبه بالتضمين داخل تطبيق الطلاب.',
+        blockSave: false,
+      };
+    }
+
+    if (response.status === 401 || response.status === 403) {
+      return {
+        status: 'embed_disabled',
+        videoId,
+        messageAr:
+          'مالك الفيديو منع تشغيله بالتضمين خارج تطبيق YouTube (YT_150). لن يعمل داخل تطبيق Android للطلاب؛ يرجى اختيار فيديو يسمح بالتضمين أو رفعه بصيغة MP4.',
+        blockSave: true,
+      };
+    }
+
+    if (response.status === 400 || response.status === 404) {
+      return {
+        status: 'unavailable',
+        videoId,
+        messageAr: 'هذا الفيديو خاص أو غير متاح على YouTube ولن يعمل للطلاب داخل التطبيق.',
+        blockSave: true,
+      };
+    }
+
+    return {
+      status: 'check_failed',
+      videoId,
+      messageAr: `تعذر التحقق التلقائي من صلاحية التضمين (HTTP ${response.status})؛ تأكد من المعاينة قبل النشر.`,
+      blockSave: false,
+    };
+  } catch {
+    return {
+      status: 'check_failed',
+      videoId,
+      messageAr: 'تعذر فحص صلاحية التضمين تلقائياً؛ تأكد من المعاينة قبل حفظ الدرس للطلاب.',
+      blockSave: false,
+    };
+  }
+}
+
 export function mapYouTubeErrorMessage(errorCode: number): string {
   switch (errorCode) {
     case 2:
@@ -127,9 +219,10 @@ export function mapYouTubeErrorMessage(errorCode: number): string {
       return 'هذا الفيديو غير موجود أو تم حذفه أو ضبطه كفيديو خاص.';
     case 101:
     case 150:
-      return 'مالك الفيديو منع تشغيله عبر التضمين (Embed) خارج موقع YouTube.';
+      return `صاحب الفيديو منع تشغيله بالتضمين خارج تطبيق YouTube (YT_${errorCode})، ولن يعمل داخل تطبيق الطلاب.`;
+    case 152:
     case 153:
-      return 'رفض YouTube تهيئة التضمين في المتصفح الحالي — يمكنك فتح الفيديو مباشرة على YouTube.';
+      return `رفض مشغل التضمين تهيئة التشغيل في المتصفح الحالي (YT_${errorCode}).`;
     default:
       return 'تعذر تشغيل الفيديو داخل المشغل المضمّن حالياً.';
   }

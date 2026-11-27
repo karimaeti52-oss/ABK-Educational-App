@@ -18,10 +18,12 @@ import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -37,7 +39,11 @@ import com.example.data.model.MaterialType
 import com.example.data.model.StudyMaterial
 import com.example.data.model.Subject
 import com.example.data.model.VideoSourceType
+import com.example.ui.screens.VideoPlaybackSupport
+import com.example.ui.screens.YouTubeEmbedCheckResult
+import com.example.ui.screens.YouTubeEmbedCheckStatus
 import com.example.util.UrlUtils
+import kotlinx.coroutines.delay
 
 private val subjectIconOptions = listOf(
     "math" to "الرياضيات",
@@ -207,6 +213,22 @@ fun LessonEditorDialog(
     var sourceType by remember { mutableStateOf(initial?.parsedVideoType() ?: VideoSourceType.YOUTUBE) }
     var sourceMenuExpanded by remember { mutableStateOf(false) }
     var published by remember { mutableStateOf(initial?.published ?: true) }
+    var isCheckingEmbed by remember { mutableStateOf(false) }
+    var embedCheckResult by remember { mutableStateOf<YouTubeEmbedCheckResult?>(null) }
+
+    val extractedYoutubeId = remember(videoUrl) { UrlUtils.extractYouTubeVideoId(videoUrl) }
+    LaunchedEffect(extractedYoutubeId) {
+        val ytId = extractedYoutubeId
+        if (ytId == null) {
+            isCheckingEmbed = false
+            embedCheckResult = null
+            return@LaunchedEffect
+        }
+        delay(450L)
+        isCheckingEmbed = true
+        embedCheckResult = VideoPlaybackSupport.checkYouTubeEmbeddability(ytId)
+        isCheckingEmbed = false
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -288,8 +310,46 @@ fun LessonEditorDialog(
                     },
                     label = { Text("رابط الفيديو (YouTube أو MP4 أو رابط خارجي) *") },
                     singleLine = true,
+                    isError = embedCheckResult?.blockSave == true,
                     modifier = Modifier.fillMaxWidth()
                 )
+                if (extractedYoutubeId != null) {
+                    val result = embedCheckResult
+                    val containerColor = when {
+                        isCheckingEmbed || result?.status == YouTubeEmbedCheckStatus.CHECK_FAILED ->
+                            MaterialTheme.colorScheme.secondaryContainer
+                        result?.blockSave == true ->
+                            MaterialTheme.colorScheme.errorContainer
+                        result?.status == YouTubeEmbedCheckStatus.EMBEDDABLE ->
+                            MaterialTheme.colorScheme.primaryContainer
+                        else -> MaterialTheme.colorScheme.surfaceVariant
+                    }
+                    val contentColor = when {
+                        isCheckingEmbed || result?.status == YouTubeEmbedCheckStatus.CHECK_FAILED ->
+                            MaterialTheme.colorScheme.onSecondaryContainer
+                        result?.blockSave == true ->
+                            MaterialTheme.colorScheme.onErrorContainer
+                        result?.status == YouTubeEmbedCheckStatus.EMBEDDABLE ->
+                            MaterialTheme.colorScheme.onPrimaryContainer
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                    Surface(
+                        color = containerColor,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = when {
+                                isCheckingEmbed -> "جارٍ التحقق من سماح صاحب الفيديو بالتضمين داخل التطبيق..."
+                                result != null -> result.messageAr
+                                else -> "سيتم فحص صلاحية التضمين على YouTube تلقائياً."
+                            },
+                            color = contentColor,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(10.dp)
+                        )
+                    }
+                }
                 ExposedDropdownMenuBox(
                     expanded = sourceMenuExpanded,
                     onExpandedChange = { sourceMenuExpanded = !sourceMenuExpanded }
@@ -378,7 +438,11 @@ fun LessonEditorDialog(
                         published
                     )
                 },
-                enabled = selectedSubject != null && title.trim().isNotEmpty() && videoUrl.trim().isNotEmpty(),
+                enabled = selectedSubject != null &&
+                    title.trim().isNotEmpty() &&
+                    videoUrl.trim().isNotEmpty() &&
+                    !isCheckingEmbed &&
+                    embedCheckResult?.blockSave != true,
                 shape = RoundedCornerShape(10.dp)
             ) {
                 Text("حفظ")

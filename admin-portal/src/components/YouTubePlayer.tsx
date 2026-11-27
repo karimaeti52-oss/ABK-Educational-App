@@ -6,6 +6,7 @@ import type { PlatformConfig } from '../types';
 import {
   extractYouTubeVideoId,
   getYouTubeWatchUrl,
+  isPermanentYouTubeErrorCode,
   isYouTubeUrl,
   mapYouTubeErrorMessage,
   toYouTubeEmbedUrl,
@@ -14,6 +15,7 @@ import {
 interface YouTubePlayerProps {
   url: string;
   title?: string;
+  onEmbedErrorDetected?: (code: number, messageAr: string) => void;
 }
 
 function shouldAttachWorkerAuth(url: string, platformConfig?: Partial<PlatformConfig> | null): boolean {
@@ -156,10 +158,14 @@ export function AuthenticatedDirectVideo({
   );
 }
 
-export function YouTubeVideoPlayer({ url, title = 'مشغل فيديو YouTube' }: YouTubePlayerProps) {
+export function YouTubeVideoPlayer({
+  url,
+  title = 'مشغل فيديو YouTube',
+  onEmbedErrorDetected,
+}: YouTubePlayerProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const playerDomId = useId();
-  const [embedError, setEmbedError] = useState<string | null>(null);
+  const [embedError, setEmbedError] = useState<{ code: number; message: string } | null>(null);
   const [iframeLoaded, setIframeLoaded] = useState(false);
 
   const videoId = useMemo(() => extractYouTubeVideoId(url), [url]);
@@ -195,13 +201,15 @@ export function YouTubeVideoPlayer({ url, title = 'مشغل فيديو YouTube' 
       if (!payload || typeof payload !== 'object') return;
       const msg = payload as { event?: string; info?: unknown };
       if (msg.event === 'onError' && typeof msg.info === 'number') {
-        setEmbedError(mapYouTubeErrorMessage(msg.info));
+        const mappedMessage = mapYouTubeErrorMessage(msg.info);
+        setEmbedError({ code: msg.info, message: mappedMessage });
+        onEmbedErrorDetected?.(msg.info, mappedMessage);
       }
     }
 
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [embedUrl]);
+  }, [embedUrl, onEmbedErrorDetected]);
 
   function notifyIframeReady() {
     setIframeLoaded(true);
@@ -243,11 +251,36 @@ export function YouTubeVideoPlayer({ url, title = 'مشغل فيديو YouTube' 
   return (
     <div className="space-y-2.5">
       {embedError ? (
-        <div className="flex aspect-video w-full flex-col items-center justify-center gap-3 rounded-2xl border border-amber-300 bg-amber-50 p-6 text-center">
-          <AlertTriangle className="h-9 w-9 text-amber-600" />
+        <div
+          className={`flex aspect-video w-full flex-col items-center justify-center gap-3 rounded-2xl border p-6 text-center ${
+            isPermanentYouTubeErrorCode(embedError.code)
+              ? 'border-rose-300 bg-rose-50'
+              : 'border-amber-300 bg-amber-50'
+          }`}
+        >
+          <AlertTriangle
+            className={`h-9 w-9 ${
+              isPermanentYouTubeErrorCode(embedError.code) ? 'text-rose-600' : 'text-amber-600'
+            }`}
+          />
           <div className="max-w-md space-y-1">
-            <p className="text-sm font-bold text-amber-950">تعذر تشغيل الفيديو داخل المشغل المضمّن</p>
-            <p className="text-xs leading-relaxed text-amber-800">{embedError}</p>
+            <p
+              className={`text-sm font-bold ${
+                isPermanentYouTubeErrorCode(embedError.code) ? 'text-rose-950' : 'text-amber-950'
+              }`}
+            >
+              {embedError.code === 101 || embedError.code === 150
+                ? 'صاحب الفيديو منع التضمين خارج YouTube'
+                : 'تعذر تشغيل الفيديو داخل المشغل المضمّن'}
+            </p>
+            <p
+              className={`text-xs leading-relaxed ${
+                isPermanentYouTubeErrorCode(embedError.code) ? 'text-rose-800' : 'text-amber-800'
+              }`}
+            >
+              {embedError.message}
+            </p>
+            <p className="text-[11px] font-mono text-slate-500">رمز التشخيص: YT_{embedError.code}</p>
           </div>
           <a
             href={watchUrl}

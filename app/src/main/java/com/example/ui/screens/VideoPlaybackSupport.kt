@@ -16,8 +16,12 @@ import androidx.media3.exoplayer.mediacodec.MediaCodecRenderer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.example.BuildConfig
 import com.example.util.UrlUtils
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.json.JSONObject
 import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
@@ -40,6 +44,7 @@ enum class VideoErrorCause {
     UNSUPPORTED_FORMAT,
     DECODER_ERROR,
     YOUTUBE_PRIVATE,
+    YOUTUBE_OWNER_DISABLED_EMBED,
     YOUTUBE_EMBED_RESTRICTED,
     YOUTUBE_SCRIPT_BLOCKED,
     YOUTUBE_INIT_TIMEOUT,
@@ -75,6 +80,22 @@ data class YouTubeLifecycleSnapshot(
     val iframeLoaded: Boolean = false,
     val playerReady: Boolean = false,
     val lastConsoleError: String = ""
+)
+
+enum class YouTubeEmbedCheckStatus {
+    NOT_YOUTUBE,
+    EMBEDDABLE,
+    EMBED_DISABLED,
+    UNAVAILABLE,
+    CHECK_FAILED
+}
+
+data class YouTubeEmbedCheckResult(
+    val status: YouTubeEmbedCheckStatus,
+    val videoId: String? = null,
+    val title: String? = null,
+    val messageAr: String = "",
+    val blockSave: Boolean = false
 )
 
 object VideoPlaybackSupport {
@@ -525,6 +546,80 @@ object VideoPlaybackSupport {
         }
     }
 
+    fun isPermanentYouTubeError(code: Int): Boolean {
+        return code == 2 || code == 100 || code == 101 || code == 150
+    }
+
+    suspend fun checkYouTubeEmbeddability(
+        rawUrl: String,
+        client: OkHttpClient = defaultOEmbedClient,
+        oEmbedEndpoint: String = "https://www.youtube.com/oembed"
+    ): YouTubeEmbedCheckResult = withContext(Dispatchers.IO) {
+        val videoId = UrlUtils.extractYouTubeVideoId(rawUrl)
+            ?: return@withContext YouTubeEmbedCheckResult(
+                status = YouTubeEmbedCheckStatus.NOT_YOUTUBE
+            )
+        val watchUrl = "https://www.youtube.com/watch?v=$videoId"
+        val requestUrl = "$oEmbedEndpoint?url=${URLEncoder.encode(watchUrl, "UTF-8")}&format=json"
+        val request = Request.Builder()
+            .url(requestUrl)
+            .header("User-Agent", "Midad-Android/${BuildConfig.VERSION_NAME}")
+            .get()
+            .build()
+        return@withContext try {
+            client.newCall(request).execute().use { resp ->
+                when (resp.code) {
+                    200 -> {
+                        val rawBody = resp.body?.string().orEmpty()
+                        val title = runCatching {
+                            JSONObject(rawBody).optString("title").trim().ifBlank { null }
+                        }.getOrNull()
+                        YouTubeEmbedCheckResult(
+                            status = YouTubeEmbedCheckStatus.EMBEDDABLE,
+                            videoId = videoId,
+                            title = title,
+                            messageAr = "الفيديو متاح ويسمح صاحبه بالتضمين داخل التطبيق.",
+                            blockSave = false
+                        )
+                    }
+                    401, 403 -> YouTubeEmbedCheckResult(
+                        status = YouTubeEmbedCheckStatus.EMBED_DISABLED,
+                        videoId = videoId,
+                        messageAr = "صاحب الفيديو منع تشغيله بالتضمين خارج YouTube (YT_150). لن يعمل داخل التطبيق للطلاب؛ اختر فيديو آخر أو ارفع ملف MP4.",
+                        blockSave = true
+                    )
+                    400, 404 -> YouTubeEmbedCheckResult(
+                        status = YouTubeEmbedCheckStatus.UNAVAILABLE,
+                        videoId = videoId,
+                        messageAr = "هذا الفيديو غير موجود أو مضبوط كفيديو خاص على YouTube ولن يعمل للطلاب.",
+                        blockSave = true
+                    )
+                    else -> YouTubeEmbedCheckResult(
+                        status = YouTubeEmbedCheckStatus.CHECK_FAILED,
+                        videoId = videoId,
+                        messageAr = "تعذر التحقق التلقائي من صلاحية التضمين (HTTP ${resp.code}). تأكد من إمكانية تشغيله قبل النشر.",
+                        blockSave = false
+                    )
+                }
+            }
+        } catch (err: Exception) {
+            Log.w(TAG, "YouTube oEmbed embeddability check failed: ${err.javaClass.simpleName}")
+            YouTubeEmbedCheckResult(
+                status = YouTubeEmbedCheckStatus.CHECK_FAILED,
+                videoId = videoId,
+                messageAr = "تعذر فحص صلاحية التضمين حالياً؛ تأكد من اتصال الإنترنت وجرّب المعاينة قبل النشر.",
+                blockSave = false
+            )
+        }
+    }
+
+    private val defaultOEmbedClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.SECONDS)
+            .build()
+    }
+
     fun mapYouTubeErrorToDiagnosis(code: Int, detail: String = ""): VideoErrorDiagnosis {
         val suffix = detail.take(24).replace(Regex("[^a-zA-Z0-9_-]"), "")
         Log.w(TAG, "Diagnosing YouTube error code=$code detail=${suffix.ifBlank { "none" }}")
@@ -543,12 +638,14 @@ object VideoPlaybackSupport {
             100 -> VideoErrorDiagnosis(
                 cause = VideoErrorCause.YOUTUBE_PRIVATE,
                 userMessageAr = "هذا الفيديو غير متاح أو مضبوط كفيديو خاص من قِبل صاحبه.",
-                technicalCode = "YT_100"
+                technicalCode = "YT_100",
+                canRetry = false
             )
             101, 150 -> VideoErrorDiagnosis(
-                cause = VideoErrorCause.YOUTUBE_EMBED_RESTRICTED,
-                userMessageAr = "مالك الفيديو منع تشغيله بالتضمين خارج تطبيق YouTube.",
-                technicalCode = "YT_$code"
+                cause = VideoErrorCause.YOUTUBE_OWNER_DISABLED_EMBED,
+                userMessageAr = "صاحب الفيديو منع تشغيله بالتضمين خارج تطبيق YouTube، ولا يمكن تشغيله داخل التطبيق. يُرجى التواصل مع المعلّم أو الإدارة لاستبدال الرابط بفيديو يسمح بالتضمين أو مرفوع مباشرة.",
+                technicalCode = "YT_$code",
+                canRetry = false
             )
             152 -> VideoErrorDiagnosis(
                 cause = VideoErrorCause.YOUTUBE_EMBED_RESTRICTED,

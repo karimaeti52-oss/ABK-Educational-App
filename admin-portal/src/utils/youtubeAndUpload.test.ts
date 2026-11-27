@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  checkYouTubeEmbeddability,
   extractYouTubeVideoId,
   getYouTubeThumbnailUrl,
   getYouTubeWatchUrl,
+  isPermanentYouTubeErrorCode,
   isYouTubeUrl,
   mapYouTubeErrorMessage,
   toYouTubeEmbedUrl,
@@ -62,8 +64,57 @@ test('toYouTubeEmbedUrl generates responsive embed URL with controls, fullscreen
     getYouTubeThumbnailUrl('https://youtu.be/dQw4w9WgXcQ'),
     'https://img.youtube.com/vi/dQw4w9WgXcQ/hqdefault.jpg'
   );
-  assert.match(mapYouTubeErrorMessage(150), /التضمين/);
+  assert.match(mapYouTubeErrorMessage(150), /YT_150/);
+  assert.match(mapYouTubeErrorMessage(101), /YT_101/);
+  assert.match(mapYouTubeErrorMessage(152), /YT_152/);
   assert.match(mapYouTubeErrorMessage(100), /خاص|غير موجود/);
+  assert.equal(isPermanentYouTubeErrorCode(150), true);
+  assert.equal(isPermanentYouTubeErrorCode(101), true);
+  assert.equal(isPermanentYouTubeErrorCode(100), true);
+  assert.equal(isPermanentYouTubeErrorCode(2), true);
+  assert.equal(isPermanentYouTubeErrorCode(152), false);
+  assert.equal(isPermanentYouTubeErrorCode(5), false);
+});
+
+test('checkYouTubeEmbeddability detects embeddable videos vs owner-disabled YT_150 vs unavailable', async () => {
+  const notYt = await checkYouTubeEmbeddability('https://cdn.example.com/lesson.mp4');
+  assert.equal(notYt.status, 'not_youtube');
+  assert.equal(notYt.blockSave, false);
+
+  const embeddable = await checkYouTubeEmbeddability('https://www.youtube.com/watch?v=dQw4w9WgXcQ', {
+    fetchImpl: (async () =>
+      new Response(JSON.stringify({ title: 'درس تجريبي قابل للتضمين' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })) as typeof fetch,
+  });
+  assert.equal(embeddable.status, 'embeddable');
+  assert.equal(embeddable.blockSave, false);
+  assert.equal(embeddable.videoId, 'dQw4w9WgXcQ');
+  assert.equal(embeddable.title, 'درس تجريبي قابل للتضمين');
+
+  for (const deniedStatus of [401, 403]) {
+    const blocked = await checkYouTubeEmbeddability('https://youtu.be/M7lc1UVf-VE', {
+      fetchImpl: (async () => new Response('Unauthorized', { status: deniedStatus })) as typeof fetch,
+    });
+    assert.equal(blocked.status, 'embed_disabled');
+    assert.equal(blocked.blockSave, true);
+    assert.match(blocked.messageAr, /YT_150/);
+  }
+
+  const unavailable = await checkYouTubeEmbeddability('https://youtu.be/M7lc1UVf-VE', {
+    fetchImpl: (async () => new Response('Not Found', { status: 404 })) as typeof fetch,
+  });
+  assert.equal(unavailable.status, 'unavailable');
+  assert.equal(unavailable.blockSave, true);
+
+  const networkErr = await checkYouTubeEmbeddability('https://youtu.be/M7lc1UVf-VE', {
+    fetchImpl: (async () => {
+      throw new Error('network down');
+    }) as typeof fetch,
+  });
+  assert.equal(networkErr.status, 'check_failed');
+  assert.equal(networkErr.blockSave, false);
 });
 
 test('mapStorageErrorToArabic and formatFileSizeLabel classify storage states accurately', () => {

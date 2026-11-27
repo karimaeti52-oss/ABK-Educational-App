@@ -805,6 +805,15 @@ internal fun VideoPlaybackErrorBox(
             modifier = Modifier.size(36.dp)
         )
         Spacer(Modifier.height(8.dp))
+        if (diagnosis.cause == VideoErrorCause.YOUTUBE_OWNER_DISABLED_EMBED) {
+            Text(
+                text = "مالك الفيديو منع تشغيله بالتضمين",
+                color = Color(0xFFFDE68A),
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                textAlign = TextAlign.Center
+            )
+            Spacer(Modifier.height(4.dp))
+        }
         Text(
             text = diagnosis.userMessageAr,
             color = Color.White,
@@ -1151,7 +1160,10 @@ private fun YouTubeInAppPlayerView(
                                     "MidadVideoPlayer",
                                     "YouTube IFrame player error code=$code detail=${detail.orEmpty()} host=${embedHost.name} fallbackAttempted=$fallbackAttempted videoId=$videoId"
                                 )
-                                if ((code == 152 || code == 153 || code == -5) && !fallbackAttempted) {
+                                if (!VideoPlaybackSupport.isPermanentYouTubeError(code) &&
+                                    (code == 152 || code == 153 || code == -5) &&
+                                    !fallbackAttempted
+                                ) {
                                     fallbackAttempted = true
                                     embedHost = YouTubeEmbedHost.NOCOOKIE
                                     lifecycleState = YouTubeLifecycleSnapshot()

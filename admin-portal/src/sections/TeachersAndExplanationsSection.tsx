@@ -13,7 +13,15 @@ import {
   VideoPreviewModal,
   YouTubeVideoPlayer,
 } from '../components/YouTubePlayer';
-import { isYouTubeUrl } from '../utils/youtube';
+import { YouTubeEmbedStatusBanner } from '../components/YouTubeEmbedStatusBanner';
+import {
+  checkYouTubeEmbeddability,
+  extractYouTubeVideoId,
+  isPermanentYouTubeErrorCode,
+  isYouTubeUrl,
+  mapYouTubeErrorMessage,
+  type YouTubeEmbedCheckResult,
+} from '../utils/youtube';
 import {
   commitSortOrderBatch,
   hardDeleteEntity,
@@ -361,6 +369,8 @@ export function ExplanationsAndBlocksSection({
   const [blockStatus, setBlockStatus] = useState<PublishStatus>('PUBLISHED');
   const [dragBlockId, setDragBlockId] = useState<string | null>(null);
   const [previewVideo, setPreviewVideo] = useState<{ title: string; url: string } | null>(null);
+  const [blockEmbedCheck, setBlockEmbedCheck] = useState<YouTubeEmbedCheckResult | null>(null);
+  const [blockPreviewBlockedCode, setBlockPreviewBlockedCode] = useState<number | null>(null);
 
   const filteredLessons = useMemo(
     () => activeLessons.filter((l) => (!selectedSubjectId ? true : l.subjectId === selectedSubjectId)),
@@ -460,6 +470,8 @@ export function ExplanationsAndBlocksSection({
     ]);
     setBlockSort(blocksForExplanation.length + 1);
     setBlockStatus(staff.role === 'TEACHER' ? 'DRAFT' : 'PUBLISHED');
+    setBlockEmbedCheck(null);
+    setBlockPreviewBlockedCode(null);
     setOpenBlockForm(true);
   }
 
@@ -485,12 +497,30 @@ export function ExplanationsAndBlocksSection({
     );
     setBlockSort(b.sortOrder);
     setBlockStatus(b.status || (b.published ? 'PUBLISHED' : 'DRAFT'));
+    setBlockEmbedCheck(null);
+    setBlockPreviewBlockedCode(null);
     setOpenBlockForm(true);
   }
 
   async function saveBlock(e: React.FormEvent) {
     e.preventDefault();
     if (!currentExplanation || !blockTitle.trim()) return;
+    if ((blockType === 'YOUTUBE_VIDEO' || blockType === 'EXTERNAL_VIDEO') && isYouTubeUrl(blockMediaUrl)) {
+      if (blockPreviewBlockedCode && isPermanentYouTubeErrorCode(blockPreviewBlockedCode)) {
+        onToast(mapYouTubeErrorMessage(blockPreviewBlockedCode), true);
+        return;
+      }
+      const videoId = extractYouTubeVideoId(blockMediaUrl);
+      const latestCheck =
+        blockEmbedCheck && blockEmbedCheck.videoId === videoId
+          ? blockEmbedCheck
+          : await checkYouTubeEmbeddability(blockMediaUrl);
+      setBlockEmbedCheck(latestCheck);
+      if (latestCheck.blockSave) {
+        onToast(latestCheck.messageAr, true);
+        return;
+      }
+    }
     const isQa = blockType === 'QA';
     const isQuiz = blockType === 'QUIZ_MCQ' || blockType === 'QUIZ_TRUE_FALSE' || blockType === 'INTERACTIVE_EXAM';
 
@@ -810,6 +840,10 @@ export function ExplanationsAndBlocksSection({
                     value={blockMediaUrl}
                     onChange={(url, size) => {
                       setBlockMediaUrl(url);
+                      setBlockPreviewBlockedCode(null);
+                      if (!isYouTubeUrl(url)) {
+                        setBlockEmbedCheck(null);
+                      }
                       if (size) setBlockFileSize(size);
                       if (!url.trim()) {
                         setBlockR2Key('');
@@ -823,6 +857,8 @@ export function ExplanationsAndBlocksSection({
                       setBlockStorageProvider(meta.storageProvider);
                       setBlockSizeBytes(meta.sizeBytes);
                       setLastUploadedMeta(meta);
+                      setBlockEmbedCheck(null);
+                      setBlockPreviewBlockedCode(null);
                       if (meta.mediaKind === 'VIDEO' && blockType === 'YOUTUBE_VIDEO') {
                         setBlockType('EXTERNAL_VIDEO');
                       }
@@ -839,13 +875,26 @@ export function ExplanationsAndBlocksSection({
 
                 {(['YOUTUBE_VIDEO', 'EXTERNAL_VIDEO'].includes(blockType)) && (
                   <div className="space-y-3">
+                    <YouTubeEmbedStatusBanner
+                      url={blockMediaUrl}
+                      externalBlockedCode={blockPreviewBlockedCode}
+                      onResultChange={setBlockEmbedCheck}
+                    />
                     <div className="max-w-xs">
                       <label className="mb-1 block text-xs font-semibold text-slate-600">المدة (مثال 14:30)</label>
                       <input value={blockDuration} onChange={(e) => setBlockDuration(e.target.value)} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" />
                     </div>
                     {blockMediaUrl.trim() && isYouTubeUrl(blockMediaUrl) && (
                       <div className="rounded-2xl border border-slate-200 bg-white p-3">
-                        <YouTubeVideoPlayer url={blockMediaUrl} title={blockTitle || 'معاينة الفيديو'} />
+                        <YouTubeVideoPlayer
+                          url={blockMediaUrl}
+                          title={blockTitle || 'معاينة الفيديو'}
+                          onEmbedErrorDetected={(code) => {
+                            if (isPermanentYouTubeErrorCode(code)) {
+                              setBlockPreviewBlockedCode(code);
+                            }
+                          }}
+                        />
                       </div>
                     )}
                     {blockType === 'EXTERNAL_VIDEO' && blockMediaUrl.trim() && !isYouTubeUrl(blockMediaUrl) && (
@@ -995,7 +1044,20 @@ export function ExplanationsAndBlocksSection({
 
                 <div className="flex justify-end gap-2">
                   <button type="button" onClick={() => setOpenBlockForm(false)} className="rounded-xl border border-slate-200 px-4 py-2 text-xs">إلغاء</button>
-                  <button type="submit" className="rounded-xl bg-sky-600 px-5 py-2 text-xs font-bold text-white">حفظ الكتلة</button>
+                  <button
+                    type="submit"
+                    disabled={
+                      (['YOUTUBE_VIDEO', 'EXTERNAL_VIDEO'].includes(blockType)) &&
+                      isYouTubeUrl(blockMediaUrl) &&
+                      (blockEmbedCheck?.blockSave === true ||
+                        Boolean(
+                          blockPreviewBlockedCode && isPermanentYouTubeErrorCode(blockPreviewBlockedCode)
+                        ))
+                    }
+                    className="rounded-xl bg-sky-600 px-5 py-2 text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    حفظ الكتلة
+                  </button>
                 </div>
               </form>
             )}

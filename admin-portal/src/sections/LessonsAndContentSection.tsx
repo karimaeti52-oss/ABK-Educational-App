@@ -23,6 +23,7 @@ import {
   VideoPreviewModal,
   YouTubeVideoPlayer,
 } from '../components/YouTubePlayer';
+import { YouTubeEmbedStatusBanner } from '../components/YouTubeEmbedStatusBanner';
 import {
   fetchR2QuotaStatus,
   inferStorageProviderFromUrl,
@@ -34,7 +35,16 @@ import {
   resolveR2StorageLimits,
   type R2UploadResult,
 } from '../utils/r2Upload';
-import { getYouTubeThumbnailUrl, getYouTubeWatchUrl, isYouTubeUrl } from '../utils/youtube';
+import {
+  checkYouTubeEmbeddability,
+  extractYouTubeVideoId,
+  getYouTubeThumbnailUrl,
+  getYouTubeWatchUrl,
+  isPermanentYouTubeErrorCode,
+  isYouTubeUrl,
+  mapYouTubeErrorMessage,
+  type YouTubeEmbedCheckResult,
+} from '../utils/youtube';
 import {
   commitSortOrderBatch,
   hardDeleteEntity,
@@ -100,6 +110,8 @@ export function LessonsSection({
   const [status, setStatus] = useState<PublishStatus>('PUBLISHED');
   const [previewVideo, setPreviewVideo] = useState<{ title: string; url: string } | null>(null);
   const [showInlinePreview, setShowInlinePreview] = useState(false);
+  const [embedCheck, setEmbedCheck] = useState<YouTubeEmbedCheckResult | null>(null);
+  const [previewBlockedCode, setPreviewBlockedCode] = useState<number | null>(null);
 
   const activeSubjects = store.subjects.filter((s) => !s.deletedAt);
   const activeUnits = store.units.filter((u) => !u.deletedAt && u.subjectId === subjectId);
@@ -129,6 +141,8 @@ export function LessonsSection({
     setThumbnailUrl('');
     setStatus('PUBLISHED');
     setShowInlinePreview(false);
+    setEmbedCheck(null);
+    setPreviewBlockedCode(null);
     setOpenForm(true);
   }
 
@@ -152,6 +166,8 @@ export function LessonsSection({
     setThumbnailUrl(l.thumbnailUrl || '');
     setStatus(l.status || (l.published ? 'PUBLISHED' : 'DRAFT'));
     setShowInlinePreview(false);
+    setEmbedCheck(null);
+    setPreviewBlockedCode(null);
     setOpenForm(true);
   }
 
@@ -159,6 +175,22 @@ export function LessonsSection({
     e.preventDefault();
     const subj = activeSubjects.find((s) => s.id === subjectId);
     if (!subj || !title.trim()) return;
+    if (isYouTubeUrl(videoUrl)) {
+      if (previewBlockedCode && isPermanentYouTubeErrorCode(previewBlockedCode)) {
+        onToast(mapYouTubeErrorMessage(previewBlockedCode), true);
+        return;
+      }
+      const videoId = extractYouTubeVideoId(videoUrl);
+      const latestCheck =
+        embedCheck && embedCheck.videoId === videoId
+          ? embedCheck
+          : await checkYouTubeEmbeddability(videoUrl);
+      setEmbedCheck(latestCheck);
+      if (latestCheck.blockSave) {
+        onToast(latestCheck.messageAr, true);
+        return;
+      }
+    }
     try {
       const lessonId = await upsertEntity(
         'lessons',
@@ -340,6 +372,10 @@ export function LessonsSection({
             value={videoUrl}
             onChange={(url) => {
               setVideoUrl(url);
+              setPreviewBlockedCode(null);
+              if (!isYouTubeUrl(url)) {
+                setEmbedCheck(null);
+              }
               if (isYouTubeUrl(url)) {
                 setVideoSourceType('YOUTUBE');
               } else if (/\.mp4|\.webm|\.m3u8|\/files\/|\/b2\/files\//i.test(url)) {
@@ -358,12 +394,20 @@ export function LessonsSection({
               setStorageProvider(meta.storageProvider);
               setSizeBytes(meta.sizeBytes);
               setUploadedVideoMeta(meta);
+              setEmbedCheck(null);
+              setPreviewBlockedCode(null);
             }}
             folderPath={`videos/${subjectId || 'general'}`}
             accessLevel="private"
             videoOnly
             platformConfig={store.platformConfig}
             onToast={onToast}
+          />
+
+          <YouTubeEmbedStatusBanner
+            url={videoUrl}
+            externalBlockedCode={previewBlockedCode}
+            onResultChange={setEmbedCheck}
           />
 
           {videoUrl.trim() && (
@@ -392,7 +436,15 @@ export function LessonsSection({
           {showInlinePreview && videoUrl.trim() && (
             isYouTubeUrl(videoUrl) ? (
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
-                <YouTubeVideoPlayer url={videoUrl} title={title || 'معاينة فيديو الدرس'} />
+                <YouTubeVideoPlayer
+                  url={videoUrl}
+                  title={title || 'معاينة فيديو الدرس'}
+                  onEmbedErrorDetected={(code) => {
+                    if (isPermanentYouTubeErrorCode(code)) {
+                      setPreviewBlockedCode(code);
+                    }
+                  }}
+                />
               </div>
             ) : (
               <div className="overflow-hidden rounded-2xl border border-slate-200 bg-black">
@@ -403,7 +455,17 @@ export function LessonsSection({
 
           <div className="flex justify-end gap-2">
             <button type="button" onClick={() => setOpenForm(false)} className="rounded-xl border border-slate-200 px-4 py-2 text-xs">إلغاء</button>
-            <button type="submit" className="rounded-xl bg-sky-600 px-5 py-2 text-xs font-bold text-white">حفظ الدرس</button>
+            <button
+              type="submit"
+              disabled={
+                isYouTubeUrl(videoUrl) &&
+                (embedCheck?.blockSave === true ||
+                  Boolean(previewBlockedCode && isPermanentYouTubeErrorCode(previewBlockedCode)))
+              }
+              className="rounded-xl bg-sky-600 px-5 py-2 text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              حفظ الدرس
+            </button>
           </div>
         </form>
       )}

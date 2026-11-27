@@ -177,6 +177,25 @@ class VideoPlayerPlaybackTest {
         val ytPrivate = VideoPlaybackSupport.mapYouTubeErrorToDiagnosis(100)
         assertEquals(VideoErrorCause.YOUTUBE_PRIVATE, ytPrivate.cause)
         assertEquals("YT_100", ytPrivate.technicalCode)
+        assertFalse(ytPrivate.canRetry)
+
+        val yt150 = VideoPlaybackSupport.mapYouTubeErrorToDiagnosis(150, "yt_player")
+        assertEquals(VideoErrorCause.YOUTUBE_OWNER_DISABLED_EMBED, yt150.cause)
+        assertEquals("YT_150", yt150.technicalCode)
+        assertFalse(yt150.canRetry)
+        assertTrue(yt150.userMessageAr.contains("صاحب الفيديو منع تشغيله بالتضمين"))
+
+        val yt101 = VideoPlaybackSupport.mapYouTubeErrorToDiagnosis(101, "yt_player")
+        assertEquals(VideoErrorCause.YOUTUBE_OWNER_DISABLED_EMBED, yt101.cause)
+        assertEquals("YT_101", yt101.technicalCode)
+        assertFalse(yt101.canRetry)
+
+        assertTrue(VideoPlaybackSupport.isPermanentYouTubeError(150))
+        assertTrue(VideoPlaybackSupport.isPermanentYouTubeError(101))
+        assertTrue(VideoPlaybackSupport.isPermanentYouTubeError(100))
+        assertTrue(VideoPlaybackSupport.isPermanentYouTubeError(2))
+        assertFalse(VideoPlaybackSupport.isPermanentYouTubeError(152))
+        assertFalse(VideoPlaybackSupport.isPermanentYouTubeError(-5))
 
         val yt152 = VideoPlaybackSupport.mapYouTubeErrorToDiagnosis(152, "yt_player")
         assertEquals(VideoErrorCause.YOUTUBE_EMBED_RESTRICTED, yt152.cause)
@@ -204,6 +223,84 @@ class VideoPlayerPlaybackTest {
         val ytNotReady = VideoPlaybackSupport.mapYouTubeErrorToDiagnosis(-5, "player_not_ready")
         assertEquals(VideoErrorCause.YOUTUBE_EMBED_RESTRICTED, ytNotReady.cause)
         assertEquals("YT_PLAYER_NOT_READY", ytNotReady.technicalCode)
+    }
+
+    @Test
+    fun `checkYouTubeEmbeddability distinguishes embeddable video from YT_150 owner-blocked video`() {
+        val server = MockWebServer()
+        server.start()
+        try {
+            val endpoint = server.url("/oembed").toString()
+            server.enqueue(
+                MockResponse()
+                    .setResponseCode(200)
+                    .addHeader("Content-Type", "application/json")
+                    .setBody("""{"title":"درس فيزياء قابل للتضمين"}""")
+            )
+            server.enqueue(MockResponse().setResponseCode(401))
+            server.enqueue(MockResponse().setResponseCode(403))
+            server.enqueue(MockResponse().setResponseCode(404))
+
+            val embeddable = kotlinx.coroutines.runBlocking {
+                VideoPlaybackSupport.checkYouTubeEmbeddability(
+                    rawUrl = "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                    oEmbedEndpoint = endpoint
+                )
+            }
+            assertEquals(com.example.ui.screens.YouTubeEmbedCheckStatus.EMBEDDABLE, embeddable.status)
+            assertFalse(embeddable.blockSave)
+            assertEquals("درس فيزياء قابل للتضمين", embeddable.title)
+
+            val blocked401 = kotlinx.coroutines.runBlocking {
+                VideoPlaybackSupport.checkYouTubeEmbeddability(
+                    rawUrl = "https://youtu.be/M7lc1UVf-VE",
+                    oEmbedEndpoint = endpoint
+                )
+            }
+            assertEquals(com.example.ui.screens.YouTubeEmbedCheckStatus.EMBED_DISABLED, blocked401.status)
+            assertTrue(blocked401.blockSave)
+            assertTrue(blocked401.messageAr.contains("YT_150"))
+
+            val blocked403 = kotlinx.coroutines.runBlocking {
+                VideoPlaybackSupport.checkYouTubeEmbeddability(
+                    rawUrl = "https://youtu.be/M7lc1UVf-VE",
+                    oEmbedEndpoint = endpoint
+                )
+            }
+            assertEquals(com.example.ui.screens.YouTubeEmbedCheckStatus.EMBED_DISABLED, blocked403.status)
+            assertTrue(blocked403.blockSave)
+
+            val unavailable = kotlinx.coroutines.runBlocking {
+                VideoPlaybackSupport.checkYouTubeEmbeddability(
+                    rawUrl = "https://youtu.be/M7lc1UVf-VE",
+                    oEmbedEndpoint = endpoint
+                )
+            }
+            assertEquals(com.example.ui.screens.YouTubeEmbedCheckStatus.UNAVAILABLE, unavailable.status)
+            assertTrue(unavailable.blockSave)
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun `VideoPlaybackErrorBox for YT_150 shows clear owner restriction message and hides retry button`() {
+        val yt150 = VideoPlaybackSupport.mapYouTubeErrorToDiagnosis(150, "yt_player")
+        composeTestRule.setContent {
+            MidadTheme {
+                com.example.ui.screens.VideoPlaybackErrorBox(
+                    diagnosis = yt150,
+                    boxTag = "youtube_embed_error_box",
+                    retryTag = "youtube_retry_btn",
+                    onRetry = {}
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("youtube_embed_error_box").assertIsDisplayed()
+        composeTestRule.onNodeWithText("مالك الفيديو منع تشغيله بالتضمين").assertIsDisplayed()
+        composeTestRule.onNodeWithText("رمز التشخيص: YT_150").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("youtube_retry_btn").assertDoesNotExist()
     }
 
     @Test
