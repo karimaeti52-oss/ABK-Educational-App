@@ -3,15 +3,19 @@ package com.example.ui.screens
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.pm.ActivityInfo
+import android.graphics.Bitmap
 import android.net.http.SslError
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.Message
 import android.util.Log
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.SslErrorHandler
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -857,6 +861,7 @@ private fun YouTubeInAppPlayerView(
     var embedHost by remember(videoId) { mutableStateOf(YouTubeEmbedHost.STANDARD) }
     var fallbackAttempted by remember(videoId) { mutableStateOf(false) }
     var reloadNonce by remember(videoId) { mutableIntStateOf(0) }
+    var lifecycleState by remember(videoId) { mutableStateOf(YouTubeLifecycleSnapshot()) }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
 
     val activeDiagnosis = playerDiagnosis
@@ -869,6 +874,7 @@ private fun YouTubeInAppPlayerView(
                 playerDiagnosis = null
                 fallbackAttempted = false
                 embedHost = YouTubeEmbedHost.STANDARD
+                lifecycleState = YouTubeLifecycleSnapshot()
                 reloadNonce++
             }
         )
@@ -885,6 +891,25 @@ private fun YouTubeInAppPlayerView(
     }
     val loadKey = "${embedConfig.embedHost.name}_$reloadNonce"
 
+    LaunchedEffect(loadKey, lifecycleState.playerReady, playerDiagnosis) {
+        if (playerDiagnosis != null || lifecycleState.playerReady) return@LaunchedEffect
+        delay(20_000L)
+        if (playerDiagnosis == null && !lifecycleState.playerReady) {
+            if (!fallbackAttempted) {
+                Log.w(
+                    "MidadVideoPlayer",
+                    "YouTube player stalled on host=${embedHost.name}; switching to nocookie fallback. snapshot=$lifecycleState"
+                )
+                fallbackAttempted = true
+                embedHost = YouTubeEmbedHost.NOCOOKIE
+                lifecycleState = YouTubeLifecycleSnapshot()
+                reloadNonce++
+            } else {
+                playerDiagnosis = VideoPlaybackSupport.diagnoseStalledYouTubePlayer(lifecycleState)
+            }
+        }
+    }
+
     DisposableEffect(videoId) {
         onDispose {
             onHideCustomFullscreen()
@@ -894,194 +919,319 @@ private fun YouTubeInAppPlayerView(
         }
     }
 
-    AndroidView(
-        factory = { ctx ->
-            WebView(ctx).apply {
-                settings.javaScriptEnabled = true
-                settings.domStorageEnabled = true
-                settings.allowFileAccess = false
-                settings.allowContentAccess = false
-                @Suppress("DEPRECATION")
-                settings.setGeolocationEnabled(false)
-                settings.mediaPlaybackRequiresUserGesture = false
-                settings.loadWithOverviewMode = true
-                settings.useWideViewPort = true
-                settings.setSupportMultipleWindows(true)
-                settings.javaScriptCanOpenWindowsAutomatically = false
-                settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
-                val webViewInstance = this
-                runCatching {
-                    CookieManager.getInstance().apply {
-                        setAcceptCookie(true)
-                        setAcceptThirdPartyCookies(webViewInstance, true)
-                    }
-                }
-                webChromeClient = object : WebChromeClient() {
-                    override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
-                        if (view != null && callback != null) {
-                            onShowCustomFullscreen(view, callback)
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF0F172A))
+    ) {
+        AndroidView(
+            factory = { ctx ->
+                WebView(ctx).apply {
+                    layoutParams = ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                    setBackgroundColor(android.graphics.Color.parseColor("#0F172A"))
+                    setLayerType(View.LAYER_TYPE_HARDWARE, null)
+                    isVerticalScrollBarEnabled = false
+                    isHorizontalScrollBarEnabled = false
+                    settings.javaScriptEnabled = true
+                    settings.domStorageEnabled = true
+                    settings.loadsImagesAutomatically = true
+                    settings.allowFileAccess = false
+                    settings.allowContentAccess = false
+                    @Suppress("DEPRECATION")
+                    settings.setGeolocationEnabled(false)
+                    settings.mediaPlaybackRequiresUserGesture = false
+                    settings.loadWithOverviewMode = false
+                    settings.useWideViewPort = false
+                    settings.setSupportMultipleWindows(true)
+                    settings.javaScriptCanOpenWindowsAutomatically = false
+                    settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+                    val webViewInstance = this
+                    runCatching {
+                        CookieManager.getInstance().apply {
+                            setAcceptCookie(true)
+                            setAcceptThirdPartyCookies(webViewInstance, true)
                         }
                     }
-
-                    override fun onHideCustomView() {
-                        onHideCustomFullscreen()
+                    runCatching {
+                        onResume()
+                        resumeTimers()
                     }
-
-                    override fun onCreateWindow(
-                        view: WebView?,
-                        isDialog: Boolean,
-                        isUserGesture: Boolean,
-                        resultMsg: Message?
-                    ): Boolean = false
-                }
-                webViewClient = object : WebViewClient() {
-                    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                        val urlStr = request?.url?.toString().orEmpty()
-                        if (request?.isForMainFrame != true) {
-                            val subScheme = request?.url?.scheme?.lowercase().orEmpty()
-                            return subScheme != "https" && urlStr != "about:blank"
-                        }
-                        val host = request.url?.host?.lowercase().orEmpty()
-                        val isAllowedMain = urlStr.startsWith(embedConfig.baseUrl, ignoreCase = true) ||
-                            (urlStr.startsWith("https://", ignoreCase = true) &&
-                                VideoPlaybackSupport.isAllowedYouTubeEmbedHost(host) &&
-                                (urlStr.contains("/embed/") || urlStr.contains("/iframe_api")))
-                        return !isAllowedMain
-                    }
-
-                    override fun onReceivedError(
-                        view: WebView?,
-                        request: WebResourceRequest?,
-                        error: WebResourceError?
-                    ) {
-                        val reqUrl = request?.url?.toString().orEmpty()
-                        val isCritical = VideoPlaybackSupport.isCriticalYouTubeRequest(
-                            url = reqUrl,
-                            isMainFrame = request?.isForMainFrame == true
-                        )
-                        val code = error?.errorCode ?: -1
-                        if (isCritical && code != ERROR_UNKNOWN) {
-                            Log.w(
-                                "MidadVideoPlayer",
-                                "YouTube WebView error code=$code host=${embedHost.name} url=${UrlUtils.sanitizeUrlForLog(reqUrl)}"
-                            )
-                            playerDiagnosis = VideoPlaybackSupport.mapYouTubeErrorToDiagnosis(code, "webview")
-                        }
-                    }
-
-                    override fun onReceivedHttpError(
-                        view: WebView?,
-                        request: WebResourceRequest?,
-                        errorResponse: WebResourceResponse?
-                    ) {
-                        val reqUrl = request?.url?.toString().orEmpty()
-                        val isCritical = VideoPlaybackSupport.isCriticalYouTubeRequest(
-                            url = reqUrl,
-                            isMainFrame = request?.isForMainFrame == true
-                        )
-                        val status = errorResponse?.statusCode ?: 500
-                        if (isCritical && status >= 400) {
-                            Log.w(
-                                "MidadVideoPlayer",
-                                "YouTube WebView HTTP $status host=${embedHost.name} url=${UrlUtils.sanitizeUrlForLog(reqUrl)}"
-                            )
-                            if (status == 403 && !fallbackAttempted) {
-                                fallbackAttempted = true
-                                embedHost = YouTubeEmbedHost.NOCOOKIE
-                                reloadNonce++
-                            } else {
-                                playerDiagnosis = VideoPlaybackSupport.mapYouTubeErrorToDiagnosis(status, "http")
+                    webChromeClient = object : WebChromeClient() {
+                        override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
+                            if (view != null && callback != null) {
+                                onShowCustomFullscreen(view, callback)
                             }
                         }
-                    }
 
-                    override fun onReceivedSslError(
-                        view: WebView?,
-                        handler: SslErrorHandler?,
-                        error: SslError?
-                    ) {
-                        handler?.cancel()
-                        Log.w("MidadVideoPlayer", "YouTube WebView SSL error primaryError=${error?.primaryError}")
-                        playerDiagnosis = VideoErrorDiagnosis(
-                            cause = VideoErrorCause.SSL_ERROR,
-                            userMessageAr = "تعذر التحقق من شهادة الأمان HTTPS لمشغل YouTube.",
-                            technicalCode = "YT_SSL_${error?.primaryError ?: 0}"
-                        )
-                    }
-                }
-                addJavascriptInterface(object {
-                    @JavascriptInterface
-                    fun onIframeLoaded() {
-                        mainHandler.post {
-                            Log.i(
-                                "MidadVideoPlayer",
-                                "YouTube iframe loaded host=${embedHost.name} videoId=$videoId"
-                            )
+                        override fun onHideCustomView() {
+                            onHideCustomFullscreen()
+                        }
+
+                        override fun onCreateWindow(
+                            view: WebView?,
+                            isDialog: Boolean,
+                            isUserGesture: Boolean,
+                            resultMsg: Message?
+                        ): Boolean = false
+
+                        override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
+                            if (consoleMessage != null) {
+                                val level = consoleMessage.messageLevel()
+                                val msg = consoleMessage.message().orEmpty().take(160)
+                                val src = UrlUtils.sanitizeUrlForLog(consoleMessage.sourceId())
+                                if (level == ConsoleMessage.MessageLevel.ERROR) {
+                                    Log.w("MidadVideoPlayer", "WebView console error src=$src line=${consoleMessage.lineNumber()} msg=$msg")
+                                    mainHandler.post {
+                                        lifecycleState = lifecycleState.copy(lastConsoleError = msg)
+                                    }
+                                } else if (level == ConsoleMessage.MessageLevel.WARNING) {
+                                    Log.w("MidadVideoPlayer", "WebView console warn src=$src msg=$msg")
+                                }
+                            }
+                            return super.onConsoleMessage(consoleMessage)
                         }
                     }
+                    webViewClient = object : WebViewClient() {
+                        override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                            val urlStr = request?.url?.toString().orEmpty()
+                            if (request?.isForMainFrame != true) {
+                                val subScheme = request?.url?.scheme?.lowercase().orEmpty()
+                                return subScheme != "https" && urlStr != "about:blank"
+                            }
+                            val host = request.url?.host?.lowercase().orEmpty()
+                            val isAllowedMain = urlStr.startsWith(embedConfig.baseUrl, ignoreCase = true) ||
+                                (urlStr.startsWith("https://", ignoreCase = true) &&
+                                    VideoPlaybackSupport.isAllowedYouTubeEmbedHost(host) &&
+                                    (urlStr.contains("/embed/") || urlStr.contains("/iframe_api")))
+                            return !isAllowedMain
+                        }
 
-                    @JavascriptInterface
-                    fun onProgress(posMs: Long, durMs: Long, completed: Boolean) {
-                        mainHandler.post {
-                            latestPos = posMs
-                            latestDur = durMs
-                            if (completed) latestDone = true
-                            onPositionUpdate(posMs, durMs, completed)
-                            if (posMs > 0L || completed) {
-                                val now = android.os.SystemClock.elapsedRealtime()
-                                val elapsed = now - lastSaveElapsedMs
-                                val seekJumped = kotlin.math.abs(posMs - lastSavedPos) >= 15_000L
-                                val newlyCompleted = completed && !lastSavedDone
-                                if (elapsed >= 20_000L || seekJumped || newlyCompleted) {
-                                    lastSavedPos = posMs
-                                    lastSaveElapsedMs = now
-                                    if (completed) lastSavedDone = true
-                                    onPersistProgress(posMs, durMs, completed)
+                        override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                            super.onPageStarted(view, url, favicon)
+                            Log.i("MidadVideoPlayer", "YouTube WebView onPageStarted host=${embedHost.name} url=${UrlUtils.sanitizeUrlForLog(url)}")
+                            lifecycleState = lifecycleState.copy(pageStarted = true)
+                        }
+
+                        override fun onPageFinished(view: WebView?, url: String?) {
+                            super.onPageFinished(view, url)
+                            Log.i("MidadVideoPlayer", "YouTube WebView onPageFinished host=${embedHost.name} url=${UrlUtils.sanitizeUrlForLog(url)}")
+                            lifecycleState = lifecycleState.copy(pageFinished = true)
+                        }
+
+                        override fun onReceivedError(
+                            view: WebView?,
+                            request: WebResourceRequest?,
+                            error: WebResourceError?
+                        ) {
+                            val reqUrl = request?.url?.toString().orEmpty()
+                            val isCritical = VideoPlaybackSupport.isCriticalYouTubeRequest(
+                                url = reqUrl,
+                                isMainFrame = request?.isForMainFrame == true
+                            )
+                            val code = error?.errorCode ?: -1
+                            if (isCritical && code != ERROR_UNKNOWN) {
+                                Log.w(
+                                    "MidadVideoPlayer",
+                                    "YouTube WebView error code=$code desc=${error?.description} host=${embedHost.name} url=${UrlUtils.sanitizeUrlForLog(reqUrl)}"
+                                )
+                                playerDiagnosis = VideoPlaybackSupport.mapYouTubeErrorToDiagnosis(code, "webview")
+                            }
+                        }
+
+                        override fun onReceivedHttpError(
+                            view: WebView?,
+                            request: WebResourceRequest?,
+                            errorResponse: WebResourceResponse?
+                        ) {
+                            val reqUrl = request?.url?.toString().orEmpty()
+                            val isCritical = VideoPlaybackSupport.isCriticalYouTubeRequest(
+                                url = reqUrl,
+                                isMainFrame = request?.isForMainFrame == true
+                            )
+                            val status = errorResponse?.statusCode ?: 500
+                            if (isCritical && status >= 400) {
+                                Log.w(
+                                    "MidadVideoPlayer",
+                                    "YouTube WebView HTTP $status host=${embedHost.name} url=${UrlUtils.sanitizeUrlForLog(reqUrl)}"
+                                )
+                                if (status == 403 && !fallbackAttempted) {
+                                    fallbackAttempted = true
+                                    embedHost = YouTubeEmbedHost.NOCOOKIE
+                                    lifecycleState = YouTubeLifecycleSnapshot()
+                                    reloadNonce++
+                                } else {
+                                    playerDiagnosis = VideoPlaybackSupport.mapYouTubeErrorToDiagnosis(status, "http")
                                 }
                             }
                         }
-                    }
 
-                    @JavascriptInterface
-                    fun onPlayerError(code: Int, detail: String?) {
-                        mainHandler.post {
-                            Log.w(
-                                "MidadVideoPlayer",
-                                "YouTube IFrame player error code=$code detail=${detail.orEmpty()} host=${embedHost.name} fallbackAttempted=$fallbackAttempted videoId=$videoId"
+                        override fun onReceivedSslError(
+                            view: WebView?,
+                            handler: SslErrorHandler?,
+                            error: SslError?
+                        ) {
+                            handler?.cancel()
+                            Log.w("MidadVideoPlayer", "YouTube WebView SSL error primaryError=${error?.primaryError}")
+                            playerDiagnosis = VideoErrorDiagnosis(
+                                cause = VideoErrorCause.SSL_ERROR,
+                                userMessageAr = "تعذر التحقق من شهادة الأمان HTTPS لمشغل YouTube.",
+                                technicalCode = "YT_SSL_${error?.primaryError ?: 0}"
                             )
-                            if ((code == 152 || code == 153) && !fallbackAttempted) {
-                                fallbackAttempted = true
-                                embedHost = YouTubeEmbedHost.NOCOOKIE
-                                reloadNonce++
+                        }
+
+                        override fun onRenderProcessGone(
+                            view: WebView?,
+                            detail: RenderProcessGoneDetail?
+                        ): Boolean {
+                            val crashed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                detail?.didCrash() == true
                             } else {
-                                playerDiagnosis = VideoPlaybackSupport.mapYouTubeErrorToDiagnosis(code, detail.orEmpty())
+                                true
                             }
+                            Log.e("MidadVideoPlayer", "YouTube WebView render process gone crashed=$crashed")
+                            playerDiagnosis = VideoErrorDiagnosis(
+                                cause = VideoErrorCause.UNKNOWN,
+                                userMessageAr = "توقف عارض الويب المضمّن أثناء تشغيل الفيديو. اضغط إعادة المحاولة لإعادة تهيئة المشغل.",
+                                technicalCode = "YT_RENDER_CRASH"
+                            )
+                            return true
                         }
                     }
-                }, "AbkBridge")
-                tag = loadKey
-                loadDataWithBaseURL(embedConfig.baseUrl, embedConfig.html, "text/html", "utf-8", null)
+                    addJavascriptInterface(object {
+                        @JavascriptInterface
+                        fun onLifecycleEvent(stage: String?, detail: String?) {
+                            mainHandler.post {
+                                val normalized = stage.orEmpty()
+                                Log.i(
+                                    "MidadVideoPlayer",
+                                    "YouTube lifecycle stage=$normalized detail=${detail.orEmpty()} host=${embedHost.name} videoId=$videoId"
+                                )
+                                lifecycleState = when (normalized) {
+                                    "html_boot" -> lifecycleState.copy(jsBooted = true)
+                                    "iframe_api_ready" -> lifecycleState.copy(apiReady = true)
+                                    "iframe_loaded" -> lifecycleState.copy(iframeLoaded = true)
+                                    "player_ready", "player_state" -> lifecycleState.copy(playerReady = true)
+                                    else -> lifecycleState
+                                }
+                            }
+                        }
+
+                        @JavascriptInterface
+                        fun onProgress(posMs: Long, durMs: Long, completed: Boolean) {
+                            mainHandler.post {
+                                if (!lifecycleState.playerReady) {
+                                    lifecycleState = lifecycleState.copy(playerReady = true)
+                                }
+                                latestPos = posMs
+                                latestDur = durMs
+                                if (completed) latestDone = true
+                                onPositionUpdate(posMs, durMs, completed)
+                                if (posMs > 0L || completed) {
+                                    val now = android.os.SystemClock.elapsedRealtime()
+                                    val elapsed = now - lastSaveElapsedMs
+                                    val seekJumped = kotlin.math.abs(posMs - lastSavedPos) >= 15_000L
+                                    val newlyCompleted = completed && !lastSavedDone
+                                    if (elapsed >= 20_000L || seekJumped || newlyCompleted) {
+                                        lastSavedPos = posMs
+                                        lastSaveElapsedMs = now
+                                        if (completed) lastSavedDone = true
+                                        onPersistProgress(posMs, durMs, completed)
+                                    }
+                                }
+                            }
+                        }
+
+                        @JavascriptInterface
+                        fun onPlayerError(code: Int, detail: String?) {
+                            mainHandler.post {
+                                Log.w(
+                                    "MidadVideoPlayer",
+                                    "YouTube IFrame player error code=$code detail=${detail.orEmpty()} host=${embedHost.name} fallbackAttempted=$fallbackAttempted videoId=$videoId"
+                                )
+                                if ((code == 152 || code == 153 || code == -5) && !fallbackAttempted) {
+                                    fallbackAttempted = true
+                                    embedHost = YouTubeEmbedHost.NOCOOKIE
+                                    lifecycleState = YouTubeLifecycleSnapshot()
+                                    reloadNonce++
+                                } else {
+                                    playerDiagnosis = VideoPlaybackSupport.mapYouTubeErrorToDiagnosis(code, detail.orEmpty())
+                                }
+                            }
+                        }
+                    }, "AbkBridge")
+                    tag = loadKey
+                    loadDataWithBaseURL(
+                        embedConfig.baseUrl,
+                        embedConfig.html,
+                        "text/html",
+                        "utf-8",
+                        embedConfig.baseUrl
+                    )
+                }
+            },
+            update = { webView ->
+                runCatching { webView.onResume() }
+                if (webView.tag != loadKey) {
+                    webView.tag = loadKey
+                    webView.stopLoading()
+                    webView.loadDataWithBaseURL(
+                        embedConfig.baseUrl,
+                        embedConfig.html,
+                        "text/html",
+                        "utf-8",
+                        embedConfig.baseUrl
+                    )
+                }
+            },
+            onRelease = { webView ->
+                runCatching {
+                    webView.stopLoading()
+                    webView.onPause()
+                    webView.removeJavascriptInterface("AbkBridge")
+                    webView.destroy()
+                }
+            },
+            modifier = Modifier
+                .fillMaxSize()
+                .testTag("youtube_inapp_webview")
+        )
+
+        if (!lifecycleState.playerReady) {
+            val statusLabel = when {
+                !lifecycleState.jsBooted -> "جارٍ تهيئة مشغل YouTube داخل التطبيق..."
+                !lifecycleState.apiReady -> "جارٍ تحميل مكتبة مشغل YouTube..."
+                !lifecycleState.iframeLoaded -> "جارٍ تحميل إطار الفيديو..."
+                else -> "جارٍ تجهيز المشغل للتشغيل..."
             }
-        },
-        update = { webView ->
-            if (webView.tag != loadKey) {
-                webView.tag = loadKey
-                webView.stopLoading()
-                webView.loadDataWithBaseURL(embedConfig.baseUrl, embedConfig.html, "text/html", "utf-8", null)
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xE60F172A))
+                    .testTag("youtube_loading_overlay"),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.padding(16.dp)
+                ) {
+                    CircularProgressIndicator(
+                        color = Color.White,
+                        modifier = Modifier.size(34.dp)
+                    )
+                    Text(
+                        text = statusLabel,
+                        color = Color.White,
+                        style = MaterialTheme.typography.bodyMedium,
+                        textAlign = TextAlign.Center
+                    )
+                }
             }
-        },
-        onRelease = { webView ->
-            runCatching {
-                webView.stopLoading()
-                webView.onPause()
-                webView.removeJavascriptInterface("AbkBridge")
-                webView.destroy()
-            }
-        },
-        modifier = Modifier
-            .fillMaxSize()
-            .testTag("youtube_inapp_webview")
-    )
+        }
+    }
 }
 
 @SuppressLint("SetJavaScriptEnabled")

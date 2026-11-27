@@ -17,6 +17,7 @@ import com.example.ui.screens.VideoErrorCause
 import com.example.ui.screens.VideoPlaybackSupport
 import com.example.ui.screens.VideoPlayerScreen
 import com.example.ui.screens.YouTubeEmbedHost
+import com.example.ui.screens.YouTubeLifecycleSnapshot
 import com.example.ui.theme.MidadTheme
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -195,6 +196,44 @@ class VideoPlayerPlaybackTest {
         val ytScript = VideoPlaybackSupport.mapYouTubeErrorToDiagnosis(-3, "script_onerror")
         assertEquals(VideoErrorCause.YOUTUBE_SCRIPT_BLOCKED, ytScript.cause)
         assertTrue(ytScript.technicalCode.startsWith("YT_SCRIPT"))
+
+        val ytInit = VideoPlaybackSupport.mapYouTubeErrorToDiagnosis(-4, "yt_init_exception")
+        assertEquals(VideoErrorCause.YOUTUBE_SCRIPT_BLOCKED, ytInit.cause)
+        assertTrue(ytInit.technicalCode.startsWith("YT_INIT_"))
+
+        val ytNotReady = VideoPlaybackSupport.mapYouTubeErrorToDiagnosis(-5, "player_not_ready")
+        assertEquals(VideoErrorCause.YOUTUBE_EMBED_RESTRICTED, ytNotReady.cause)
+        assertEquals("YT_PLAYER_NOT_READY", ytNotReady.technicalCode)
+    }
+
+    @Test
+    fun `diagnoseStalledYouTubePlayer identifies exact failure stage instead of silent black box`() {
+        assertEquals(
+            "YT_PAGE_TIMEOUT",
+            VideoPlaybackSupport.diagnoseStalledYouTubePlayer(YouTubeLifecycleSnapshot(pageStarted = true)).technicalCode
+        )
+        assertEquals(
+            "YT_JS_NOT_BOOTED",
+            VideoPlaybackSupport.diagnoseStalledYouTubePlayer(YouTubeLifecycleSnapshot(pageStarted = true, pageFinished = true)).technicalCode
+        )
+        assertEquals(
+            "YT_API_SCRIPT_TIMEOUT",
+            VideoPlaybackSupport.diagnoseStalledYouTubePlayer(
+                YouTubeLifecycleSnapshot(pageStarted = true, pageFinished = true, jsBooted = true)
+            ).technicalCode
+        )
+        assertEquals(
+            "YT_IFRAME_LOAD_TIMEOUT",
+            VideoPlaybackSupport.diagnoseStalledYouTubePlayer(
+                YouTubeLifecycleSnapshot(pageStarted = true, pageFinished = true, jsBooted = true, apiReady = true)
+            ).technicalCode
+        )
+        assertEquals(
+            "YT_PLAYER_NOT_READY",
+            VideoPlaybackSupport.diagnoseStalledYouTubePlayer(
+                YouTubeLifecycleSnapshot(pageStarted = true, pageFinished = true, jsBooted = true, apiReady = true, iframeLoaded = true)
+            ).technicalCode
+        )
     }
 
     @Test
@@ -213,9 +252,11 @@ class VideoPlayerPlaybackTest {
         assertTrue(standardConfig.iframeSrc.contains("widget_referrer=https%3A%2F%2Fcom.aistudio.abkedu.kpmzqx"))
         assertTrue(standardConfig.iframeSrc.contains("start=45"))
         assertTrue(standardConfig.html.contains("""<meta name="referrer" content="strict-origin-when-cross-origin">"""))
-        assertTrue(standardConfig.html.contains("""referrerpolicy="strict-origin-when-cross-origin""""))
-        assertTrue(standardConfig.html.contains("30000"))
-        assertTrue(standardConfig.html.contains("!playerSettled && !iframeLoaded"))
+        assertTrue(standardConfig.html.contains("""'referrerpolicy', 'strict-origin-when-cross-origin'"""))
+        assertTrue(standardConfig.html.contains("""<div id="player-container"></div>"""))
+        assertTrue(standardConfig.html.contains("""host: 'https://www.youtube.com'"""))
+        assertTrue(standardConfig.html.contains("22000"))
+        assertTrue(standardConfig.html.contains("!playerReady"))
 
         val nocookieConfig = VideoPlaybackSupport.buildYouTubeEmbedConfig(
             videoId = "dQw4w9WgXcQ",
@@ -224,6 +265,7 @@ class VideoPlayerPlaybackTest {
             embedHost = YouTubeEmbedHost.NOCOOKIE
         )
         assertTrue(nocookieConfig.iframeSrc.startsWith("https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ?"))
+        assertTrue(nocookieConfig.html.contains("""host: 'https://www.youtube-nocookie.com'"""))
 
         assertTrue(VideoPlaybackSupport.isAllowedYouTubeEmbedHost("www.youtube.com"))
         assertTrue(VideoPlaybackSupport.isAllowedYouTubeEmbedHost("www.youtube-nocookie.com"))
@@ -234,7 +276,7 @@ class VideoPlayerPlaybackTest {
     }
 
     @Test
-    fun `VideoPlayerScreen renders YouTube playback strictly in-app for watch and youtu_be links`() {
+    fun `VideoPlayerScreen renders YouTube playback strictly in-app with loading overlay until ready`() {
         val watchLesson = Lesson(
             id = "les_yt_watch",
             subjectId = "math",
@@ -262,6 +304,7 @@ class VideoPlayerPlaybackTest {
         }
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("youtube_inapp_webview").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("youtube_loading_overlay").assertIsDisplayed()
     }
 
     @Test

@@ -67,6 +67,16 @@ data class YouTubeEmbedConfig(
     val html: String
 )
 
+data class YouTubeLifecycleSnapshot(
+    val pageStarted: Boolean = false,
+    val pageFinished: Boolean = false,
+    val jsBooted: Boolean = false,
+    val apiReady: Boolean = false,
+    val iframeLoaded: Boolean = false,
+    val playerReady: Boolean = false,
+    val lastConsoleError: String = ""
+)
+
 object VideoPlaybackSupport {
 
     private const val TAG = "MidadVideoPlayer"
@@ -310,50 +320,54 @@ object VideoPlaybackSupport {
         <html>
         <head>
           <meta charset="utf-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
           <meta name="referrer" content="strict-origin-when-cross-origin">
           <style>
             html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #0F172A; overflow: hidden; }
-            #player { width: 100%; height: 100%; border: 0; display: block; }
+            #player-container { position: fixed; top: 0; right: 0; bottom: 0; left: 0; width: 100%; height: 100%; background: #0F172A; }
+            #player, #player-container iframe { width: 100%; height: 100%; border: 0; display: block; }
           </style>
         </head>
         <body>
-          <iframe
-            id="player"
-            src="$iframeSrc"
-            title="YouTube Video Player"
-            frameborder="0"
-            referrerpolicy="strict-origin-when-cross-origin"
-            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
-            allowfullscreen></iframe>
+          <div id="player-container"></div>
           <script>
             var player = null;
-            var iframeLoaded = false;
-            var playerSettled = false;
+            var playerReady = false;
             var progressTimer = null;
-            var iframeEl = document.getElementById('player');
+            var readinessTimer = null;
 
-            var initTimer = setTimeout(function() {
-              if (!playerSettled && !iframeLoaded && window.AbkBridge && window.AbkBridge.onPlayerError) {
-                window.AbkBridge.onPlayerError(-2, 'iframe_timeout');
-              }
-            }, 30000);
-
-            function markSettled() {
-              if (!playerSettled) {
-                playerSettled = true;
-              }
-              clearTimeout(initTimer);
+            function notifyLifecycle(stage, detail) {
+              try {
+                if (window.AbkBridge && window.AbkBridge.onLifecycleEvent) {
+                  window.AbkBridge.onLifecycleEvent(String(stage || ''), String(detail || ''));
+                }
+              } catch (e) {}
             }
 
-            if (iframeEl) {
-              iframeEl.addEventListener('load', function() {
-                iframeLoaded = true;
-                clearTimeout(initTimer);
-                if (window.AbkBridge && window.AbkBridge.onIframeLoaded) {
-                  window.AbkBridge.onIframeLoaded();
+            function notifyError(code, detail) {
+              try {
+                if (window.AbkBridge && window.AbkBridge.onPlayerError) {
+                  window.AbkBridge.onPlayerError(code, String(detail || ''));
                 }
-              });
+              } catch (e) {}
+            }
+
+            notifyLifecycle('html_boot', '${embedHost.name}');
+
+            readinessTimer = setTimeout(function() {
+              if (!playerReady) {
+                var code = window.YT ? -5 : -2;
+                var reason = window.YT ? 'player_not_ready' : 'iframe_api_timeout';
+                notifyError(code, reason);
+              }
+            }, 22000);
+
+            function markPlayerReady(reason) {
+              if (!playerReady) {
+                playerReady = true;
+                clearTimeout(readinessTimer);
+                notifyLifecycle('player_ready', reason || 'ready');
+              }
             }
 
             function startProgressLoop() {
@@ -373,7 +387,7 @@ object VideoPlaybackSupport {
             }
 
             function cleanupTimers() {
-              clearTimeout(initTimer);
+              clearTimeout(readinessTimer);
               if (progressTimer) {
                 clearInterval(progressTimer);
                 progressTimer = null;
@@ -382,23 +396,49 @@ object VideoPlaybackSupport {
             window.addEventListener('pagehide', cleanupTimers);
 
             function onYouTubeIframeAPIReady() {
+              notifyLifecycle('iframe_api_ready', typeof window.YT);
               try {
+                var container = document.getElementById('player-container');
+                if (!container) {
+                  cleanupTimers();
+                  notifyError(-4, 'missing_container');
+                  return;
+                }
+                container.innerHTML = '';
+                var iframe = document.createElement('iframe');
+                iframe.id = 'player';
+                iframe.title = 'YouTube Video Player';
+                iframe.width = '100%';
+                iframe.height = '100%';
+                iframe.frameBorder = '0';
+                iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+                iframe.setAttribute('allow', 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen');
+                iframe.allowFullscreen = true;
+                iframe.style.cssText = 'width:100%;height:100%;border:0;display:block;';
+                iframe.addEventListener('load', function() {
+                  notifyLifecycle('iframe_loaded', 'onload');
+                });
+                iframe.src = '$iframeSrc';
+                container.appendChild(iframe);
+
                 player = new YT.Player('player', {
+                  host: '${embedHost.baseOrigin}',
                   events: {
                     'onReady': function() {
-                      markSettled();
+                      markPlayerReady('onReady');
                       startProgressLoop();
                     },
                     'onError': function(event) {
-                      markSettled();
+                      cleanupTimers();
                       var code = (event && typeof event.data === 'number') ? event.data : -1;
-                      if (window.AbkBridge && window.AbkBridge.onPlayerError) {
-                        window.AbkBridge.onPlayerError(code, 'yt_player');
-                      }
+                      notifyError(code, 'yt_player');
                     },
                     'onStateChange': function(event) {
-                      markSettled();
+                      markPlayerReady('onStateChange');
                       startProgressLoop();
+                      if (event && typeof event.data === 'number') {
+                        notifyLifecycle('player_state', String(event.data));
+                      }
                       if (window.YT && event && event.data === YT.PlayerState.ENDED && window.AbkBridge) {
                         var dur = Math.floor((player.getDuration() || 0) * 1000);
                         window.AbkBridge.onProgress(dur, dur, true);
@@ -407,15 +447,13 @@ object VideoPlaybackSupport {
                   }
                 });
               } catch (err) {
-                markSettled();
-                if (window.AbkBridge && window.AbkBridge.onPlayerError) {
-                  window.AbkBridge.onPlayerError(-3, 'yt_init_exception');
-                }
+                cleanupTimers();
+                notifyError(-4, 'yt_init_exception');
               }
             }
           </script>
-          <script async src="https://www.youtube.com/iframe_api"
-                  onerror="setTimeout(function(){ if(!playerSettled && !iframeLoaded && window.AbkBridge && window.AbkBridge.onPlayerError){ window.AbkBridge.onPlayerError(-3, 'script_onerror'); } }, 1500);"></script>
+          <script src="https://www.youtube.com/iframe_api"
+                  onerror="cleanupTimers(); notifyError(-3, 'script_onerror');"></script>
         </body>
         </html>
         """.trimIndent()
@@ -448,6 +486,43 @@ object VideoPlaybackSupport {
             val path = uri.path?.lowercase(Locale.ROOT).orEmpty()
             isAllowedYouTubeEmbedHost(host) && (path.startsWith("/embed/") || path == "/iframe_api")
         }.getOrDefault(false)
+    }
+
+    fun diagnoseStalledYouTubePlayer(snapshot: YouTubeLifecycleSnapshot): VideoErrorDiagnosis {
+        val consoleHint = snapshot.lastConsoleError.trim()
+        Log.w(
+            TAG,
+            "YouTube player stalled pageStarted=${snapshot.pageStarted} pageFinished=${snapshot.pageFinished} " +
+                "jsBooted=${snapshot.jsBooted} apiReady=${snapshot.apiReady} iframeLoaded=${snapshot.iframeLoaded} " +
+                "playerReady=${snapshot.playerReady} hasConsoleErr=${consoleHint.isNotEmpty()}"
+        )
+        return when {
+            !snapshot.pageFinished -> VideoErrorDiagnosis(
+                cause = VideoErrorCause.YOUTUBE_INIT_TIMEOUT,
+                userMessageAr = "تعذر إكمال تحميل صفحة مشغل الفيديو داخل WebView. تحقق من اتصال الإنترنت أو حدّث مكون WebView.",
+                technicalCode = "YT_PAGE_TIMEOUT"
+            )
+            !snapshot.jsBooted -> VideoErrorDiagnosis(
+                cause = VideoErrorCause.YOUTUBE_SCRIPT_BLOCKED,
+                userMessageAr = "لم يبدأ تشغيل JavaScript الخاص بمشغل الفيديو داخل WebView.",
+                technicalCode = "YT_JS_NOT_BOOTED"
+            )
+            !snapshot.apiReady -> VideoErrorDiagnosis(
+                cause = VideoErrorCause.YOUTUBE_SCRIPT_BLOCKED,
+                userMessageAr = "تعذر تحميل أو تفعيل مكتبة YouTube IFrame API (تحقق من الاتصال أو مانع الإعلانات/الشبكة).",
+                technicalCode = "YT_API_SCRIPT_TIMEOUT"
+            )
+            !snapshot.iframeLoaded -> VideoErrorDiagnosis(
+                cause = VideoErrorCause.YOUTUBE_INIT_TIMEOUT,
+                userMessageAr = "تمت تهيئة واجهة المشغل لكن إطار الفيديو من YouTube لم يكتمل تحميله.",
+                technicalCode = "YT_IFRAME_LOAD_TIMEOUT"
+            )
+            else -> VideoErrorDiagnosis(
+                cause = VideoErrorCause.YOUTUBE_EMBED_RESTRICTED,
+                userMessageAr = "تم تحميل إطار YouTube لكن المشغل لم يستجب أو بقي غير جاهز للتشغيل. تحقق من الشبكة أو قيود التضمين أو حدّث Android System WebView.",
+                technicalCode = "YT_PLAYER_NOT_READY"
+            )
+        }
     }
 
     fun mapYouTubeErrorToDiagnosis(code: Int, detail: String = ""): VideoErrorDiagnosis {
@@ -484,6 +559,16 @@ object VideoPlaybackSupport {
                 cause = VideoErrorCause.YOUTUBE_EMBED_RESTRICTED,
                 userMessageAr = "رفض خادم التضمين تشغيل الفيديو داخل هذا المشغل حالياً.",
                 technicalCode = "YT_153"
+            )
+            -5 -> VideoErrorDiagnosis(
+                cause = VideoErrorCause.YOUTUBE_EMBED_RESTRICTED,
+                userMessageAr = "تم تحميل إطار YouTube لكن المشغل لم يكتمل تجهيزه في الوقت المحدد. أعد المحاولة أو حدّث Android System WebView.",
+                technicalCode = "YT_PLAYER_NOT_READY"
+            )
+            -4 -> VideoErrorDiagnosis(
+                cause = VideoErrorCause.YOUTUBE_SCRIPT_BLOCKED,
+                userMessageAr = "تعذر تهيئة واجهة برمجة مشغل YouTube داخل WebView.",
+                technicalCode = if (suffix.isNotBlank()) "YT_INIT_$suffix" else "YT_API_INIT_FAILED"
             )
             -3 -> VideoErrorDiagnosis(
                 cause = VideoErrorCause.YOUTUBE_SCRIPT_BLOCKED,
