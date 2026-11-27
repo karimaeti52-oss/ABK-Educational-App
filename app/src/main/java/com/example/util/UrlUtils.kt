@@ -6,8 +6,10 @@ import java.util.Locale
 object UrlUtils {
 
     private val videoIdRegex = Regex("^[a-zA-Z0-9_-]{11}$")
+    private val invisibleCharsRegex = Regex("[\\u200B-\\u200F\\u202A-\\u202E\\u2060\\uFEFF]")
     private val youtubeFallbackRegex = Regex(
-        "(?:youtu\\.be/|(?:m\\.|www\\.|music\\.)?youtube(?:-nocookie)?\\.com/(?:embed/|shorts/|live/|v/|watch\\?(?:[^#]*&)?v=))([a-zA-Z0-9_-]{11})"
+        "(?:youtu\\.be/|(?:m\\.|www\\.|music\\.)?youtube(?:-nocookie)?\\.com/(?:embed/|shorts/|live/|v/|e/|watch\\?(?:[^#]*&)?v=))([a-zA-Z0-9_-]{11})",
+        RegexOption.IGNORE_CASE
     )
 
     private val driveFileRegex = Regex(
@@ -28,7 +30,7 @@ object UrlUtils {
     }
 
     fun extractYouTubeVideoId(url: String): String? {
-        val trimmed = url.trim()
+        val trimmed = invisibleCharsRegex.replace(url, "").trim()
         if (trimmed.isEmpty()) return null
         if (videoIdRegex.matches(trimmed)) {
             return trimmed
@@ -54,13 +56,13 @@ object UrlUtils {
                 val query = uri.rawQuery.orEmpty()
                 for (pair in query.split('&')) {
                     val idx = pair.indexOf('=')
-                    if (idx > 0 && pair.substring(0, idx) == "v") {
+                    if (idx > 0 && pair.substring(0, idx).equals("v", ignoreCase = true)) {
                         val value = pair.substring(idx + 1)
                         if (videoIdRegex.matches(value)) return value
                     }
                 }
                 val segments = uri.path.orEmpty().split('/').filter { it.isNotBlank() }
-                if (segments.size >= 2 && segments[0] in setOf("embed", "shorts", "live", "v", "e")) {
+                if (segments.size >= 2 && segments[0].lowercase(Locale.ROOT) in setOf("embed", "shorts", "live", "v", "e")) {
                     val id = segments[1]
                     if (videoIdRegex.matches(id)) return id
                 }

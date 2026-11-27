@@ -10,6 +10,7 @@ import android.os.Message
 import android.util.Log
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.SslErrorHandler
 import android.webkit.WebChromeClient
@@ -838,6 +839,7 @@ private fun YouTubeInAppPlayerView(
     onShowCustomFullscreen: (View, WebChromeClient.CustomViewCallback) -> Unit,
     onHideCustomFullscreen: () -> Unit
 ) {
+    val context = LocalContext.current
     val videoId = remember(videoUrl) { UrlUtils.extractYouTubeVideoId(videoUrl) }
     if (videoId == null) {
         ExternalVideoWebView(videoUrl = videoUrl, onMarkStarted = {})
@@ -852,6 +854,8 @@ private fun YouTubeInAppPlayerView(
     var lastSaveElapsedMs by remember(videoId) { mutableLongStateOf(0L) }
     var lastSavedDone by remember(videoId) { mutableStateOf(false) }
     var playerDiagnosis by remember(videoId) { mutableStateOf<VideoErrorDiagnosis?>(null) }
+    var embedHost by remember(videoId) { mutableStateOf(YouTubeEmbedHost.STANDARD) }
+    var fallbackAttempted by remember(videoId) { mutableStateOf(false) }
     var reloadNonce by remember(videoId) { mutableIntStateOf(0) }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
 
@@ -863,87 +867,23 @@ private fun YouTubeInAppPlayerView(
             retryTag = "youtube_retry_btn",
             onRetry = {
                 playerDiagnosis = null
+                fallbackAttempted = false
+                embedHost = YouTubeEmbedHost.STANDARD
                 reloadNonce++
             }
         )
         return
     }
 
-    val html = remember(videoId, startSeconds, reloadNonce) {
-        """
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-          <style>
-            html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #0F172A; overflow: hidden; }
-            #player { width: 100%; height: 100%; }
-          </style>
-        </head>
-        <body>
-          <div id="player"></div>
-          <script>
-            var player;
-            var settled = false;
-            var initTimer = setTimeout(function() {
-              if (!settled && window.AbkBridge && window.AbkBridge.onPlayerError) {
-                window.AbkBridge.onPlayerError(-2, 'iframe_timeout');
-              }
-            }, 22000);
-            function markSettled() {
-              if (!settled) {
-                settled = true;
-                clearTimeout(initTimer);
-              }
-            }
-            function onYouTubeIframeAPIReady() {
-              player = new YT.Player('player', {
-                videoId: '$videoId',
-                playerVars: {
-                  'playsinline': 1,
-                  'autoplay': 0,
-                  'controls': 1,
-                  'fs': 1,
-                  'rel': 0,
-                  'modestbranding': 1,
-                  'origin': 'https://www.youtube.com',
-                  'start': $startSeconds
-                },
-                events: {
-                  'onReady': function() {
-                    markSettled();
-                  },
-                  'onError': function(event) {
-                    markSettled();
-                    if (window.AbkBridge && window.AbkBridge.onPlayerError) {
-                      window.AbkBridge.onPlayerError(event && typeof event.data === 'number' ? event.data : -1, 'yt_player');
-                    }
-                  },
-                  'onStateChange': function(event) {
-                    markSettled();
-                    if (event.data === YT.PlayerState.ENDED && window.AbkBridge) {
-                      var dur = Math.floor((player.getDuration() || 0) * 1000);
-                      window.AbkBridge.onProgress(dur, dur, true);
-                    }
-                  }
-                }
-              });
-              setInterval(function() {
-                if (player && player.getCurrentTime && player.getDuration && window.AbkBridge) {
-                  var pos = Math.floor((player.getCurrentTime() || 0) * 1000);
-                  var dur = Math.floor((player.getDuration() || 0) * 1000);
-                  var done = dur > 0 && pos >= Math.floor(dur * 0.9);
-                  window.AbkBridge.onProgress(pos, dur, done);
-                }
-              }, 3500);
-            }
-          </script>
-          <script src="https://www.youtube.com/iframe_api"
-                  onerror="markSettled(); if(window.AbkBridge && window.AbkBridge.onPlayerError){ window.AbkBridge.onPlayerError(-3, 'script_onerror'); }"></script>
-        </body>
-        </html>
-        """.trimIndent()
+    val embedConfig = remember(videoId, startSeconds, embedHost, context.packageName) {
+        VideoPlaybackSupport.buildYouTubeEmbedConfig(
+            videoId = videoId,
+            packageName = context.packageName,
+            startSeconds = startSeconds,
+            embedHost = embedHost
+        )
     }
+    val loadKey = "${embedConfig.embedHost.name}_$reloadNonce"
 
     DisposableEffect(videoId) {
         onDispose {
@@ -969,6 +909,13 @@ private fun YouTubeInAppPlayerView(
                 settings.setSupportMultipleWindows(true)
                 settings.javaScriptCanOpenWindowsAutomatically = false
                 settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+                val webViewInstance = this
+                runCatching {
+                    CookieManager.getInstance().apply {
+                        setAcceptCookie(true)
+                        setAcceptThirdPartyCookies(webViewInstance, true)
+                    }
+                }
                 webChromeClient = object : WebChromeClient() {
                     override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
                         if (view != null && callback != null) {
@@ -989,16 +936,17 @@ private fun YouTubeInAppPlayerView(
                 }
                 webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                        val urlStr = request?.url?.toString().orEmpty()
                         if (request?.isForMainFrame != true) {
                             val subScheme = request?.url?.scheme?.lowercase().orEmpty()
-                            return subScheme != "https"
+                            return subScheme != "https" && urlStr != "about:blank"
                         }
-                        val urlStr = request.url?.toString().orEmpty()
                         val host = request.url?.host?.lowercase().orEmpty()
-                        val isEmbedFrame = urlStr.startsWith("https://", ignoreCase = true) &&
-                            (host.contains("youtube.com") || host.contains("youtube-nocookie.com")) &&
-                            (urlStr.contains("/embed/") || urlStr.contains("/iframe_api"))
-                        return !isEmbedFrame
+                        val isAllowedMain = urlStr.startsWith(embedConfig.baseUrl, ignoreCase = true) ||
+                            (urlStr.startsWith("https://", ignoreCase = true) &&
+                                VideoPlaybackSupport.isAllowedYouTubeEmbedHost(host) &&
+                                (urlStr.contains("/embed/") || urlStr.contains("/iframe_api")))
+                        return !isAllowedMain
                     }
 
                     override fun onReceivedError(
@@ -1007,10 +955,16 @@ private fun YouTubeInAppPlayerView(
                         error: WebResourceError?
                     ) {
                         val reqUrl = request?.url?.toString().orEmpty()
-                        val isCritical = request?.isForMainFrame == true || reqUrl.contains("iframe_api")
-                        if (isCritical) {
-                            val code = error?.errorCode ?: -1
-                            Log.w("MidadVideoPlayer", "YouTube WebView error code=$code url=${UrlUtils.sanitizeUrlForLog(reqUrl)}")
+                        val isCritical = VideoPlaybackSupport.isCriticalYouTubeRequest(
+                            url = reqUrl,
+                            isMainFrame = request?.isForMainFrame == true
+                        )
+                        val code = error?.errorCode ?: -1
+                        if (isCritical && code != ERROR_UNKNOWN) {
+                            Log.w(
+                                "MidadVideoPlayer",
+                                "YouTube WebView error code=$code host=${embedHost.name} url=${UrlUtils.sanitizeUrlForLog(reqUrl)}"
+                            )
                             playerDiagnosis = VideoPlaybackSupport.mapYouTubeErrorToDiagnosis(code, "webview")
                         }
                     }
@@ -1021,11 +975,23 @@ private fun YouTubeInAppPlayerView(
                         errorResponse: WebResourceResponse?
                     ) {
                         val reqUrl = request?.url?.toString().orEmpty()
-                        val isCritical = request?.isForMainFrame == true || reqUrl.contains("iframe_api")
+                        val isCritical = VideoPlaybackSupport.isCriticalYouTubeRequest(
+                            url = reqUrl,
+                            isMainFrame = request?.isForMainFrame == true
+                        )
                         val status = errorResponse?.statusCode ?: 500
                         if (isCritical && status >= 400) {
-                            Log.w("MidadVideoPlayer", "YouTube WebView HTTP $status url=${UrlUtils.sanitizeUrlForLog(reqUrl)}")
-                            playerDiagnosis = VideoPlaybackSupport.mapYouTubeErrorToDiagnosis(status, "http")
+                            Log.w(
+                                "MidadVideoPlayer",
+                                "YouTube WebView HTTP $status host=${embedHost.name} url=${UrlUtils.sanitizeUrlForLog(reqUrl)}"
+                            )
+                            if (status == 403 && !fallbackAttempted) {
+                                fallbackAttempted = true
+                                embedHost = YouTubeEmbedHost.NOCOOKIE
+                                reloadNonce++
+                            } else {
+                                playerDiagnosis = VideoPlaybackSupport.mapYouTubeErrorToDiagnosis(status, "http")
+                            }
                         }
                     }
 
@@ -1044,6 +1010,16 @@ private fun YouTubeInAppPlayerView(
                     }
                 }
                 addJavascriptInterface(object {
+                    @JavascriptInterface
+                    fun onIframeLoaded() {
+                        mainHandler.post {
+                            Log.i(
+                                "MidadVideoPlayer",
+                                "YouTube iframe loaded host=${embedHost.name} videoId=$videoId"
+                            )
+                        }
+                    }
+
                     @JavascriptInterface
                     fun onProgress(posMs: Long, durMs: Long, completed: Boolean) {
                         mainHandler.post {
@@ -1069,18 +1045,37 @@ private fun YouTubeInAppPlayerView(
                     @JavascriptInterface
                     fun onPlayerError(code: Int, detail: String?) {
                         mainHandler.post {
-                            Log.w("MidadVideoPlayer", "YouTube IFrame player error code=$code detail=${detail.orEmpty()}")
-                            playerDiagnosis = VideoPlaybackSupport.mapYouTubeErrorToDiagnosis(code, detail.orEmpty())
+                            Log.w(
+                                "MidadVideoPlayer",
+                                "YouTube IFrame player error code=$code detail=${detail.orEmpty()} host=${embedHost.name} fallbackAttempted=$fallbackAttempted videoId=$videoId"
+                            )
+                            if ((code == 152 || code == 153) && !fallbackAttempted) {
+                                fallbackAttempted = true
+                                embedHost = YouTubeEmbedHost.NOCOOKIE
+                                reloadNonce++
+                            } else {
+                                playerDiagnosis = VideoPlaybackSupport.mapYouTubeErrorToDiagnosis(code, detail.orEmpty())
+                            }
                         }
                     }
                 }, "AbkBridge")
-                loadDataWithBaseURL("https://www.youtube.com", html, "text/html", "utf-8", null)
+                tag = loadKey
+                loadDataWithBaseURL(embedConfig.baseUrl, embedConfig.html, "text/html", "utf-8", null)
             }
         },
         update = { webView ->
-            if (reloadNonce > 0 && webView.tag != reloadNonce) {
-                webView.tag = reloadNonce
-                webView.loadDataWithBaseURL("https://www.youtube.com", html, "text/html", "utf-8", null)
+            if (webView.tag != loadKey) {
+                webView.tag = loadKey
+                webView.stopLoading()
+                webView.loadDataWithBaseURL(embedConfig.baseUrl, embedConfig.html, "text/html", "utf-8", null)
+            }
+        },
+        onRelease = { webView ->
+            runCatching {
+                webView.stopLoading()
+                webView.onPause()
+                webView.removeJavascriptInterface("AbkBridge")
+                webView.destroy()
             }
         },
         modifier = Modifier

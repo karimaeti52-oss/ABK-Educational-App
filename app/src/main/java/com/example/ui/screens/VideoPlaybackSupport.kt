@@ -21,6 +21,7 @@ import okhttp3.OkHttpClient
 import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
+import java.net.URLEncoder
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLException
@@ -52,9 +53,26 @@ data class VideoErrorDiagnosis(
     val canRetry: Boolean = true
 )
 
+enum class YouTubeEmbedHost(val baseOrigin: String) {
+    STANDARD("https://www.youtube.com"),
+    NOCOOKIE("https://www.youtube-nocookie.com")
+}
+
+data class YouTubeEmbedConfig(
+    val videoId: String,
+    val appOrigin: String,
+    val baseUrl: String,
+    val embedHost: YouTubeEmbedHost,
+    val iframeSrc: String,
+    val html: String
+)
+
 object VideoPlaybackSupport {
 
     private const val TAG = "MidadVideoPlayer"
+    private const val DEFAULT_APP_ORIGIN_HOST = "com.aistudio.abkedu.kpmzqx"
+    private val validVideoIdRegex = Regex("^[a-zA-Z0-9_-]{11}$")
+    private val safeHostRegex = Regex("[^a-zA-Z0-9._-]")
 
     fun createVideoOkHttpClient(
         r2WorkerBaseUrl: String = "",
@@ -267,9 +285,186 @@ object VideoPlaybackSupport {
         )
     }
 
+    fun buildYouTubeEmbedConfig(
+        videoId: String,
+        packageName: String,
+        startSeconds: Long,
+        embedHost: YouTubeEmbedHost = YouTubeEmbedHost.STANDARD
+    ): YouTubeEmbedConfig {
+        val safeVideoId = videoId.trim().also {
+            require(validVideoIdRegex.matches(it)) { "Invalid YouTube videoId" }
+        }
+        val safePackageHost = safeHostRegex.replace(packageName.trim(), "")
+            .trim('.')
+            .ifBlank { DEFAULT_APP_ORIGIN_HOST }
+        val appOrigin = "https://$safePackageHost"
+        val baseUrl = "$appOrigin/"
+        val encodedOrigin = URLEncoder.encode(appOrigin, "UTF-8")
+        val safeStart = startSeconds.coerceAtLeast(0L)
+        val iframeSrc = "${embedHost.baseOrigin}/embed/$safeVideoId" +
+            "?enablejsapi=1&playsinline=1&autoplay=0&controls=1&fs=1&rel=0&modestbranding=1&iv_load_policy=3" +
+            "&origin=$encodedOrigin&widget_referrer=$encodedOrigin&start=$safeStart"
+
+        val html = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+          <meta name="referrer" content="strict-origin-when-cross-origin">
+          <style>
+            html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #0F172A; overflow: hidden; }
+            #player { width: 100%; height: 100%; border: 0; display: block; }
+          </style>
+        </head>
+        <body>
+          <iframe
+            id="player"
+            src="$iframeSrc"
+            title="YouTube Video Player"
+            frameborder="0"
+            referrerpolicy="strict-origin-when-cross-origin"
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
+            allowfullscreen></iframe>
+          <script>
+            var player = null;
+            var iframeLoaded = false;
+            var playerSettled = false;
+            var progressTimer = null;
+            var iframeEl = document.getElementById('player');
+
+            var initTimer = setTimeout(function() {
+              if (!playerSettled && !iframeLoaded && window.AbkBridge && window.AbkBridge.onPlayerError) {
+                window.AbkBridge.onPlayerError(-2, 'iframe_timeout');
+              }
+            }, 30000);
+
+            function markSettled() {
+              if (!playerSettled) {
+                playerSettled = true;
+              }
+              clearTimeout(initTimer);
+            }
+
+            if (iframeEl) {
+              iframeEl.addEventListener('load', function() {
+                iframeLoaded = true;
+                clearTimeout(initTimer);
+                if (window.AbkBridge && window.AbkBridge.onIframeLoaded) {
+                  window.AbkBridge.onIframeLoaded();
+                }
+              });
+            }
+
+            function startProgressLoop() {
+              if (progressTimer) {
+                clearInterval(progressTimer);
+              }
+              progressTimer = setInterval(function() {
+                try {
+                  if (player && player.getCurrentTime && player.getDuration && window.AbkBridge) {
+                    var pos = Math.floor((player.getCurrentTime() || 0) * 1000);
+                    var dur = Math.floor((player.getDuration() || 0) * 1000);
+                    var done = dur > 0 && pos >= Math.floor(dur * 0.9);
+                    window.AbkBridge.onProgress(pos, dur, done);
+                  }
+                } catch (err) {}
+              }, 3500);
+            }
+
+            function cleanupTimers() {
+              clearTimeout(initTimer);
+              if (progressTimer) {
+                clearInterval(progressTimer);
+                progressTimer = null;
+              }
+            }
+            window.addEventListener('pagehide', cleanupTimers);
+
+            function onYouTubeIframeAPIReady() {
+              try {
+                player = new YT.Player('player', {
+                  events: {
+                    'onReady': function() {
+                      markSettled();
+                      startProgressLoop();
+                    },
+                    'onError': function(event) {
+                      markSettled();
+                      var code = (event && typeof event.data === 'number') ? event.data : -1;
+                      if (window.AbkBridge && window.AbkBridge.onPlayerError) {
+                        window.AbkBridge.onPlayerError(code, 'yt_player');
+                      }
+                    },
+                    'onStateChange': function(event) {
+                      markSettled();
+                      startProgressLoop();
+                      if (window.YT && event && event.data === YT.PlayerState.ENDED && window.AbkBridge) {
+                        var dur = Math.floor((player.getDuration() || 0) * 1000);
+                        window.AbkBridge.onProgress(dur, dur, true);
+                      }
+                    }
+                  }
+                });
+              } catch (err) {
+                markSettled();
+                if (window.AbkBridge && window.AbkBridge.onPlayerError) {
+                  window.AbkBridge.onPlayerError(-3, 'yt_init_exception');
+                }
+              }
+            }
+          </script>
+          <script async src="https://www.youtube.com/iframe_api"
+                  onerror="setTimeout(function(){ if(!playerSettled && !iframeLoaded && window.AbkBridge && window.AbkBridge.onPlayerError){ window.AbkBridge.onPlayerError(-3, 'script_onerror'); } }, 1500);"></script>
+        </body>
+        </html>
+        """.trimIndent()
+
+        return YouTubeEmbedConfig(
+            videoId = safeVideoId,
+            appOrigin = appOrigin,
+            baseUrl = baseUrl,
+            embedHost = embedHost,
+            iframeSrc = iframeSrc,
+            html = html
+        )
+    }
+
+    fun isAllowedYouTubeEmbedHost(host: String?): Boolean {
+        val normalized = host?.trim()?.lowercase(Locale.ROOT).orEmpty()
+        return normalized == "youtube.com" ||
+            normalized.endsWith(".youtube.com") ||
+            normalized == "youtube-nocookie.com" ||
+            normalized.endsWith(".youtube-nocookie.com")
+    }
+
+    fun isCriticalYouTubeRequest(url: String?, isMainFrame: Boolean): Boolean {
+        if (isMainFrame) return true
+        val raw = url?.trim().orEmpty()
+        if (raw.isEmpty()) return false
+        return runCatching {
+            val uri = java.net.URI(raw)
+            val host = uri.host?.lowercase(Locale.ROOT).orEmpty()
+            val path = uri.path?.lowercase(Locale.ROOT).orEmpty()
+            isAllowedYouTubeEmbedHost(host) && (path.startsWith("/embed/") || path == "/iframe_api")
+        }.getOrDefault(false)
+    }
+
     fun mapYouTubeErrorToDiagnosis(code: Int, detail: String = ""): VideoErrorDiagnosis {
         val suffix = detail.take(24).replace(Regex("[^a-zA-Z0-9_-]"), "")
+        Log.w(TAG, "Diagnosing YouTube error code=$code detail=${suffix.ifBlank { "none" }}")
         return when (code) {
+            2 -> VideoErrorDiagnosis(
+                cause = VideoErrorCause.INVALID_URL,
+                userMessageAr = "معرّف أو رابط فيديو YouTube غير صالح.",
+                technicalCode = "YT_2",
+                canRetry = false
+            )
+            5 -> VideoErrorDiagnosis(
+                cause = VideoErrorCause.DECODER_ERROR,
+                userMessageAr = "تعذر تشغيل الفيديو داخل مشغل HTML5 المضمّن. يُنصح بتحديث مكون Android System WebView ثم إعادة المحاولة.",
+                technicalCode = "YT_5"
+            )
             100 -> VideoErrorDiagnosis(
                 cause = VideoErrorCause.YOUTUBE_PRIVATE,
                 userMessageAr = "هذا الفيديو غير متاح أو مضبوط كفيديو خاص من قِبل صاحبه.",
@@ -279,6 +474,11 @@ object VideoPlaybackSupport {
                 cause = VideoErrorCause.YOUTUBE_EMBED_RESTRICTED,
                 userMessageAr = "مالك الفيديو منع تشغيله بالتضمين خارج تطبيق YouTube.",
                 technicalCode = "YT_$code"
+            )
+            152 -> VideoErrorDiagnosis(
+                cause = VideoErrorCause.YOUTUBE_EMBED_RESTRICTED,
+                userMessageAr = "رفض مشغل YouTube المضمّن تشغيل الفيديو بسبب قيود التضمين أو هوية المضمّن/الاتصال. تأكد من اتصال الإنترنت وتحديث WebView ثم أعد المحاولة.",
+                technicalCode = "YT_152"
             )
             153 -> VideoErrorDiagnosis(
                 cause = VideoErrorCause.YOUTUBE_EMBED_RESTRICTED,

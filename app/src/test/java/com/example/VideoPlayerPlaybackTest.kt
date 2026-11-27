@@ -16,12 +16,14 @@ import com.example.data.model.VideoSourceType
 import com.example.ui.screens.VideoErrorCause
 import com.example.ui.screens.VideoPlaybackSupport
 import com.example.ui.screens.VideoPlayerScreen
+import com.example.ui.screens.YouTubeEmbedHost
 import com.example.ui.theme.MidadTheme
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okio.Buffer
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -175,9 +177,91 @@ class VideoPlayerPlaybackTest {
         assertEquals(VideoErrorCause.YOUTUBE_PRIVATE, ytPrivate.cause)
         assertEquals("YT_100", ytPrivate.technicalCode)
 
+        val yt152 = VideoPlaybackSupport.mapYouTubeErrorToDiagnosis(152, "yt_player")
+        assertEquals(VideoErrorCause.YOUTUBE_EMBED_RESTRICTED, yt152.cause)
+        assertEquals("YT_152", yt152.technicalCode)
+        assertTrue(yt152.canRetry)
+        assertTrue(yt152.userMessageAr.contains("التضمين"))
+
+        val yt2 = VideoPlaybackSupport.mapYouTubeErrorToDiagnosis(2, "yt_player")
+        assertEquals(VideoErrorCause.INVALID_URL, yt2.cause)
+        assertEquals("YT_2", yt2.technicalCode)
+        assertFalse(yt2.canRetry)
+
+        val yt5 = VideoPlaybackSupport.mapYouTubeErrorToDiagnosis(5, "yt_player")
+        assertEquals(VideoErrorCause.DECODER_ERROR, yt5.cause)
+        assertEquals("YT_5", yt5.technicalCode)
+
         val ytScript = VideoPlaybackSupport.mapYouTubeErrorToDiagnosis(-3, "script_onerror")
         assertEquals(VideoErrorCause.YOUTUBE_SCRIPT_BLOCKED, ytScript.cause)
         assertTrue(ytScript.technicalCode.startsWith("YT_SCRIPT"))
+    }
+
+    @Test
+    fun `buildYouTubeEmbedConfig sets app package HTTPS origin, Referer policy, and nocookie fallback`() {
+        val standardConfig = VideoPlaybackSupport.buildYouTubeEmbedConfig(
+            videoId = "dQw4w9WgXcQ",
+            packageName = "com.aistudio.abkedu.kpmzqx",
+            startSeconds = 45L,
+            embedHost = YouTubeEmbedHost.STANDARD
+        )
+        assertEquals("https://com.aistudio.abkedu.kpmzqx", standardConfig.appOrigin)
+        assertEquals("https://com.aistudio.abkedu.kpmzqx/", standardConfig.baseUrl)
+        assertTrue(standardConfig.iframeSrc.startsWith("https://www.youtube.com/embed/dQw4w9WgXcQ?"))
+        assertTrue(standardConfig.iframeSrc.contains("enablejsapi=1"))
+        assertTrue(standardConfig.iframeSrc.contains("origin=https%3A%2F%2Fcom.aistudio.abkedu.kpmzqx"))
+        assertTrue(standardConfig.iframeSrc.contains("widget_referrer=https%3A%2F%2Fcom.aistudio.abkedu.kpmzqx"))
+        assertTrue(standardConfig.iframeSrc.contains("start=45"))
+        assertTrue(standardConfig.html.contains("""<meta name="referrer" content="strict-origin-when-cross-origin">"""))
+        assertTrue(standardConfig.html.contains("""referrerpolicy="strict-origin-when-cross-origin""""))
+        assertTrue(standardConfig.html.contains("30000"))
+        assertTrue(standardConfig.html.contains("!playerSettled && !iframeLoaded"))
+
+        val nocookieConfig = VideoPlaybackSupport.buildYouTubeEmbedConfig(
+            videoId = "dQw4w9WgXcQ",
+            packageName = "com.aistudio.abkedu.kpmzqx",
+            startSeconds = 0L,
+            embedHost = YouTubeEmbedHost.NOCOOKIE
+        )
+        assertTrue(nocookieConfig.iframeSrc.startsWith("https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ?"))
+
+        assertTrue(VideoPlaybackSupport.isAllowedYouTubeEmbedHost("www.youtube.com"))
+        assertTrue(VideoPlaybackSupport.isAllowedYouTubeEmbedHost("www.youtube-nocookie.com"))
+        assertFalse(VideoPlaybackSupport.isAllowedYouTubeEmbedHost("evil-youtube.com"))
+        assertTrue(VideoPlaybackSupport.isCriticalYouTubeRequest("https://www.youtube.com/embed/dQw4w9WgXcQ", false))
+        assertTrue(VideoPlaybackSupport.isCriticalYouTubeRequest("https://www.youtube.com/iframe_api", false))
+        assertFalse(VideoPlaybackSupport.isCriticalYouTubeRequest("https://googleads.g.doubleclick.net/pagead/id", false))
+    }
+
+    @Test
+    fun `VideoPlayerScreen renders YouTube playback strictly in-app for watch and youtu_be links`() {
+        val watchLesson = Lesson(
+            id = "les_yt_watch",
+            subjectId = "math",
+            subjectName = "الرياضيات",
+            title = "النهايات والاتصال",
+            videoUrl = "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            videoSourceType = VideoSourceType.YOUTUBE.name
+        )
+
+        composeTestRule.setContent {
+            MidadTheme {
+                VideoPlayerScreen(
+                    lesson = watchLesson,
+                    relatedMaterials = emptyList(),
+                    initialProgress = null,
+                    isFavorite = false,
+                    onBack = {},
+                    onSaveProgress = { _, _, _ -> },
+                    onToggleFavorite = {},
+                    onOpenMaterial = {},
+                    onDownloadMaterial = {},
+                    onShareMaterial = {}
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("youtube_inapp_webview").assertIsDisplayed()
     }
 
     @Test
