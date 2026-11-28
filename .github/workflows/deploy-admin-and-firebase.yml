@@ -6,19 +6,26 @@ on:
     paths:
       - 'admin-portal/**'
       - 'firestore.rules'
+      - 'firebase.json'
       - '.github/workflows/deploy-admin-and-firebase.yml'
   workflow_dispatch:
     inputs:
       deploy_target:
-        description: 'Choose optional deploy target (leave none if Cloudflare Pages is linked directly in Cloudflare Dashboard)'
+        description: 'اختر هدف النشر اليدوي (none للفحص فقط، أو cloudflare_pages، أو firestore_rules، أو كلاهما)'
         required: true
         type: choice
         default: none
         options:
           - none
           - cloudflare_pages
+          - firestore_rules
+          - cloudflare_pages_and_firestore_rules
           - github_pages
-          - firebase_spark
+      cloudflare_pages_project:
+        description: 'اسم مشروع Cloudflare Pages (اتركه فارغاً لاستخدام متغير CLOUDFLARE_PAGES_PROJECT أو abk-admin-portal — ممنوع وضع اسم Worker)'
+        required: false
+        type: string
+        default: ''
       api_base_url:
         description: 'Optional Free-Tier Node.js Backend URL (local / Render / Koyeb)'
         required: false
@@ -60,20 +67,48 @@ jobs:
           VITE_FIREBASE_AUTH_DOMAIN: gen-lang-client-0343268738.firebaseapp.com
           VITE_FIREBASE_STORAGE_BUCKET: gen-lang-client-0343268738.firebasestorage.app
           VITE_FIREBASE_DATABASE_ID: ai-studio-android-abk-452af8d1-cf14-40e7-aead-48a40e7f239d
-          VITE_API_BASE_URL: ${{ inputs.api_base_url }}
+          VITE_FIREBASE_APP_ID: ${{ vars.VITE_FIREBASE_APP_ID || '' }}
+          VITE_RECAPTCHA_SITE_KEY: ${{ vars.VITE_RECAPTCHA_SITE_KEY || '' }}
+          VITE_API_BASE_URL: ${{ inputs.api_base_url || vars.VITE_API_BASE_URL || '' }}
           VITE_R2_WORKER_URL: ${{ vars.VITE_R2_WORKER_URL || '' }}
         run: npm run build
 
-      - name: Verify Cloudflare Pages SPA files & Zero Admin Secrets in dist/
-        working-directory: admin-portal
+      - name: Verify Cloudflare Pages SPA files, Rules & Zero Secrets
         run: |
-          test -f dist/index.html
-          test -f dist/_redirects
-          test -f dist/_headers
-          if grep -rnE "firebase-admin|BEGIN PRIVATE KEY|FIREBASE_SERVICE_ACCOUNT|\"private_key\"" dist/; then
+          set -euo pipefail
+          test -f admin-portal/dist/index.html
+          test -f admin-portal/dist/_redirects
+          test -f admin-portal/dist/_headers
+
+          if grep -rnE "firebase-admin|BEGIN PRIVATE KEY|FIREBASE_SERVICE_ACCOUNT|\"private_key\"" admin-portal/dist/; then
             echo "::error::Sensitive server/admin credentials detected inside frontend dist/ bundle!"
             exit 1
           fi
+
+          if grep -rnE "k[a]rimaeti07@gmail\.com|BOOTSTRAPPED_ADMIN_EMAIL" firestore.rules admin-portal/src admin-portal/server; then
+            echo "::error::Hardcoded personal admin email literal detected in source or rules!"
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          import json, pathlib, sys
+
+          cfg = json.loads(pathlib.Path("firebase.json").read_text(encoding="utf-8"))
+          fs_entries = cfg.get("firestore", [])
+          if fs_entries != [{"database": "ai-studio-android-abk-452af8d1-cf14-40e7-aead-48a40e7f239d", "rules": "firestore.rules"}]:
+              print(f"::error::Unexpected firebase.json firestore target: {fs_entries}", file=sys.stderr)
+              sys.exit(1)
+
+          rules = pathlib.Path("firestore.rules").read_text(encoding="utf-8")
+          for req in ("isSuperAdmin()", "adminDocData().active == true", "allow read, write: if false;"):
+              if req not in rules:
+                  print(f"::error::Missing strict rule safeguard `{req}` in firestore.rules", file=sys.stderr)
+                  sys.exit(1)
+          if "if true" in rules:
+              print("::error::Permissive `if true` rule detected in firestore.rules", file=sys.stderr)
+              sys.exit(1)
+          print("Verified firebase.json named DB target and strict firestore.rules safeguards.")
+          PY
 
       - name: Upload Admin Portal dist artifact
         uses: actions/upload-artifact@v4
@@ -84,18 +119,63 @@ jobs:
   deploy-cloudflare-pages:
     name: Deploy Admin Portal to Cloudflare Pages (Free HTTPS)
     needs: verify-admin-portal
-    if: github.event_name == 'workflow_dispatch' && inputs.deploy_target == 'cloudflare_pages'
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      (inputs.deploy_target == 'cloudflare_pages' || inputs.deploy_target == 'cloudflare_pages_and_firestore_rules')
     runs-on: ubuntu-latest
     steps:
-      - name: Validate Cloudflare Credentials
+      - name: Checkout repository (verify Pages vs Worker separation)
+        uses: actions/checkout@v4
+
+      - name: Validate Cloudflare Credentials & Pages Project Isolation
+        id: resolve_pages_project
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          INPUT_PAGES_PROJECT: ${{ inputs.cloudflare_pages_project }}
+          VAR_PAGES_PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT }}
         run: |
-          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
-            echo "::error::Missing CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID in GitHub Secrets. Note: Connecting GitHub directly from Cloudflare Pages Dashboard requires zero secrets."
+          set -euo pipefail
+
+          RAW_PROJECT="${INPUT_PAGES_PROJECT:-${VAR_PAGES_PROJECT:-abk-admin-portal}}"
+          PAGES_PROJECT=$(printf '%s' "$RAW_PROJECT" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+          if [ -z "$PAGES_PROJECT" ]; then
+            PAGES_PROJECT="abk-admin-portal"
+          fi
+
+          WORKER_NAME=$(python3 - <<'PY'
+          import pathlib, re
+          toml_text = pathlib.Path("cloudflare-worker/wrangler.toml").read_text(encoding="utf-8")
+          m = re.search(r'^name\s*=\s*"([^"]+)"', toml_text, re.MULTILINE)
+          print((m.group(1) if m else "midad-r2-worker").strip().lower())
+          PY
+          )
+
+          if ! printf '%s' "$PAGES_PROJECT" | grep -Eq '^[a-z0-9][a-z0-9-]{1,57}[a-z0-9]$'; then
+            echo "::error::اسم مشروع Cloudflare Pages غير صالح ($PAGES_PROJECT). يجب أن يحتوي على أحرف إنجليزية صغيرة وأرقام وشرطات فقط."
             exit 1
           fi
+
+          if [ "$PAGES_PROJECT" = "$WORKER_NAME" ] || [ "$PAGES_PROJECT" = "midad-r2-worker" ] || printf '%s' "$PAGES_PROJECT" | grep -Eq '(^|-)worker$'; then
+            echo "::error::تم رفض النشر لأن الاسم ($PAGES_PROJECT) يشير إلى Cloudflare Worker وليس إلى مشروع Cloudflare Pages الخاص بلوحة الإدارة."
+            exit 1
+          fi
+
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            {
+              echo "### مطلوب إعداد أسرار Cloudflare Pages للنشر الآلي"
+              echo "- المشروع المستهدف (Cloudflare Pages فقط): \`${PAGES_PROJECT}\` (مفصول تماماً عن Worker \`${WORKER_NAME}\`)"
+              echo "- أضف في **GitHub → Settings → Secrets and variables → Actions → Secrets**:"
+              echo "  - \`CLOUDFLARE_API_TOKEN\` (بصلاحية **Account → Cloudflare Pages → Edit** فقط)"
+              echo "  - \`CLOUDFLARE_ACCOUNT_ID\`"
+              echo "- الاختياري في **Variables**: \`CLOUDFLARE_PAGES_PROJECT\` (مثلاً \`abk-educational-app\` أو \`abk-admin-portal\`)."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Missing CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID in GitHub Secrets."
+            exit 1
+          fi
+
+          echo "project_name=${PAGES_PROJECT}" >> "$GITHUB_OUTPUT"
+          echo "Resolved Cloudflare Pages project: ${PAGES_PROJECT} (isolated from worker ${WORKER_NAME})"
 
       - name: Download verified dist artifact
         uses: actions/download-artifact@v4
@@ -103,13 +183,33 @@ jobs:
           name: abk-admin-portal-dist
           path: admin-portal/dist
 
-      - name: Publish to Cloudflare Pages
+      - name: Verify Cloudflare Pages build output
+        working-directory: admin-portal
+        run: |
+          set -euo pipefail
+          test -f dist/index.html
+          test -f dist/_redirects
+          test -f dist/_headers
+
+      - name: Publish Admin Portal to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: admin-portal
-          command: pages deploy dist --project-name=${{ vars.CLOUDFLARE_PAGES_PROJECT || 'abk-admin-portal' }}
+          command: pages deploy dist --project-name=${{ steps.resolve_pages_project.outputs.project_name }}
+
+      - name: Publish Cloudflare Pages Arabic Summary
+        env:
+          PAGES_PROJECT: ${{ steps.resolve_pages_project.outputs.project_name }}
+        run: |
+          {
+            echo "## تم نشر لوحة إدارة مداد التعليمية على Cloudflare Pages بنجاح"
+            echo "- **مشروع Cloudflare Pages:** \`${PAGES_PROJECT}\`"
+            echo "- **الرابط المتوقع:** \`https://${PAGES_PROJECT}.pages.dev\`"
+            echo "- **فصل Cloudflare Worker:** لم يتم لمس مجلد \`cloudflare-worker\` أو العامل \`midad-r2-worker\`."
+            echo "- **تذكير مهم:** تأكد من وجود \`${PAGES_PROJECT}.pages.dev\` ضمن **Firebase Console → Authentication → Settings → Authorized domains**."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   deploy-github-pages:
     name: Deploy Admin Portal to GitHub Pages (Zero-Secret HTTPS)
@@ -142,7 +242,9 @@ jobs:
           VITE_FIREBASE_AUTH_DOMAIN: gen-lang-client-0343268738.firebaseapp.com
           VITE_FIREBASE_STORAGE_BUCKET: gen-lang-client-0343268738.firebasestorage.app
           VITE_FIREBASE_DATABASE_ID: ai-studio-android-abk-452af8d1-cf14-40e7-aead-48a40e7f239d
-          VITE_API_BASE_URL: ${{ inputs.api_base_url }}
+          VITE_FIREBASE_APP_ID: ${{ vars.VITE_FIREBASE_APP_ID || '' }}
+          VITE_RECAPTCHA_SITE_KEY: ${{ vars.VITE_RECAPTCHA_SITE_KEY || '' }}
+          VITE_API_BASE_URL: ${{ inputs.api_base_url || vars.VITE_API_BASE_URL || '' }}
           VITE_R2_WORKER_URL: ${{ vars.VITE_R2_WORKER_URL || '' }}
         run: |
           npm ci
@@ -161,40 +263,135 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@v4
 
-  deploy-spark-hosting-and-rules:
-    name: Deploy Firebase Hosting & Firestore Rules (Optional FIREBASE_TOKEN)
+  deploy-firestore-rules:
+    name: Deploy Firestore Rules to Named DB (OIDC / WIF)
     needs: verify-admin-portal
-    if: github.event_name == 'workflow_dispatch' && inputs.deploy_target == 'firebase_spark'
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      github.repository == 'karimaeti52-oss/ABK-Educational-App' &&
+      github.actor == github.repository_owner &&
+      github.repository_owner == 'karimaeti52-oss' &&
+      (inputs.deploy_target == 'firestore_rules' || inputs.deploy_target == 'cloudflare_pages_and_firestore_rules')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Validate FIREBASE_TOKEN Secret
+      - name: Validate guards and Workload Identity Federation (OIDC/WIF) config
         env:
-          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+          WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER || secrets.GCP_WIF_PROVIDER }}
+          DEPLOYER_SA: ${{ vars.GCP_DEPLOYER_SA || secrets.GCP_DEPLOYER_SA }}
         run: |
-          if [ -z "$FIREBASE_TOKEN" ]; then
-            echo "::error::Missing FIREBASE_TOKEN in GitHub Secrets. Use Cloudflare Pages or GitHub Pages instead without any token."
+          set -euo pipefail
+
+          if [ "${GITHUB_EVENT_NAME:-}" != "workflow_dispatch" ] || [ "${GITHUB_REF:-}" != "refs/heads/main" ]; then
+            echo "::error::نشر قواعد Firestore مسموح فقط يدوياً عبر workflow_dispatch وعلى فرع refs/heads/main."
+            exit 1
+          fi
+          if [ "${GITHUB_REPOSITORY:-}" != "karimaeti52-oss/ABK-Educational-App" ] || [ "${GITHUB_REPOSITORY_OWNER:-}" != "karimaeti52-oss" ] || [ "${GITHUB_ACTOR:-}" != "${GITHUB_REPOSITORY_OWNER:-}" ]; then
+            echo "::error::نشر قواعد Firestore مسموح فقط لمالك المستودع (karimaeti52-oss)."
             exit 1
           fi
 
-      - name: Download verified dist artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: abk-admin-portal-dist
-          path: admin-portal/dist
+          CLEAN_WIF_PROVIDER=$(printf '%s' "${WIF_PROVIDER:-}" | tr -d '[:space:]')
+          CLEAN_DEPLOYER_SA=$(printf '%s' "${DEPLOYER_SA:-}" | tr -d '[:space:]')
 
-      - name: Deploy Firestore Rules & Static Admin Hosting (Zero Billing)
-        env:
-          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+          if [ -z "$CLEAN_WIF_PROVIDER" ] || [ -z "$CLEAN_DEPLOYER_SA" ]; then
+            {
+              echo "### مطلوب إعداد Workload Identity Federation للنشر الآمن بدون مفاتيح"
+              echo "تستخدم هذه الوظيفة **GitHub OIDC + GCP Workload Identity Federation** لنشر \`firestore.rules\` إلى قاعدة البيانات المسماة \`ai-studio-android-abk-452af8d1-cf14-40e7-aead-48a40e7f239d\` دون الحاجة إلى \`FIREBASE_TOKEN\` أو مفاتيح JSON دائمة."
+              echo ""
+              echo "أضف القيمتين التاليتين في **GitHub → Settings → Secrets and variables → Actions**:"
+              echo "- \`GCP_WIF_PROVIDER\`: مسار مزود WIF (مثل \`projects/438492626356/locations/global/workloadIdentityPools/<POOL_ID>/providers/<PROVIDER_ID>\`)."
+              echo "- \`GCP_DEPLOYER_SA\`: بريد حساب النشر (مثل \`abk-github-deployer@gen-lang-client-0343268738.iam.gserviceaccount.com\`)."
+              echo ""
+              echo "الصلاحيات المطلوبة لحساب \`GCP_DEPLOYER_SA\` في Google Cloud IAM:"
+              echo "- \`roles/firebaserules.admin\` (لإنشاء وتحديث قواعد Firestore على القاعدة المسماة)"
+              echo "- \`roles/serviceusage.serviceUsageConsumer\` و \`roles/firebase.viewer\` (لفحص تفعيل APIs ومعلومات المشروع عبر Firebase CLI)"
+              echo "- ربط \`roles/iam.workloadIdentityUser\` بشرط \`attribute.repository=='karimaeti52-oss/ABK-Educational-App'\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Missing GCP_WIF_PROVIDER or GCP_DEPLOYER_SA."
+            exit 1
+          fi
+
+          if ! printf '%s' "$CLEAN_WIF_PROVIDER" | grep -Eq '^projects/[0-9]+/locations/[a-z0-9-]+/workloadIdentityPools/[A-Za-z0-9._-]+/providers/[A-Za-z0-9._-]+$'; then
+            echo "::error::تنسيق GCP_WIF_PROVIDER غير صالح."
+            exit 1
+          fi
+          if ! printf '%s' "$CLEAN_DEPLOYER_SA" | grep -Eq '^[^@[:space:]]+@[^@[:space:]]+\.iam\.gserviceaccount\.com$'; then
+            echo "::error::تنسيق GCP_DEPLOYER_SA غير صالح."
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify firebase.json named DB & strict SUPER_ADMIN firestore.rules
         run: |
-          npx --yes firebase-tools deploy \
-            --only firestore:rules,hosting \
-            --config admin-portal/firebase.hosting.json \
-            --project "$PROJECT_ID" \
-            --non-interactive || \
-          npx --yes firebase-tools deploy \
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, pathlib, sys
+
+          cfg = json.loads(pathlib.Path("firebase.json").read_text(encoding="utf-8"))
+          expected = [{"database": "ai-studio-android-abk-452af8d1-cf14-40e7-aead-48a40e7f239d", "rules": "firestore.rules"}]
+          if cfg.get("firestore") != expected:
+              print(f"::error::firebase.json firestore config mismatch: {cfg.get('firestore')}", file=sys.stderr)
+              sys.exit(1)
+
+          rules = pathlib.Path("firestore.rules").read_text(encoding="utf-8")
+          for req in ("isSuperAdmin()", "adminDocData().active == true", "allow read, write: if false;"):
+              if req not in rules:
+                  print(f"::error::Missing strict safeguard `{req}` in firestore.rules", file=sys.stderr)
+                  sys.exit(1)
+          if "if true" in rules:
+              print("::error::Permissive `if true` wildcard rule detected in firestore.rules", file=sys.stderr)
+              sys.exit(1)
+          print("Verified named database target ai-studio-android-abk-452af8d1-cf14-40e7-aead-48a40e7f239d and strict SUPER_ADMIN rules.")
+          PY
+
+      - name: Authenticate via GitHub OIDC (GCP Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER || secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA || secrets.GCP_DEPLOYER_SA }}
+          create_credentials_file: true
+          export_environment_variables: true
+          cleanup_credentials: true
+
+      - name: Verify ephemeral OIDC/WIF credentials (no private_key / no FIREBASE_TOKEN)
+        run: |
+          set -euo pipefail
+          if [ -z "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] || [ ! -f "$GOOGLE_APPLICATION_CREDENTIALS" ]; then
+            echo "::error::لم يتم توليد ملف اعتماد Workload Identity المؤقت (GOOGLE_APPLICATION_CREDENTIALS)."
+            exit 1
+          fi
+          python3 - <<'PY' "$GOOGLE_APPLICATION_CREDENTIALS"
+          import json, sys
+          with open(sys.argv[1], "r", encoding="utf-8") as f:
+              cred = json.load(f)
+          if cred.get("type") != "external_account" or "private_key" in cred:
+              print("::error::Unexpected credential type; expected external_account WIF credential without private_key.", file=sys.stderr)
+              sys.exit(1)
+          print("Verified ephemeral OIDC external_account ADC credential (zero static keys).")
+          PY
+
+      - name: Deploy firestore.rules strictly to Named Firestore DB via OIDC/WIF
+        run: |
+          set -euo pipefail
+          npx --yes firebase-tools@15 deploy \
             --only firestore:rules \
+            --config firebase.json \
             --project "$PROJECT_ID" \
             --non-interactive
+
+      - name: Publish Firestore Rules Arabic Summary
+        run: |
+          {
+            echo "## تم نشر قواعد Firestore الصارمة بنجاح عبر OIDC / WIF"
+            echo "- **المشروع:** \`${PROJECT_ID}\`"
+            echo "- **قاعدة البيانات المسماة:** \`${DATABASE_ID}\`"
+            echo "- **طريقة المصادقة:** GitHub OIDC + Workload Identity Federation (\`GCP_WIF_PROVIDER\` / \`GCP_DEPLOYER_SA\`) دون \`FIREBASE_TOKEN\` أو مفاتيح JSON دائمة"
+            echo "- **نطاق النشر:** \`firestore.rules\` فقط (\`--only firestore:rules --config firebase.json\`)"
+          } >> "$GITHUB_STEP_SUMMARY"

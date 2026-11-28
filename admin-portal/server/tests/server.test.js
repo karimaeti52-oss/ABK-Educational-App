@@ -1235,3 +1235,34 @@ test('Backend RBAC accepts active SUPER_ADMIN /admins/{uid} without Custom Claim
   }
 });
 
+test('deploy-admin-and-firebase.yml enforces OIDC/WIF for named Firestore DB and isolates Cloudflare Pages from Worker', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const workflowPath = path.resolve(import.meta.dirname, '../../../.github/workflows/deploy-admin-and-firebase.yml');
+  const content = fs.readFileSync(workflowPath, 'utf8');
+
+  assert.ok(content.includes('workflow_dispatch:'));
+  assert.ok(content.includes('cloudflare_pages'));
+  assert.ok(content.includes('firestore_rules'));
+  assert.ok(content.includes('cloudflare_pages_and_firestore_rules'));
+  assert.ok(content.includes('id-token: write'));
+  assert.ok(content.includes('google-github-actions/auth@v2'));
+  assert.ok(content.includes('GCP_WIF_PROVIDER'));
+  assert.ok(content.includes('GCP_DEPLOYER_SA'));
+  assert.ok(content.includes('cleanup_credentials: true'));
+  assert.ok(content.includes("github.repository == 'karimaeti52-oss/ABK-Educational-App'"));
+  assert.ok(content.includes("github.ref == 'refs/heads/main'"));
+  assert.ok(content.includes('github.actor == github.repository_owner'));
+  assert.ok(content.includes('ai-studio-android-abk-452af8d1-cf14-40e7-aead-48a40e7f239d'));
+  assert.ok(content.includes('--only firestore:rules'));
+  assert.ok(content.includes('--config firebase.json'));
+  assert.ok(content.includes('pages deploy dist --project-name='));
+  assert.ok(content.includes('midad-r2-worker'));
+
+  assert.equal(content.includes('secrets.FIREBASE_TOKEN'), false);
+  assert.equal(content.includes('FIREBASE_SERVICE_ACCOUNT_JSON'), false);
+  assert.equal(content.includes('FIREBASE_SERVICE_ACCOUNT_BASE64'), false);
+  assert.equal(content.includes('deploy-spark-hosting-and-rules'), false);
+});
+
+
