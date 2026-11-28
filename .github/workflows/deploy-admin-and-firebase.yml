@@ -351,6 +351,7 @@ jobs:
           PY
 
       - name: Authenticate via GitHub OIDC (GCP Workload Identity Federation)
+        id: gcp_auth
         uses: google-github-actions/auth@v2
         with:
           project_id: ${{ env.PROJECT_ID }}
@@ -360,13 +361,30 @@ jobs:
           export_environment_variables: true
           cleanup_credentials: true
 
-      - name: Verify ephemeral OIDC/WIF credentials (no private_key / no FIREBASE_TOKEN)
+      - name: Set up Node.js 22 (after OIDC auth)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Firebase CLI cleanly (after OIDC auth)
         run: |
           set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/fb-cli"
+          npm install --no-save --prefix "${RUNNER_TEMP}/fb-cli" firebase-tools@15
+          echo "${RUNNER_TEMP}/fb-cli/node_modules/.bin" >> "$GITHUB_PATH"
+
+      - name: Verify ephemeral OIDC/WIF credentials & ADC token exchange (no secrets printed)
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ steps.gcp_auth.outputs.credentials_file_path || env.GOOGLE_APPLICATION_CREDENTIALS }}
+        run: |
+          set -euo pipefail
+          unset FIREBASE_TOKEN || true
+
           if [ -z "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] || [ ! -f "$GOOGLE_APPLICATION_CREDENTIALS" ]; then
-            echo "::error::لم يتم توليد ملف اعتماد Workload Identity المؤقت (GOOGLE_APPLICATION_CREDENTIALS)."
+            echo "::error::لم يتم العثور على ملف Application Default Credentials المؤقت (GOOGLE_APPLICATION_CREDENTIALS)."
             exit 1
           fi
+
           python3 - <<'PY' "$GOOGLE_APPLICATION_CREDENTIALS"
           import json, sys
           with open(sys.argv[1], "r", encoding="utf-8") as f:
@@ -374,13 +392,75 @@ jobs:
           if cred.get("type") != "external_account" or "private_key" in cred:
               print("::error::Unexpected credential type; expected external_account WIF credential without private_key.", file=sys.stderr)
               sys.exit(1)
-          print("Verified ephemeral OIDC external_account ADC credential (zero static keys).")
+          missing = [k for k in ("audience", "token_url", "credential_source", "service_account_impersonation_url") if not cred.get(k)]
+          if missing:
+              print(f"::error::Incomplete WIF external_account ADC file; missing fields: {', '.join(missing)}", file=sys.stderr)
+              sys.exit(1)
+          print("Verified ephemeral OIDC external_account ADC structure (zero private keys).")
           PY
 
+          node - <<'NODE'
+          const path = require("node:path");
+          const { createRequire } = require("node:module");
+          const fbPkg = path.join(process.env.RUNNER_TEMP, "fb-cli/node_modules/firebase-tools/package.json");
+          const fbRequire = createRequire(fbPkg);
+          const { GoogleAuth } = fbRequire("google-auth-library");
+
+          const redact = (text) =>
+            String(text || "")
+              .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
+              .replace(/ya29\.[A-Za-z0-9._-]+/g, "ya29.[REDACTED]")
+              .replace(/eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[JWT_REDACTED]");
+
+          (async () => {
+            try {
+              const auth = new GoogleAuth({
+                scopes: ["https://www.googleapis.com/auth/cloud-platform"],
+                projectId: process.env.PROJECT_ID,
+              });
+              const client = await auth.getClient();
+              const token = await auth.getAccessToken();
+              if (!token || typeof token !== "string" || token.length < 20) {
+                throw new Error("ADC returned an empty OAuth2 access token.");
+              }
+              console.log(`Verified live OIDC->WIF->IAMCredentials ADC token exchange via ${client.constructor.name} (token length validated, value not logged).`);
+            } catch (err) {
+              const status = err?.response?.status || err?.code || "UNKNOWN";
+              const apiMsg = err?.response?.data?.error_description || err?.response?.data?.error?.message || err?.message || "Unknown ADC error";
+              console.error(`::error::فشل تبادل بيانات الاعتماد OIDC/WIF قبل تشغيل Firebase CLI (status=${status}): ${redact(apiMsg)}`);
+              const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+              if (summaryPath) {
+                const fs = require("node:fs");
+                fs.appendFileSync(
+                  summaryPath,
+                  [
+                    "### تعذر إتمام مصادقة Google OIDC / Workload Identity Federation",
+                    `- **الحالة:** \`${status}\``,
+                    `- **التشخيص الآمن:** \`${redact(apiMsg)}\``,
+                    "- **تحقق في Google Cloud IAM لـ `GCP_DEPLOYER_SA` و`GCP_WIF_PROVIDER`:**",
+                    "  1. منح `roles/iam.workloadIdentityUser` على `GCP_DEPLOYER_SA` لرابط WIF الخاص بالمستودع `attribute.repository=='karimaeti52-oss/ABK-Educational-App'`.",
+                    "  2. تفعيل APIs: `sts.googleapis.com` و`iamcredentials.googleapis.com` و`firebaserules.googleapis.com` و`firestore.googleapis.com`.",
+                    "  3. مطابقة `GCP_WIF_PROVIDER` مع WIF Pool الصحيح ومنح `GCP_DEPLOYER_SA` صلاحيات `roles/firebaserules.admin` و`roles/serviceusage.serviceUsageConsumer` و`roles/firebase.viewer`.",
+                    "",
+                  ].join("\n"),
+                  "utf8"
+                );
+              }
+              process.exit(1);
+            }
+          })();
+          NODE
+
       - name: Deploy firestore.rules strictly to Named Firestore DB via OIDC/WIF
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ steps.gcp_auth.outputs.credentials_file_path || env.GOOGLE_APPLICATION_CREDENTIALS }}
         run: |
           set -euo pipefail
-          npx --yes firebase-tools@15 deploy \
+          unset FIREBASE_TOKEN || true
+          test -n "${GOOGLE_APPLICATION_CREDENTIALS:-}"
+          test -f "$GOOGLE_APPLICATION_CREDENTIALS"
+          firebase --version
+          firebase deploy \
             --only firestore:rules \
             --config firebase.json \
             --project "$PROJECT_ID" \
@@ -392,6 +472,6 @@ jobs:
             echo "## تم نشر قواعد Firestore الصارمة بنجاح عبر OIDC / WIF"
             echo "- **المشروع:** \`${PROJECT_ID}\`"
             echo "- **قاعدة البيانات المسماة:** \`${DATABASE_ID}\`"
-            echo "- **طريقة المصادقة:** GitHub OIDC + Workload Identity Federation (\`GCP_WIF_PROVIDER\` / \`GCP_DEPLOYER_SA\`) دون \`FIREBASE_TOKEN\` أو مفاتيح JSON دائمة"
+            echo "- **طريقة المصادقة:** GitHub OIDC + Workload Identity Federation (\`GCP_WIF_PROVIDER\` / \`GCP_DEPLOYER_SA\`) عبر \`GOOGLE_APPLICATION_CREDENTIALS\` دون \`firebase login\` أو \`FIREBASE_TOKEN\` أو مفاتيح JSON دائمة"
             echo "- **نطاق النشر:** \`firestore.rules\` فقط (\`--only firestore:rules --config firebase.json\`)"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -1249,7 +1249,11 @@ test('deploy-admin-and-firebase.yml enforces OIDC/WIF for named Firestore DB and
   assert.ok(content.includes('google-github-actions/auth@v2'));
   assert.ok(content.includes('GCP_WIF_PROVIDER'));
   assert.ok(content.includes('GCP_DEPLOYER_SA'));
+  assert.ok(content.includes('create_credentials_file: true'));
+  assert.ok(content.includes('export_environment_variables: true'));
   assert.ok(content.includes('cleanup_credentials: true'));
+  assert.ok(content.includes('GOOGLE_APPLICATION_CREDENTIALS'));
+  assert.ok(content.includes('steps.gcp_auth.outputs.credentials_file_path'));
   assert.ok(content.includes("github.repository == 'karimaeti52-oss/ABK-Educational-App'"));
   assert.ok(content.includes("github.ref == 'refs/heads/main'"));
   assert.ok(content.includes('github.actor == github.repository_owner'));
@@ -1258,6 +1262,14 @@ test('deploy-admin-and-firebase.yml enforces OIDC/WIF for named Firestore DB and
   assert.ok(content.includes('--config firebase.json'));
   assert.ok(content.includes('pages deploy dist --project-name='));
   assert.ok(content.includes('midad-r2-worker'));
+  assert.ok(content.includes('new GoogleAuth('));
+  assert.ok(content.includes('[REDACTED]'));
+
+  const authIdx = content.indexOf('uses: google-github-actions/auth@v2');
+  const cliInstallIdx = content.indexOf('npm install --no-save --prefix "${RUNNER_TEMP}/fb-cli" firebase-tools@15');
+  const adcVerifyIdx = content.indexOf('Verify ephemeral OIDC/WIF credentials & ADC token exchange');
+  const deployIdx = content.indexOf('firebase deploy \\');
+  assert.ok(authIdx > 0 && cliInstallIdx > authIdx && adcVerifyIdx > cliInstallIdx && deployIdx > adcVerifyIdx);
 
   assert.equal(content.includes('secrets.FIREBASE_TOKEN'), false);
   assert.equal(content.includes('FIREBASE_SERVICE_ACCOUNT_JSON'), false);
