@@ -37,24 +37,28 @@ service cloud.firestore {
     }
 
     function isAdminDocActive() {
-      return adminDocExists() &&
+      return (!('uid' in adminDocData()) || (adminDocData().uid is string && adminDocData().uid.trim() == request.auth.uid)) &&
              ('active' in adminDocData()) &&
              adminDocData().active == true &&
              ('role' in adminDocData()) &&
-             adminDocData().role in ['SUPER_ADMIN', 'ADMIN', 'CONTENT_MANAGER', 'TEACHER', 'VIEWER'];
+             adminDocData().role is string &&
+             adminDocData().role.trim() in ['SUPER_ADMIN', 'ADMIN', 'CONTENT_MANAGER', 'TEACHER', 'VIEWER'];
+    }
+
+    function hasValidStaffClaim() {
+      return isSignedIn() &&
+             'abkRole' in request.auth.token &&
+             request.auth.token.abkRole is string &&
+             request.auth.token.abkRole.trim() in ['SUPER_ADMIN', 'ADMIN', 'CONTENT_MANAGER', 'TEACHER', 'VIEWER'];
     }
 
     function effectiveRole() {
-      return isAdminDocDisabled()
+      return !isSignedIn()
         ? 'STUDENT'
         : (
-            (
-              isSignedIn() &&
-              'abkRole' in request.auth.token &&
-              request.auth.token.abkRole in ['SUPER_ADMIN', 'ADMIN', 'CONTENT_MANAGER', 'TEACHER', 'VIEWER']
-            )
-            ? request.auth.token.abkRole
-            : (isAdminDocActive() ? adminDocData().role : 'STUDENT')
+            exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+              ? (isAdminDocActive() ? adminDocData().role.trim() : 'STUDENT')
+              : (hasValidStaffClaim() ? request.auth.token.abkRole.trim() : 'STUDENT')
           );
     }
 
@@ -315,9 +319,23 @@ service cloud.firestore {
              data.updatedAt is timestamp && data.updatedAt <= request.time;
     }
 
+    function isStorageSettingKeyList(keySet) {
+      return keySet.hasAny([
+        'r2WorkerBaseUrl',
+        'maxVideoSizeMb',
+        'maxPdfSizeMb',
+        'maxImageSizeMb',
+        'r2StorageLimitGb',
+        'b2StorageLimitGb',
+        'b2Enabled',
+        'primaryStorageProvider',
+        'totalStorageLimitGb'
+      ]);
+    }
+
     function isValidPlatformConfig(data) {
       return data.keys().hasAll(['platformName', 'homeHeadline', 'primaryColorHex', 'secondaryColorHex', 'updatedBy', 'updatedAt']) &&
-             data.keys().hasOnly(['platformName', 'platformTagline', 'homeHeadline', 'welcomeTitle', 'welcomeSubtitle', 'logoUrl', 'heroBannerUrl', 'primaryColorHex', 'secondaryColorHex', 'accentColorHex', 'bottomNavItems', 'allowOfflinePdf', 'showAnnouncements', 'showContinueWatching', 'maintenanceMode', 'r2WorkerBaseUrl', 'maxVideoSizeMb', 'maxPdfSizeMb', 'maxImageSizeMb', 'r2StorageLimitGb', 'b2StorageLimitGb', 'b2Enabled', 'totalStorageLimitGb', 'updatedBy', 'updatedAt']) &&
+             data.keys().hasOnly(['platformName', 'platformTagline', 'homeHeadline', 'welcomeTitle', 'welcomeSubtitle', 'logoUrl', 'heroBannerUrl', 'primaryColorHex', 'secondaryColorHex', 'accentColorHex', 'bottomNavItems', 'allowOfflinePdf', 'showAnnouncements', 'showContinueWatching', 'maintenanceMode', 'r2WorkerBaseUrl', 'maxVideoSizeMb', 'maxPdfSizeMb', 'maxImageSizeMb', 'r2StorageLimitGb', 'b2StorageLimitGb', 'b2Enabled', 'primaryStorageProvider', 'totalStorageLimitGb', 'updatedBy', 'updatedAt']) &&
              data.platformName is string && data.platformName.size() >= 1 && data.platformName.size() <= 60 &&
              isOptionalString(data, 'platformTagline', 100) &&
              data.homeHeadline is string && data.homeHeadline.size() >= 1 && data.homeHeadline.size() <= 100 &&
@@ -327,7 +345,7 @@ service cloud.firestore {
              isOptionalString(data, 'heroBannerUrl', 1000) &&
              data.primaryColorHex is string && data.primaryColorHex.matches('^#[0-9a-fA-F]{6}$') &&
              data.secondaryColorHex is string && data.secondaryColorHex.matches('^#[0-9a-fA-F]{6}$') &&
-             (!('accentColorHex' in data) || data.accentColorHex == null || data.accentColorHex.matches('^#[0-9a-fA-F]{6}$')) &&
+             (!('accentColorHex' in data) || data.accentColorHex == null || data.accentColorHex == '' || data.accentColorHex.matches('^#[0-9a-fA-F]{6}$')) &&
              (!('bottomNavItems' in data) || (data.bottomNavItems is list && data.bottomNavItems.size() <= 8)) &&
              isOptionalBool(data, 'allowOfflinePdf') &&
              isOptionalBool(data, 'showAnnouncements') &&
@@ -340,6 +358,7 @@ service cloud.firestore {
              (!('r2StorageLimitGb' in data) || (data.r2StorageLimitGb is int && data.r2StorageLimitGb >= 1 && data.r2StorageLimitGb <= 500)) &&
              (!('b2StorageLimitGb' in data) || (data.b2StorageLimitGb is int && data.b2StorageLimitGb >= 0 && data.b2StorageLimitGb <= 500)) &&
              isOptionalBool(data, 'b2Enabled') &&
+             (!('primaryStorageProvider' in data) || data.primaryStorageProvider == null || data.primaryStorageProvider in ['r2', 'b2']) &&
              (!('totalStorageLimitGb' in data) || (data.totalStorageLimitGb is int && data.totalStorageLimitGb >= 1 && data.totalStorageLimitGb <= 1000)) &&
              data.updatedBy is string && data.updatedBy.size() >= 1 && data.updatedBy.size() <= 128 &&
              data.updatedAt is timestamp && data.updatedAt <= request.time;
@@ -666,7 +685,12 @@ service cloud.firestore {
     match /platformConfig/{configId} {
       allow get: if isAccountActive() && isValidId(configId) && (configId == 'main' || isAnyStaffReader());
       allow list: if isAnyStaffReader();
-      allow create, update: if isAdmin() && configId == 'main' && isValidPlatformConfig(incoming());
+      allow create: if configId == 'main' &&
+                       isValidPlatformConfig(incoming()) &&
+                       (isStorageSettingKeyList(incoming().keys()) ? isSuperAdmin() : isAdmin());
+      allow update: if configId == 'main' &&
+                       isValidPlatformConfig(incoming()) &&
+                       (isStorageSettingKeyList(incoming().diff(existing()).affectedKeys()) ? isSuperAdmin() : isAdmin());
       allow delete: if isSuperAdmin() && configId != 'main';
     }
 

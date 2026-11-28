@@ -36,6 +36,12 @@ import type {
 } from '../types';
 import { deleteR2ObjectIfConfigured } from './r2UploadClient';
 import { DEFAULT_R2_LIMITS, PERMANENT_MIDAD_APK_URL, type R2UploadResult } from '../utils/r2Upload';
+import {
+  buildSanitizedPlatformConfigPayload,
+  formatPlatformSettingsSaveError,
+  payloadIncludesStorageSettings,
+  type PlatformConfigWriteScope,
+} from '../utils/platformConfig';
 
 function cleanPayload<T extends Record<string, unknown>>(obj: T): Record<string, unknown> {
   const result: Record<string, unknown> = {};
@@ -324,42 +330,83 @@ export async function commitSortOrderBatch(
 }
 
 export async function savePlatformConfig(
-  config: PlatformConfig,
-  staff: StaffSession | null
+  config: Partial<PlatformConfig>,
+  staff: StaffSession | null,
+  options?: { scope?: PlatformConfigWriteScope }
 ) {
-  const uid = staff?.uid || firebaseAuth.currentUser?.uid || 'admin';
-  const normalizedPayload = cleanPayload({
-    ...config,
-    ...(config.r2WorkerBaseUrl !== undefined
-      ? { r2WorkerBaseUrl: String(config.r2WorkerBaseUrl || '').trim().replace(/\/+$/g, '') }
-      : {}),
-    ...(config.maxVideoSizeMb !== undefined
-      ? { maxVideoSizeMb: Math.max(1, Math.min(2048, Math.round(Number(config.maxVideoSizeMb) || 200))) }
-      : {}),
-    ...(config.maxPdfSizeMb !== undefined
-      ? { maxPdfSizeMb: Math.max(1, Math.min(1024, Math.round(Number(config.maxPdfSizeMb) || 100))) }
-      : {}),
-    ...(config.maxImageSizeMb !== undefined
-      ? { maxImageSizeMb: Math.max(1, Math.min(256, Math.round(Number(config.maxImageSizeMb) || 20))) }
-      : {}),
-    ...(config.r2StorageLimitGb !== undefined
-      ? { r2StorageLimitGb: Math.max(1, Math.min(500, Math.round(Number(config.r2StorageLimitGb) || 10))) }
-      : {}),
-    ...(config.b2StorageLimitGb !== undefined
-      ? { b2StorageLimitGb: Math.max(0, Math.min(500, Math.round(Number(config.b2StorageLimitGb) || 0))) }
-      : {}),
-    ...(config.totalStorageLimitGb !== undefined
-      ? { totalStorageLimitGb: Math.max(1, Math.min(1000, Math.round(Number(config.totalStorageLimitGb) || 10))) }
-      : {}),
+  const scope: PlatformConfigWriteScope = options?.scope ?? 'full';
+  const currentUser = firebaseAuth.currentUser;
+  const uid = staff?.uid || currentUser?.uid || 'admin';
+
+  const normalizedPayload = buildSanitizedPlatformConfigPayload({
+    config: {
+      ...DEFAULT_PLATFORM_CONFIG,
+      ...config,
+      ...(config.r2WorkerBaseUrl !== undefined
+        ? { r2WorkerBaseUrl: String(config.r2WorkerBaseUrl || '').trim().replace(/\/+$/g, '') }
+        : {}),
+    },
+    scope,
     updatedBy: uid,
     updatedAt: serverTimestamp(),
   });
-  await setDoc(
-    doc(firestoreDb, 'platformConfig', 'main'),
-    normalizedPayload,
-    { merge: true }
+
+  if (payloadIncludesStorageSettings(normalizedPayload) && staff && staff.role !== 'SUPER_ADMIN') {
+    throw new Error(
+      'تعديل إعدادات التخزين (Backblaze B2 / Cloudflare R2) مقتصر على المدير العام النشط (SUPER_ADMIN) فقط.'
+    );
+  }
+
+  const configRef = doc(firestoreDb, 'platformConfig', 'main');
+  const writeDoc = async () => {
+    if (scope === 'full') {
+      // Write complete sanitized platformConfig doc so legacy stray keys cannot trigger hasOnly() permission-denied
+      await setDoc(configRef, normalizedPayload);
+    } else {
+      await setDoc(configRef, normalizedPayload, { merge: true });
+    }
+  };
+
+  if (currentUser) {
+    try {
+      await currentUser.getIdToken(false);
+    } catch {
+      // Proceed to write; retry below handles stale/expired token explicitly.
+    }
+  }
+
+  try {
+    await writeDoc();
+  } catch (err) {
+    const errCode =
+      typeof err === 'object' && err !== null && 'code' in err
+        ? String((err as { code?: unknown }).code || '')
+        : '';
+    const errMsg = err instanceof Error ? err.message : String(err || '');
+    const isPermOrTokenError =
+      /permission-denied|permission_denied|unauthenticated|Missing or insufficient permissions/i.test(
+        `${errCode} ${errMsg}`
+      );
+
+    if (isPermOrTokenError && currentUser) {
+      try {
+        await currentUser.getIdToken(true);
+        await writeDoc();
+      } catch (retryErr) {
+        throw new Error(formatPlatformSettingsSaveError(retryErr, staff));
+      }
+    } else {
+      throw new Error(formatPlatformSettingsSaveError(err, staff));
+    }
+  }
+
+  await recordAudit(
+    staff,
+    scope === 'full' ? 'UPDATE_PLATFORM_SETTINGS' : 'UPDATE_BRANDING',
+    'platformConfig',
+    'main',
+    `تحديث ${scope === 'branding' ? 'هوية وتصميم' : 'إعدادات'} المنصة (${String(normalizedPayload.platformName)})`
   );
-  await recordAudit(staff, 'UPDATE_BRANDING', 'platformConfig', 'main', `تحديث إعدادات وهوية المنصة (${config.platformName})`);
 }
 
 export function subscribeAndroidRelease(

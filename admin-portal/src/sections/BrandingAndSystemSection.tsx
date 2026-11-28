@@ -58,6 +58,11 @@ import {
   fetchR2QuotaStatus,
   peekCachedR2QuotaStatus,
 } from '../services/r2UploadClient';
+import {
+  extractBrandingPlatformUpdates,
+  extractGeneralToggleUpdates,
+  formatPlatformSettingsSaveError,
+} from '../utils/platformConfig';
 
 export function BrandingSection({
   store,
@@ -92,11 +97,15 @@ export function BrandingSection({
     e.preventDefault();
     setSaving(true);
     try {
-      await savePlatformConfig({ ...draft, bottomNavItems: navItems }, staff);
+      await savePlatformConfig(
+        extractBrandingPlatformUpdates({ ...draft, bottomNavItems: navItems }),
+        staff,
+        { scope: 'branding' }
+      );
       setIsDirty(false);
       onToast('تم حفظ وتطبيق هوية وتصميم المنصة مباشرة على تطبيق Android');
     } catch (err) {
-      onToast(err instanceof Error ? err.message : 'فشل حفظ التصميم', true);
+      onToast(formatPlatformSettingsSaveError(err, staff), true);
     } finally {
       setSaving(false);
     }
@@ -698,6 +707,7 @@ export function PlatformSettingsSection({
     return () => unsub();
   }, []);
 
+  const isSuperAdmin = staff.role === 'SUPER_ADMIN';
   const b2LiveVerified = Boolean(liveQuota?.b2?.workerConfigured && liveQuota?.b2?.verified);
   const effectiveB2Enabled =
     b2LiveVerified && (liveQuota?.b2?.enabled === true || Boolean(cfg.b2Enabled));
@@ -708,6 +718,19 @@ export function PlatformSettingsSection({
   });
 
   async function saveToggles() {
+    if (!isSuperAdmin) {
+      setSavingToggles(true);
+      try {
+        await savePlatformConfig(extractGeneralToggleUpdates(cfg), staff, { scope: 'general' });
+        onToast('تم حفظ الإعدادات العامة بنجاح (تعديل إعدادات التخزين مقتصر على المدير العام SUPER_ADMIN).');
+      } catch (err) {
+        onToast(formatPlatformSettingsSaveError(err, staff), true);
+      } finally {
+        setSavingToggles(false);
+      }
+      return;
+    }
+
     const rawWorkerInput = cfg.r2WorkerBaseUrl || '';
     const urlCheck = validateR2WorkerBaseUrlInput(rawWorkerInput);
     if (rawWorkerInput.trim() && !urlCheck.valid) {
@@ -729,6 +752,8 @@ export function PlatformSettingsSection({
     try {
       await savePlatformConfig(
         {
+          ...DEFAULT_PLATFORM_CONFIG,
+          ...store.platformConfig,
           ...cfg,
           r2WorkerBaseUrl: urlCheck.valid ? urlCheck.normalizedUrl : '',
           maxVideoSizeMb: limits.maxVideoSizeMb,
@@ -740,7 +765,8 @@ export function PlatformSettingsSection({
           primaryStorageProvider: safeB2Enabled ? 'b2' : 'r2',
           totalStorageLimitGb: limits.totalStorageLimitGb,
         },
-        staff
+        staff,
+        { scope: 'full' }
       );
       clearCachedR2QuotaStatus();
       onToast(
@@ -749,15 +775,7 @@ export function PlatformSettingsSection({
           : `تم حفظ الإعدادات: السعة الفعالة حالياً ${limits.r2StorageLimitGb} GB (R2) • بانتظار أسرار Backblaze B2`
       );
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'فشل حفظ إعدادات المنصة';
-      if (/permission-denied|Missing or insufficient permissions/i.test(msg)) {
-        onToast(
-          'رفضت قواعد Firestore حفظ الإعدادات (permission-denied). إذا كان لديك تحذير تنسيق على الحقل role (مثل \\nSUPER_ADMIN)، نظّفه في Firebase Console ثم أعد المحاولة.',
-          true
-        );
-      } else {
-        onToast(msg, true);
-      }
+      onToast(formatPlatformSettingsSaveError(err, staff), true);
     } finally {
       setSavingToggles(false);
     }
@@ -893,7 +911,7 @@ export function PlatformSettingsSection({
                 تخزين الوسائط السحابي (السعة المستهدفة 20 GB: 10 GB لـ Cloudflare R2 + 10 GB لـ Backblaze B2)
               </h4>
               <p className="text-xs text-slate-500">
-                لا تُحتسب أي مساحة أو حصة مجانية على أنها مفعّلة إلا بعد التحقق الفعلي من حساب الخدمة وربطه.
+                لا تُحتسب أي مساحة أو حصة مجانية على أنها مفعّلة إلا بعد التحقق الفعلي من حساب الخدمة وربطه. تُحفظ مفاتيح B2 السرية في Cloudflare Worker Secrets فقط ولا تُخزّن في Firestore.
               </p>
             </div>
             <button
@@ -906,18 +924,25 @@ export function PlatformSettingsSection({
             </button>
           </div>
 
+          {!isSuperAdmin && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-900">
+              تعديل إعدادات التخزين (Backblaze B2 / Cloudflare R2) مقتصر على المدير العام النشط (SUPER_ADMIN) فقط.
+            </div>
+          )}
+
           <div>
             <label className="mb-1 block text-xs font-semibold text-slate-600">رابط Storage Worker (Backblaze B2 / R2 — HTTPS) *</label>
             <input
               type="url"
               dir="ltr"
+              disabled={!isSuperAdmin}
               value={cfg.r2WorkerBaseUrl || ''}
               onChange={(e) => {
                 setCfg({ ...cfg, r2WorkerBaseUrl: e.target.value });
                 setLiveQuota(null);
               }}
               placeholder="https://midad-r2-worker.your-subdomain.workers.dev"
-              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-sm"
+              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-sm disabled:bg-slate-100 disabled:text-slate-500"
             />
           </div>
 
@@ -929,9 +954,10 @@ export function PlatformSettingsSection({
                 min={1}
                 max={2048}
                 dir="ltr"
+                disabled={!isSuperAdmin}
                 value={cfg.maxVideoSizeMb ?? 200}
                 onChange={(e) => setCfg({ ...cfg, maxVideoSizeMb: Number(e.target.value) })}
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-sm"
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-sm disabled:bg-slate-100 disabled:text-slate-500"
               />
             </div>
             <div>
@@ -941,9 +967,10 @@ export function PlatformSettingsSection({
                 min={1}
                 max={1024}
                 dir="ltr"
+                disabled={!isSuperAdmin}
                 value={cfg.maxPdfSizeMb ?? 100}
                 onChange={(e) => setCfg({ ...cfg, maxPdfSizeMb: Number(e.target.value) })}
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-sm"
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-sm disabled:bg-slate-100 disabled:text-slate-500"
               />
             </div>
             <div>
@@ -953,9 +980,10 @@ export function PlatformSettingsSection({
                 min={1}
                 max={256}
                 dir="ltr"
+                disabled={!isSuperAdmin}
                 value={cfg.maxImageSizeMb ?? 20}
                 onChange={(e) => setCfg({ ...cfg, maxImageSizeMb: Number(e.target.value) })}
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-sm"
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-sm disabled:bg-slate-100 disabled:text-slate-500"
               />
             </div>
             <div>
@@ -965,6 +993,7 @@ export function PlatformSettingsSection({
                 min={0}
                 max={500}
                 dir="ltr"
+                disabled={!isSuperAdmin}
                 value={cfg.b2StorageLimitGb ?? 10}
                 onChange={(e) => {
                   const nextB2 = Math.max(0, Number(e.target.value) || 0);
@@ -975,7 +1004,7 @@ export function PlatformSettingsSection({
                     totalStorageLimitGb: effectiveB2Enabled ? currentR2 + nextB2 : currentR2,
                   });
                 }}
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-sm"
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-sm disabled:bg-slate-100 disabled:text-slate-500"
               />
             </div>
             <div>
@@ -985,6 +1014,7 @@ export function PlatformSettingsSection({
                 min={1}
                 max={500}
                 dir="ltr"
+                disabled={!isSuperAdmin}
                 value={cfg.r2StorageLimitGb ?? 10}
                 onChange={(e) => {
                   const nextR2 = Math.max(1, Number(e.target.value) || 10);
@@ -994,7 +1024,7 @@ export function PlatformSettingsSection({
                     totalStorageLimitGb: effectiveB2Enabled ? nextR2 + (cfg.b2StorageLimitGb ?? 10) : nextR2,
                   });
                 }}
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-sm"
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-sm disabled:bg-slate-100 disabled:text-slate-500"
               />
             </div>
             <div>
@@ -1034,6 +1064,7 @@ export function PlatformSettingsSection({
                 <label className="mt-2 inline-flex cursor-pointer items-center gap-2 font-bold">
                   <input
                     type="checkbox"
+                    disabled={!isSuperAdmin}
                     checked={liveQuota?.b2?.enabled === true || cfg.b2Enabled === true}
                     onChange={(e) => setCfg({ ...cfg, b2Enabled: e.target.checked })}
                   />
@@ -1079,7 +1110,11 @@ export function PlatformSettingsSection({
           className="inline-flex items-center gap-1.5 rounded-xl bg-[#142A43] px-5 py-2.5 text-xs font-bold text-white disabled:opacity-50"
         >
           <Check className="h-4 w-4" />
-          {savingToggles ? 'جاري الحفظ...' : 'حفظ الإعدادات العامة وحدود التخزين'}
+          {savingToggles
+            ? 'جاري الحفظ...'
+            : isSuperAdmin
+              ? 'حفظ الإعدادات العامة وحدود التخزين'
+              : 'حفظ الإعدادات العامة فقط'}
         </button>
       </div>
 

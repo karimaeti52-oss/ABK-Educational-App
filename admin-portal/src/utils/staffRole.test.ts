@@ -644,5 +644,35 @@ test('diagnoseClientAdminAccess flags literal leading newline (\\nSUPER_ADMIN) w
   assert.deepEqual(clean.warnings, []);
 });
 
+test('resolveAdminPortalSession force-refreshes ID token when backend grants SUPER_ADMIN missing from cached claims', async () => {
+  const refreshFlags: boolean[] = [];
+
+  const result = await resolveAdminPortalSession({
+    user: { uid: 'uid_super', email: 'superadmin@abk.edu', displayName: 'Super' },
+    checkBackendHealth: async () => true,
+    fetchBackendSession: async () => ({
+      uid: 'uid_super',
+      email: 'superadmin@abk.edu',
+      name: 'Super',
+      role: 'SUPER_ADMIN',
+      permissions: ['manage_settings', 'manage_admins'],
+      authTime: Math.floor(Date.now() / 1000),
+      mfaVerified: false,
+    }),
+    readIdTokenResult: async (forceRefresh: boolean) => {
+      refreshFlags.push(forceRefresh);
+      if (forceRefresh) {
+        return { claims: { abkRole: 'SUPER_ADMIN' } };
+      }
+      return { claims: {} };
+    },
+    readOwnAdminDoc: async () => ({ exists: () => false, data: () => undefined }),
+  });
+
+  assert.equal(result.session?.role, 'SUPER_ADMIN');
+  assert.deepEqual(refreshFlags, [false, true]);
+});
+
+
 
 

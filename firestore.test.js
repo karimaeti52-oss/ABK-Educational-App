@@ -1272,3 +1272,145 @@ test("Strict /admins/{uid} policy rejects missing active, invalid role, and bloc
     })
   );
 });
+
+test("platformConfig/main storage settings allow only active SUPER_ADMIN, support primaryStorageProvider, and reject secrets or lower roles", async () => {
+  const superClaimDb = adminContext().firestore();
+  const regularAdminUid = "regular_admin_1";
+  const regularAdminDb = staffContext(regularAdminUid, "ADMIN", "admin1@abk.edu").firestore();
+  const docOnlySuperUid = "doc_only_super_1";
+  const docOnlySuperDb = testEnv
+    .authenticatedContext(docOnlySuperUid, { email: "docsuper@abk.edu", email_verified: true })
+    .firestore();
+  const staleClaimPromotedUid = "promoted_super_1";
+  const staleClaimPromotedDb = staffContext(staleClaimPromotedUid, "ADMIN", "promoted@abk.edu").firestore();
+  const disabledSuperUid = "disabled_super_1";
+  const disabledSuperDb = staffContext(disabledSuperUid, "SUPER_ADMIN", "disabledsuper@abk.edu").firestore();
+  const studentDb = testEnv
+    .authenticatedContext(STUDENT_ALICE, { email: "alice@example.com", email_verified: true })
+    .firestore();
+  const unauthDb = testEnv.unauthenticatedContext().firestore();
+  const now = new Date(Date.now() - 2000);
+
+  // Seed active doc-only SUPER_ADMIN (with trailing newline whitespace simulation), stale-claim promoted SUPER_ADMIN, and disabled SUPER_ADMIN
+  await assertSucceeds(
+    testEnv.withSecurityRulesDisabled(async (ctx) => {
+      const db = ctx.firestore();
+      await db.collection("admins").doc(docOnlySuperUid).set({
+        uid: docOnlySuperUid,
+        email: "docsuper@abk.edu",
+        role: "\nSUPER_ADMIN ",
+        active: true,
+        grantedBy: "SYSTEM_BOOTSTRAP",
+        createdAt: now,
+      });
+      await db.collection("admins").doc(staleClaimPromotedUid).set({
+        uid: staleClaimPromotedUid,
+        email: "promoted@abk.edu",
+        role: "SUPER_ADMIN",
+        active: true,
+        grantedBy: ADMIN_UID,
+        createdAt: now,
+      });
+      await db.collection("admins").doc(disabledSuperUid).set({
+        uid: disabledSuperUid,
+        email: "disabledsuper@abk.edu",
+        role: "SUPER_ADMIN",
+        active: false,
+        grantedBy: ADMIN_UID,
+        createdAt: now,
+      });
+    })
+  );
+
+  const validStorageConfig = {
+    platformName: "مداد التعليمية",
+    platformTagline: "طريقك نحو التفوق",
+    homeHeadline: "ماذا تدرس اليوم؟",
+    primaryColorHex: "#142A43",
+    secondaryColorHex: "#167D83",
+    accentColorHex: "",
+    allowOfflinePdf: true,
+    showAnnouncements: true,
+    showContinueWatching: true,
+    maintenanceMode: false,
+    r2WorkerBaseUrl: "https://midad-storage.example.workers.dev",
+    maxVideoSizeMb: 200,
+    maxPdfSizeMb: 100,
+    maxImageSizeMb: 20,
+    r2StorageLimitGb: 10,
+    b2StorageLimitGb: 10,
+    b2Enabled: false,
+    primaryStorageProvider: "r2",
+    totalStorageLimitGb: 10,
+    updatedBy: ADMIN_UID,
+    updatedAt: now,
+  };
+
+  // 1. Regular ADMIN, STUDENT, unauthenticated, and disabled SUPER_ADMIN are DENIED creating/writing storage settings
+  await assertFails(regularAdminDb.collection("platformConfig").doc("main").set(validStorageConfig));
+  await assertFails(studentDb.collection("platformConfig").doc("main").set(validStorageConfig));
+  await assertFails(unauthDb.collection("platformConfig").doc("main").set(validStorageConfig));
+  await assertFails(disabledSuperDb.collection("platformConfig").doc("main").set(validStorageConfig));
+
+  // 2. Active SUPER_ADMIN (via claim) CAN save platformConfig/main with primaryStorageProvider and read it back
+  await assertSucceeds(superClaimDb.collection("platformConfig").doc("main").set(validStorageConfig));
+  const savedSnap = await assertSucceeds(superClaimDb.collection("platformConfig").doc("main").get());
+  if (savedSnap.data().primaryStorageProvider !== "r2") {
+    throw new Error("Expected primaryStorageProvider=r2");
+  }
+
+  // 3. Active doc-only SUPER_ADMIN (even with whitespace role artifact from Console) CAN enable B2 provider settings
+  await assertSucceeds(
+    docOnlySuperDb.collection("platformConfig").doc("main").update({
+      b2Enabled: true,
+      primaryStorageProvider: "b2",
+      totalStorageLimitGb: 20,
+      updatedBy: docOnlySuperUid,
+      updatedAt: new Date(Date.now() - 1000),
+    })
+  );
+
+  // 4. Stale ADMIN claim promoted to active SUPER_ADMIN in /admins/{uid} CAN save storage settings
+  await assertSucceeds(
+    staleClaimPromotedDb.collection("platformConfig").doc("main").update({
+      r2WorkerBaseUrl: "https://midad-b2-worker.example.workers.dev",
+      updatedBy: staleClaimPromotedUid,
+      updatedAt: new Date(Date.now() - 800),
+    })
+  );
+
+  // 5. Regular ADMIN CANNOT modify storage fields on existing platformConfig/main,
+  //    but CAN update non-storage branding/toggle fields cleanly
+  await assertFails(
+    regularAdminDb.collection("platformConfig").doc("main").update({
+      b2Enabled: false,
+      primaryStorageProvider: "r2",
+      updatedBy: regularAdminUid,
+      updatedAt: new Date(Date.now() - 600),
+    })
+  );
+  await assertSucceeds(
+    regularAdminDb.collection("platformConfig").doc("main").update({
+      platformName: "مداد - هوية محدثة",
+      updatedBy: regularAdminUid,
+      updatedAt: new Date(Date.now() - 500),
+    })
+  );
+
+  // 6. B2 secret keys must NEVER be allowed inside platformConfig/main even by SUPER_ADMIN
+  await assertFails(
+    superClaimDb.collection("platformConfig").doc("main").update({
+      b2ApplicationKey: "secret-key-not-allowed",
+      updatedBy: ADMIN_UID,
+      updatedAt: new Date(Date.now() - 400),
+    })
+  );
+  await assertFails(
+    superClaimDb.collection("platformConfig").doc("main").update({
+      b2KeyId: "key-id-not-allowed",
+      updatedBy: ADMIN_UID,
+      updatedAt: new Date(Date.now() - 300),
+    })
+  );
+});
+

@@ -722,6 +722,15 @@ export async function resolveAdminPortalSession({
   if (backendUp) {
     try {
       const backendSession = await fetchBackendSession();
+      try {
+        const tokenRes = await readIdTokenResult(forceRefreshToken);
+        const tokenClaimRole = normalizeStaffRole(tokenRes?.claims?.abkRole);
+        if (tokenClaimRole !== backendSession.role) {
+          await readIdTokenResult(true);
+        }
+      } catch {
+        // Backend session is authoritative; token refresh retry also runs on write if needed.
+      }
       return {
         session: {
           ...backendSession,

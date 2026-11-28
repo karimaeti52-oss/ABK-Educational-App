@@ -74,16 +74,10 @@ export function resolveEffectiveRole(decodedToken, adminDoc, superAdminEmail = '
     return 'SUPER_ADMIN';
   }
 
-  if (adminDoc && adminDoc.active === false) {
-    return 'STUDENT';
-  }
-
-  const claimRole = normalizeStaffRole(decodedToken?.abkRole);
-  if (claimRole) {
-    return claimRole;
-  }
-
-  if (adminDoc && adminDoc.active === true) {
+  if (adminDoc) {
+    if (adminDoc.active !== true) {
+      return 'STUDENT';
+    }
     const tokenUid = normalizeIdentifierValue(decodedToken?.uid);
     const docUid = normalizeIdentifierValue(adminDoc.uid);
     const uidValid = tokenUid ? docUid === tokenUid : !adminDoc.uid || docUid.length > 0;
@@ -91,6 +85,12 @@ export function resolveEffectiveRole(decodedToken, adminDoc, superAdminEmail = '
     if (uidValid && docRole) {
       return docRole;
     }
+    return 'STUDENT';
+  }
+
+  const claimRole = normalizeStaffRole(decodedToken?.abkRole);
+  if (claimRole) {
+    return claimRole;
   }
 
   return 'STUDENT';

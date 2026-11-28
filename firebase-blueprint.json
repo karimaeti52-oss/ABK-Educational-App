@@ -278,6 +278,7 @@
         "r2StorageLimitGb": { "type": "integer" },
         "b2StorageLimitGb": { "type": "integer" },
         "b2Enabled": { "type": "boolean" },
+        "primaryStorageProvider": { "type": "string", "enum": ["r2", "b2"] },
         "totalStorageLimitGb": { "type": "integer" },
         "updatedBy": { "type": "string" },
         "updatedAt": { "type": "string", "format": "date-time" }
